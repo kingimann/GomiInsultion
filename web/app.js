@@ -135,7 +135,7 @@ async function loadSession() {
 function renderNav() {
   const n = Object.values(getCart()).reduce((a, b) => a + b, 0);
   document.getElementById('cartlink').innerHTML = (session ? `<button class="stylebtn bell" id="bellbtn" aria-label="Notifications">🔔${unread.all ? `<span class="dot">${unread.all > 99 ? '99+' : unread.all}</span>` : ''}</button> ` : '') + `<a class="cart" href="#/cart">🛒 Cart (${n})</a>`;
-  document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a><a href="#/quote">Get a quote</a><a href="#/wishlist">♡ ${getWish().length}</a>` + (session ? `<a href="#/messages">💬 Messages${unread.msg ? ` <span class="dot">${unread.msg}</span>` : ''}</a>` : '') + (session
+  document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a>${sitePages.filter((x) => x.show_in_nav).map((x) => `<a href="#/page/${esc(x.slug)}">${esc(x.title)}</a>`).join('')}<a href="#/quote">Get a quote</a><a href="#/wishlist">♡ ${getWish().length}</a>` + (session ? `<a href="#/messages">💬 Messages${unread.msg ? ` <span class="dot">${unread.msg}</span>` : ''}</a>` : '') + (session
     ? `${profile?.is_admin ? '<a href="#/admin">Admin</a>' : ''}<a href="#/account">${esc((profile?.name || 'Account').split(' ')[0])}</a><button class="link" id="logout">Log out</button>`
     : `<a href="#/login">Log in</a><a href="#/register">Sign up</a>`) + `${profile?.is_admin ? '<button class="stylebtn" id="stylebtn" aria-label="Customize site style">🎨 Style</button>' : ''}`;
   document.getElementById('logout')?.addEventListener('click', async () => { await sb.auth.signOut(); location.hash = '#/'; });
@@ -468,7 +468,7 @@ const salesChart = (orders) => {
   ${days.map((d, i) => { const h = d.v / max * 140; return `<g><title>${d.label}: ${money(d.v)}</title><rect x="${i * 49 + 12}" y="${160 - h}" width="34" height="${Math.max(h, 2)}" rx="5" fill="var(--brand)" opacity="${d.v ? 1 : .25}"/><text x="${i * 49 + 29}" y="182" font-size="10" text-anchor="middle" fill="var(--muted)">${d.label}</text></g>`; }).join('')}</svg>`;
 };
 const RESP_STATUS = { new: 'New', in_progress: 'In progress', done: 'Done' };
-let FB = null; // form being edited in the builder
+let FB = null, PG = null; // form being edited in the builder
 const slugify = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 const formUrl = (slug) => `${location.origin}${location.pathname}#/form/${slug}`;
 function fieldRows() {
@@ -527,6 +527,32 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const fresh = {}; ((await sb.from('form_submissions').select('form_id').eq('status', 'new')).data || []).forEach((r) => (fresh[r.form_id] = (fresh[r.form_id] || 0) + 1));
     return `<h1>Forms</h1><p><a class="btn" href="#/admin/forms/new">+ New form</a></p>${fs.length ? `<table><tr><th>Form</th><th>Link</th><th>Status</th><th>Responses</th><th></th></tr>${fs.map((f) => `<tr><td><a href="#/admin/forms/${f.id}">${esc(f.title)}</a></td><td><code>#/form/${esc(f.slug)}</code></td><td>${f.active ? 'Published' : 'Draft'}</td><td><a href="#/admin/forms/${f.id}/responses">${counts[f.id] || 0}</a>${fresh[f.id] ? ` <span class="status pending">${fresh[f.id]} new</span>` : ''}</td><td><button class="link delform" data-id="${f.id}" data-title="${esc(f.title)}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No forms yet.</p>'}`;
   }
+  if (sub === 'pages' && id) {
+    const pg = id === 'new' ? { title: '', slug: '', body: '# New page\n\nWrite your content here.', published: false, show_in_nav: false, show_in_footer: true, sort: 0 } : (await sb.from('pages').select('*').eq('id', id).single()).data;
+    PG = { ...pg };
+    return `<h1>${pg.id ? 'Edit page' : 'New page'}</h1><div class="pgedit">
+    <div class="stack">
+      <label>Title<input id="pg_title" value="${esc(pg.title)}" maxlength="200"></label>
+      <label>Link name<input id="pg_slug" value="${esc(pg.slug)}" maxlength="60" placeholder="auto from title"></label>
+      <div class="row"><label class="check"><input type="checkbox" id="pg_pub" ${pg.published ? 'checked' : ''}> Published</label>
+      <label class="check"><input type="checkbox" id="pg_nav" ${pg.show_in_nav ? 'checked' : ''}> Show in menu</label>
+      <label class="check"><input type="checkbox" id="pg_foot" ${pg.show_in_footer ? 'checked' : ''}> Show in footer</label>
+      <label class="check">Order <input type="number" id="pg_sort" value="${pg.sort ?? 0}" style="width:80px"></label></div>
+      <div class="mdbar row"><button type="button" class="btn ghost" data-md="# ">H1</button><button type="button" class="btn ghost" data-md="## ">H2</button><button type="button" class="btn ghost" data-wrap="**">B</button><button type="button" class="btn ghost" data-wrap="*"><i>I</i></button>
+      <button type="button" class="btn ghost" data-md="- ">• List</button><button type="button" class="btn ghost" data-md="> ">❝ Quote</button><button type="button" class="btn ghost" data-ins="[link text](https://)">🔗 Link</button>
+      <button type="button" class="btn ghost" data-ins="{{button: Label | #/shop}}">Button</button><label class="btn ghost" style="cursor:pointer">🖼 Image<input type="file" id="pg_img" accept="image/jpeg,image/png,image/webp,image/gif" hidden></label></div>
+      <textarea id="pg_body" rows="18" style="font-family:ui-monospace,Menlo,monospace;font-size:.9rem" maxlength="100000">${esc(pg.body)}</textarea>
+      <div class="row"><button type="button" class="btn" id="pg_save">Save page</button>${pg.id ? `<a class="btn ghost" href="#/page/${esc(pg.slug)}" target="_blank" rel="noopener">View ↗</a>` : ''}</div>
+      <details class="more"><summary>Formatting help</summary><p class="muted" style="white-space:pre-wrap"># Heading   ## Smaller heading
+**bold**  *italic*  [link](https://…)  ![image](https://…)
+- bullet list      1. numbered list      &gt; quote      --- divider
+{{button: Shop now | #/shop}}  (a button link)</p></details></div>
+    <div><h3 style="margin-top:0">Preview</h3><article class="prose preview" id="pg_preview">${md(pg.body)}</article></div></div>`;
+  }
+  if (sub === 'pages') {
+    const ps = (await sb.from('pages').select('*').order('sort').order('title')).data;
+    return `<h1>Pages</h1><p><a class="btn" href="#/admin/pages/new">+ New page</a></p>${ps.length ? `<table><tr><th>Page</th><th>Link</th><th>Status</th><th>Menu</th><th>Footer</th><th></th></tr>${ps.map((x) => `<tr><td><a href="#/admin/pages/${x.id}">${esc(x.title)}</a></td><td><code>#/page/${esc(x.slug)}</code></td><td>${x.published ? 'Published' : 'Draft'}</td><td>${x.show_in_nav ? '✓' : ''}</td><td>${x.show_in_footer ? '✓' : ''}</td><td><a href="#/page/${esc(x.slug)}">View</a> · <button class="link delpage" data-id="${x.id}" data-title="${esc(x.title)}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No pages yet.</p>'}`;
+  }
   if (sub === 'codes') {
     const cs = (await sb.from('discount_codes').select('*').order('code')).data;
     return `<h1>Discount codes</h1><table><tr><th>Code</th><th>Off</th><th>Min order</th><th>Status</th><th></th></tr>${cs.map((c) => `<tr><td><b>${esc(c.code)}</b></td><td>${c.percent}%</td><td>${money(c.min_cents)}</td><td>${c.active ? 'Active' : 'Off'}</td><td><button class="btn ghost togcode" data-code="${esc(c.code)}" data-active="${c.active}">${c.active ? 'Disable' : 'Enable'}</button></td></tr>`).join('')}</table>
@@ -567,11 +593,41 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   const rev14 = await sb.from('orders').select('total_cents,created_at').neq('status', 'cancelled').gte('created_at', new Date(Date.now() - 14 * 864e5).toISOString());
   const revenue = rev.data.reduce((a, o) => a + o.total_cents, 0);
   return `<h1>Admin</h1><div class="stats"><div><b>${oc.count}</b>orders</div><div><b>${pc.count}</b>pending</div><div><b>${money(revenue)}</b>revenue</div><div><b>${cc.count}</b>customers</div></div>
-  <p><a class="btn" href="#/admin/orders">Orders</a> <a class="btn" href="#/admin/products">Products</a> <a class="btn" href="#/admin/customers">Customers</a> <a class="btn" href="#/admin/quotes">Quotes</a> <a class="btn" href="#/admin/codes">Discount codes</a> <a class="btn" href="#/admin/forms">Forms</a></p>
+  <p><a class="btn" href="#/admin/orders">Orders</a> <a class="btn" href="#/admin/products">Products</a> <a class="btn" href="#/admin/customers">Customers</a> <a class="btn" href="#/admin/quotes">Quotes</a> <a class="btn" href="#/admin/codes">Discount codes</a> <a class="btn" href="#/admin/forms">Forms</a> <a class="btn" href="#/admin/pages">Pages</a></p>
   <h2>Sales, last 14 days</h2>${salesChart(rev14.data)}
   <h2>Low stock</h2>${low.data.length ? `<ul>${low.data.map((p) => `<li><a href="#/admin/products/${p.id}">${esc(p.name)}</a> — ${p.stock} left</li>`).join('')}</ul>` : '<p>All good.</p>'}`;
 };
 pages.admin.after = ([sub, id, extra]) => {
+  document.querySelectorAll('.delpage').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm(`Delete the page "${b.dataset.title}"?`)) return; const { error } = await sb.from('pages').delete().eq('id', b.dataset.id); error ? fail(error) : (loadPages(), route());
+  }));
+  const body = document.getElementById('pg_body');
+  if (body) {
+    const prev = document.getElementById('pg_preview'); let t = null;
+    const refresh = () => { clearTimeout(t); t = setTimeout(() => (prev.innerHTML = md(body.value)), 150); };
+    body.addEventListener('input', refresh);
+    const insert = (text, selectInside) => { const a = body.selectionStart, z = body.selectionEnd; body.setRangeText(text, a, z, 'end'); body.focus(); refresh(); };
+    document.querySelector('.mdbar')?.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return; const a = body.selectionStart, z = body.selectionEnd, sel = body.value.slice(a, z);
+      if (b.dataset.md) { const ls = body.value.lastIndexOf('\n', a - 1) + 1; body.setRangeText(b.dataset.md, ls, ls, 'end'); body.focus(); body.selectionStart = body.selectionEnd = a + b.dataset.md.length; refresh(); }
+      else if (b.dataset.wrap) insert(b.dataset.wrap + (sel || 'text') + b.dataset.wrap);
+      else if (b.dataset.ins) insert(b.dataset.ins);
+    });
+    document.getElementById('pg_img')?.addEventListener('change', async (e) => {
+      const file = e.target.files[0]; if (!file) return; if (file.size > 5 * 1024 * 1024) return fail(new Error('Image must be under 5 MB.'));
+      const path = `pages/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-60)}`;
+      const up = await sb.storage.from('product-images').upload(path, file, { contentType: file.type }); if (up.error) return fail(up.error);
+      insert(`![${file.name.replace(/\.[^.]+$/, '')}](${sb.storage.from('product-images').getPublicUrl(path).data.publicUrl})`); e.target.value = '';
+    });
+    document.getElementById('pg_save')?.addEventListener('click', async () => {
+      const title = document.getElementById('pg_title').value.trim(); if (!title) return fail(new Error('Give the page a title.'));
+      const row = { title, slug: slugify(document.getElementById('pg_slug').value || title) || 'page-' + Date.now(), body: body.value, published: document.getElementById('pg_pub').checked,
+        show_in_nav: document.getElementById('pg_nav').checked, show_in_footer: document.getElementById('pg_foot').checked, sort: parseInt(document.getElementById('pg_sort').value, 10) || 0, updated_at: new Date().toISOString() };
+      const res = PG.id ? await sb.from('pages').update(row).eq('id', PG.id).select('id').single() : await sb.from('pages').insert(row).select('id').single();
+      if (res.error) return fail(res.error.code === '23505' ? new Error('That link name is already used by another page.') : res.error);
+      flash('Page saved.'); loadPages(); location.hash = '#/admin/pages';
+    });
+  }
   document.querySelectorAll('.rstatus').forEach((el) => el.addEventListener('change', async () => {
     const { error } = await sb.from('form_submissions').update({ status: el.value }).eq('id', el.dataset.id); error ? fail(error) : flash('Status updated.');
   }));
@@ -858,6 +914,43 @@ pages.messages.after = () => {
   if (!coarse) ta.focus();
 };
 
+// ---- custom pages (admin-editable) ----
+let sitePages = [];
+async function loadPages() {
+  const { data } = await sb.from('pages').select('id,slug,title,show_in_nav,show_in_footer,sort').eq('published', true).order('sort').order('title');
+  sitePages = data || []; renderNav();
+  const f = document.getElementById('footpages'); if (f) f.innerHTML = sitePages.filter((x) => x.show_in_footer).length ? `<b>Info</b><br>${sitePages.filter((x) => x.show_in_footer).map((x) => `<a href="#/page/${esc(x.slug)}">${esc(x.title)}</a>`).join('<br>')}` : '';
+}
+const okUrl = (u) => /^(https?:\/\/|mailto:|#\/|\/)[^\s"'<>]*$/.test(u);
+// Small, safe Markdown renderer: everything is escaped first, only whitelisted formatting is produced.
+function md(src) {
+  const inline = (t) => {
+    t = esc(t);
+    t = t.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/[^\s)]*)\)/g, (m, a, u) => `<img src="${u}" alt="${a}" loading="lazy">`);
+    t = t.replace(/\[([^\]]+)\]\(((?:https?:\/\/|mailto:|#\/|\/)[^\s)]*)\)/g, (m, a, u) => `<a href="${u}"${/^https?:/.test(u) ? ' target="_blank" rel="noopener"' : ''}>${a}</a>`);
+    return t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>').replace(/`([^`]+)`/g, '<code>$1</code>');
+  };
+  const lines = String(src || '').replace(/\r/g, '').split('\n'); let out = '', i = 0;
+  while (i < lines.length) {
+    const L = lines[i]; let m;
+    if (!L.trim()) { i++; continue; }
+    if ((m = /^(#{1,3})\s+(.*)$/.exec(L))) { out += `<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`; i++; }
+    else if (/^(-{3,}|\*{3,})\s*$/.test(L)) { out += '<hr>'; i++; }
+    else if ((m = /^\{\{button:\s*(.+?)\s*\|\s*(\S+?)\s*\}\}\s*$/.exec(L))) { out += okUrl(m[2]) ? `<p><a class="btn" href="${esc(m[2])}"${/^https?:/.test(m[2]) ? ' target="_blank" rel="noopener"' : ''}>${esc(m[1])}</a></p>` : ''; i++; }
+    else if (/^>\s?/.test(L)) { let q = []; while (i < lines.length && /^>\s?/.test(lines[i])) q.push(lines[i++].replace(/^>\s?/, '')); out += `<blockquote>${q.map(inline).join('<br>')}</blockquote>`; }
+    else if (/^[-*]\s+/.test(L)) { let it = []; while (i < lines.length && /^[-*]\s+/.test(lines[i])) it.push(lines[i++].replace(/^[-*]\s+/, '')); out += `<ul>${it.map((x) => `<li>${inline(x)}</li>`).join('')}</ul>`; }
+    else if (/^\d+\.\s+/.test(L)) { let it = []; while (i < lines.length && /^\d+\.\s+/.test(lines[i])) it.push(lines[i++].replace(/^\d+\.\s+/, '')); out += `<ol>${it.map((x) => `<li>${inline(x)}</li>`).join('')}</ol>`; }
+    else { let para = []; while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|>\s?|[-*]\s+|\d+\.\s+|-{3,}\s*$|\{\{button:)/.test(lines[i])) para.push(lines[i++]); out += `<p>${para.map(inline).join('<br>')}</p>`; }
+  }
+  return out;
+}
+pages.page = async ([slug]) => {
+  const { data: pg } = await sb.from('pages').select('*').eq('slug', slug).maybeSingle();
+  if (!pg) return '<h1>Page not found</h1><p><a href="#/">Back home</a></p>';
+  document.title = `${pg.title} · ${(theme.name || 'Gomi Insulation')}`;
+  return `<article class="prose">${!pg.published ? '<p class="flash error" style="margin-top:0">Draft — only admins can see this page.</p>' : ''}${profile?.is_admin ? `<p style="text-align:right"><a class="btn ghost" href="#/admin/pages/${pg.id}">✎ Edit page</a></p>` : ''}${md(pg.body)}</article>`;
+};
+
 // ---- router ----
 async function route() {
   threadChan.forEach((c) => sb.removeChannel(c)); threadChan = [];
@@ -879,5 +972,5 @@ sb.auth.onAuthStateChange((ev) => {
   if (ev === 'SIGNED_OUT') { session = null; profile = null; unread = { all: 0, msg: 0 }; if (notifChan) { sb.removeChannel(notifChan); notifChan = null; } renderNav(); }
 });
 applyBranding();
-loadSiteTheme();
+loadSiteTheme(); loadPages();
 loadSession().then(route);

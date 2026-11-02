@@ -87,3 +87,6 @@ Each response has a **status** (New / In progress / Done) and a **notes** box, w
   Customers are notified about their orders (received, paid, shipped…) and replies to their messages. Admins are notified about new orders, low stock, form responses, quote requests and customer messages.
 - **Messages (💬):** customers send private messages to the store team (only they and admins can read the thread); admins reply from the same inbox, close/reopen conversations, and can start a conversation with any customer from **Admin → Customers**. New messages arrive live.
 - Message emails reuse the `notify` function (redeploy it after pulling: `supabase functions deploy notify --no-verify-jwt`).
+
+## Custom pages
+**Admin → Pages** lets admins create and edit content pages (About, FAQ, Shipping…) with a Markdown editor, toolbar, image upload and live preview. Each page has a link (`#/page/<name>`), can be a draft or published, and can be added to the menu and/or footer. Content is rendered by a small built-in renderer that escapes everything and only allows safe formatting and links.

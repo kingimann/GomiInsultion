@@ -603,3 +603,19 @@ begin
 end $$;
 revoke all on function public.mark_conversation_read(bigint) from public, anon;
 grant execute on function public.mark_conversation_read(bigint) to authenticated;
+
+-- ===== Custom pages (admin-editable content pages) =====
+create table if not exists public.pages (
+  id bigint generated always as identity primary key, slug text unique not null check (slug ~ '^[a-z0-9-]{1,60}$'),
+  title text not null check (length(title) between 1 and 200), body text not null default '' check (length(body) <= 100000),
+  published boolean not null default false, show_in_nav boolean not null default false, show_in_footer boolean not null default true,
+  sort int not null default 0, updated_at timestamptz not null default now(), created_at timestamptz not null default now());
+alter table public.pages enable row level security;
+drop policy if exists "view pages" on public.pages;
+create policy "view pages" on public.pages for select using (published or public.is_admin());
+drop policy if exists "admin pages" on public.pages;
+create policy "admin pages" on public.pages for all using (public.is_admin()) with check (public.is_admin());
+insert into public.pages (slug, title, body, published, show_in_footer, sort) values
+ ('about', 'About us', E'# About us\n\nWe supply **quality insulation** to homeowners and contractors. Batts, spray foam, rigid board and everything you need to seal and insulate a build.\n\n## Why customers choose us\n\n- Honest advice on the right R-value for your project\n- Fast delivery or easy pickup\n- Trade and bulk pricing on request\n\n{{button: Request a quote | #/quote}}', true, true, 1),
+ ('shipping-returns', 'Shipping & returns', E'# Shipping & returns\n\n## Delivery\n\nOrders over **$500** ship free. Smaller orders have a flat delivery fee shown at checkout.\n\n## Pickup\n\nChoose a pickup location at checkout and we will message you when your order is ready.\n\n## Returns\n\nUnopened products can be returned within 30 days. Contact us and we will sort it out.\n\n[Contact us](#/form/contact)', true, true, 2)
+on conflict (slug) do nothing;

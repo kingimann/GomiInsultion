@@ -1,13 +1,18 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ea580c">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
 <title>Gomi Insulation</title>
 <link rel="stylesheet" href="style.css"></head>
 <body>
 <header class="top"><div class="wrap bar">
   <a class="brand" href="#/">🏠 Gomi Insulation</a>
   <form class="search" id="search"><input name="q" placeholder="Search insulation…" aria-label="Search"></form>
-  <nav id="nav"></nav></div></header>
+  <nav id="nav"></nav><span id="cartlink"></span><button id="menubtn" aria-label="Menu" aria-expanded="false">☰</button></div></header>
 <div class="wrap"><p id="flash" class="flash" hidden></p></div>
 <div id="stylepanel" hidden></div>
 <main class="wrap" id="app">Loading…</main>

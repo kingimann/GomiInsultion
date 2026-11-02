@@ -74,11 +74,15 @@ async function loadSession() {
 }
 function renderNav() {
   const n = Object.values(getCart()).reduce((a, b) => a + b, 0);
+  document.getElementById('cartlink').innerHTML = `<a class="cart" href="#/cart">🛒 Cart (${n})</a>`;
   document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a><a href="#/quote">Get a quote</a><a href="#/wishlist">♡ ${getWish().length}</a>` + (session
     ? `${profile?.is_admin ? '<a href="#/admin">Admin</a>' : ''}<a href="#/account">${esc((profile?.name || 'Account').split(' ')[0])}</a><button class="link" id="logout">Log out</button>`
-    : `<a href="#/login">Log in</a><a href="#/register">Sign up</a>`) + `<button class="stylebtn" id="stylebtn" aria-label="Customize style">🎨 Style</button><a class="cart" href="#/cart">Cart (${n})</a>`;
+    : `<a href="#/login">Log in</a><a href="#/register">Sign up</a>`) + `<button class="stylebtn" id="stylebtn" aria-label="Customize style">🎨 Style</button>`;
   document.getElementById('logout')?.addEventListener('click', async () => { await sb.auth.signOut(); location.hash = '#/'; });
 }
+const setMenu = (open) => { document.body.classList.toggle('menu-open', open); document.getElementById('menubtn').setAttribute('aria-expanded', String(open)); document.getElementById('menubtn').textContent = open ? '✕' : '☰'; };
+document.getElementById('menubtn').addEventListener('click', () => setMenu(!document.body.classList.contains('menu-open')));
+document.getElementById('nav').addEventListener('click', (e) => { if (e.target.closest('a,button.link')) setMenu(false); });
 document.getElementById('search').addEventListener('submit', (e) => { e.preventDefault(); location.hash = `#/shop?q=${encodeURIComponent(new FormData(e.target).get('q'))}`; });
 
 // ---- pages ----
@@ -419,7 +423,12 @@ async function route() {
   const [path, qs] = h.split('?'); const q = new URLSearchParams(qs || '');
   const [name = 'home', ...args] = path.split('/').filter(Boolean); const page = pages[name === '' ? 'home' : name];
   if (!page) { $app.innerHTML = '<h1>Not found</h1>'; return; }
-  try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); void $app.offsetWidth; $app.classList.add('in'); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
+  try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); setMenu(false);
+    $app.querySelectorAll('table').forEach((t) => { // label cells so tables can stack into cards on phones
+      const heads = [...t.querySelectorAll('th')].map((x) => x.textContent);
+      t.querySelectorAll('tr').forEach((tr) => [...tr.children].forEach((td, i) => { if (td.tagName === 'TD') td.dataset.label = heads[i] || ''; }));
+    });
+    void $app.offsetWidth; $app.classList.add('in'); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
 }
 window.addEventListener('hashchange', route);
 sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_IN' && /access_token|type=signup/.test(location.hash)) setTimeout(async () => { await loadSession(); flash('Email confirmed. Welcome!'); location.hash = '#/account'; }, 0); if (ev === 'SIGNED_OUT') { session = null; profile = null; renderNav(); } });

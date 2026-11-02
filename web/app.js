@@ -106,7 +106,7 @@ function flash(msg, type = 'ok') {
   const f = document.getElementById('flash'); f.textContent = msg; f.className = `flash ${type}`; f.hidden = false;
   clearTimeout(flash.t); flash.t = setTimeout(() => (f.hidden = true), 5000);
 }
-const img = (p, big) => (safeUrl(p.image_url) ? `<img class="${big ? 'big' : ''}" src="${esc(safeUrl(p.image_url))}" alt="${esc(p.name)}">` : `<div class="ph ${big ? 'big' : ''}">${esc(p.r_value || '🧱')}</div>`);
+const img = (p, big) => (safeUrl(p.image_url) ? `<img class="${big ? 'big' : ''}" src="${esc(safeUrl(p.image_url))}" alt="${esc(p.name)}">` : `<div class="ph ${big ? 'big' : ''}"><span>${esc(p.r_value || '🧱')}</span></div>`);
 let RATINGS = {};
 const loadRatings = async () => { const [{ data }] = await Promise.all([sb.from('product_ratings').select('*'), loadCompare()]); RATINGS = Object.fromEntries((data || []).map((r) => [r.product_id, r])); };
 const stars = (n) => `<span class="stars" aria-label="${n} out of 5">${'★'.repeat(Math.round(n))}${'☆'.repeat(5 - Math.round(n))}</span>`;
@@ -133,13 +133,17 @@ const compareHtml = (p) => {
 };
 const getWish = () => { try { return JSON.parse(localStorage.getItem('wish') || '[]'); } catch { return []; } };
 document.addEventListener('click', (e) => {
+  const ab = e.target.closest('.addbtn');
+  if (ab) { const id = ab.dataset.id, c = getCart(), n = Math.min((c[id] || 0) + 1, Number(ab.dataset.stock) || 1); c[id] = n; setCart(c); flash(`Added ${ab.dataset.name} to your cart.`); ab.textContent = '✓ Added'; ab.classList.add('done'); setTimeout(() => { ab.textContent = '+ Add'; ab.classList.remove('done'); }, 1500); return; }
+  const q = e.target.closest('.qty [data-d]');
+  if (q) { const inp = q.parentElement.querySelector('input'); const v = (parseInt(inp.value, 10) || 0) + Number(q.dataset.d); inp.value = Math.max(Number(inp.min) || 0, Math.min(v, Number(inp.max) || 999)); inp.dispatchEvent(new Event('change', { bubbles: true })); return; }
   const b = e.target.closest('.heart'); if (!b) return;
   const id = Number(b.dataset.id); let w = getWish();
   w = w.includes(id) ? w.filter((x) => x !== id) : [...w, id]; localStorage.setItem('wish', JSON.stringify(w));
   b.textContent = w.includes(id) ? '♥' : '♡'; b.style.color = w.includes(id) ? '#dc2626' : ''; renderNav(); if (location.hash.startsWith('#/wishlist')) route();
 });
 const card = (p) => `<article class="card">${p.stock <= 0 ? '<span class="badge">Sold out</span>' : p.stock <= 10 ? '<span class="badge warn">Low stock</span>' : ''}<button class="heart" data-id="${p.id}" aria-label="Save to wishlist" style="${getWish().includes(p.id) ? 'color:#dc2626' : ''}">${getWish().includes(p.id) ? '♥' : '♡'}</button><a href="#/product/${esc(p.slug)}">${img(p)}</a><div class="pad"><span class="tag">${esc(p.category)}</span>
-  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}${saveBadge(p)}<p class="price">${money(p.price_cents)}</p></div></article>`;
+  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}${saveBadge(p)}<div class="cardfoot"><p class="price">${money(p.price_cents)}</p>${p.stock > 0 ? `<button class="addbtn" data-id="${p.id}" data-stock="${p.stock}" data-name="${esc(p.name)}" aria-label="Add ${esc(p.name)} to cart">+ Add</button>` : '<span class="muted" style="font-size:.85rem">Sold out</span>'}</div></div></article>`;
 const getPromo = () => { try { return JSON.parse(localStorage.getItem('promo') || 'null'); } catch { return null; } };
 const totals = (sub) => { const pr = getPromo(), disc = pr && sub ? Math.floor(sub * pr.percent / 100) : 0; const ship = !sub || sub - disc >= FREE_SHIP ? 0 : SHIP; return { sub, disc, code: disc ? pr.code : '', ship, total: sub - disc + ship }; };
 const totalsHtml = (t) => `<dl class="totals"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount${t.code ? ' (' + esc(t.code) + ')' : ''}</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>Shipping</dt><dd>${t.ship ? money(t.ship) : 'Free'}</dd><dt>Total</dt><dd><strong>${money(t.total)}</strong></dd></dl>`;
@@ -170,11 +174,13 @@ const pages = {};
 pages.home = async () => {
   await loadRatings();
   const { data, error } = await sb.from('products').select('*').eq('active', true).order('id').limit(8); if (error) throw error;
-  const cats = [...new Set((await sb.from('products').select('category').eq('active', true)).data.map((r) => r.category))].sort();
-  return `<section class="hero"><h1>Insulation for every build.</h1><p>Batts, spray foam, rigid board and more. Order online and get it delivered to your site.</p><a class="btn" href="#/shop">Shop all products</a><a class="btn ghost" href="#/quote">Request a quote</a></section>
-  <div class="perks"><div><b>🚚 Free shipping</b>On orders over ${money(FREE_SHIP)}</div><div><b>📐 Coverage calculator</b>Know exactly how much you need</div><div><b>🏗️ Bulk &amp; trade pricing</b>Ask for a custom quote</div></div>
-  <h2>Shop by category</h2><div class="chips">${cats.map((c) => `<a class="chip" href="#/shop?category=${encodeURIComponent(c)}">${esc(c)}</a>`).join('')}</div>
-  <h2>Featured</h2><div class="grid">${data.map(card).join('')}</div>`;
+  const catCount = {}; ((await sb.from('products').select('category').eq('active', true)).data || []).forEach((r) => (catCount[r.category] = (catCount[r.category] || 0) + 1));
+  const cats = Object.keys(catCount).sort();
+  return `<section class="hero"><div class="hero-art" aria-hidden="true"></div><h1>Insulation for every build.</h1><p>Batts, spray foam, rigid board and more. Order online and get it delivered to your site.</p>
+  <div><a class="btn" href="#/shop">Shop all products</a><a class="btn ghost" href="#/quote">Request a quote</a></div><p class="hero-note">✓ Free shipping over ${money(FREE_SHIP)} &nbsp;·&nbsp; ✓ Trade pricing on request</p></section>
+  <div class="perks"><div class="perk"><span class="pi">🚚</span><div><b>Free shipping</b><small>On orders over ${money(FREE_SHIP)}</small></div></div><div class="perk"><span class="pi">📐</span><div><b>Coverage calculator</b><small>Know exactly how much you need</small></div></div><div class="perk"><span class="pi">🏗️</span><div><b>Bulk &amp; trade pricing</b><small>Ask for a custom quote</small></div></div></div>
+  <div class="sect"><h2>Shop by category</h2><a href="#/shop">All products →</a></div><div class="tiles">${cats.map((c) => `<a class="tile" href="#/shop?category=${encodeURIComponent(c)}"><b>${esc(c)}</b><small>${catCount[c]} product${catCount[c] === 1 ? '' : 's'}</small><span aria-hidden="true">→</span></a>`).join('')}</div>
+  <div class="sect"><h2>Featured</h2><a href="#/shop">View all →</a></div><div class="grid">${data.map(card).join('')}</div>`;
 };
 pages.shop = async (_, q) => {
   await loadRatings();
@@ -213,10 +219,12 @@ pages.product = async ([slug]) => {
   const extra = (await sb.from('product_images').select('url').eq('product_id', p.id).order('position')).data || [];
   const pics = [p.image_url, ...extra.map((x) => x.url)].filter((u) => safeUrl(u));
   const gallery = pics.length ? `<div class="gallery"><img class="big" id="mainpic" src="${esc(pics[0])}" alt="${esc(p.name)}">${pics.length > 1 ? `<div class="thumbs">${pics.map((u, i) => `<img src="${esc(u)}" alt="Photo ${i + 1}" class="${i ? '' : 'on'}">`).join('')}</div>` : ''}</div>` : img(p, true);
-  return `<div class="detail"><div>${gallery}</div><div><span class="tag">${esc(p.category)}</span><h1>${esc(p.name)}</h1>
+  return `<div class="crumbs" role="navigation" aria-label="Breadcrumb"><a href="#/shop">Shop</a> › <a href="#/shop?category=${encodeURIComponent(p.category)}">${esc(p.category)}</a> › <span>${esc(p.name)}</span></div>
+  <div class="detail"><div>${gallery}</div><div><span class="tag">${esc(p.category)}</span><h1>${esc(p.name)}</h1>
   <p class="price big">${money(p.price_cents)} <small>per ${esc(p.unit)}</small></p>${p.r_value ? `<p><strong>R-value:</strong> ${esc(p.r_value)}</p>` : ''}<p>${esc(p.description)}</p>
-  ${p.stock > 0 ? `<form class="row" id="add"><input type="number" name="qty" value="1" min="1" max="${p.stock}" aria-label="Quantity"><button class="btn">Add to cart</button></form>
-  <p class="muted">${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : '<p class="flash error">Out of stock</p>'}
+  ${p.stock > 0 ? `<form class="row" id="add"><div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="qty" value="1" min="1" max="${p.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div><button class="btn">Add to cart</button></form>
+  <p class="stockpill ${p.stock <= 10 ? 'low' : ''}"><i></i>${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : '<p class="flash error">Out of stock</p>'}
+  <ul class="trust"><li>🚚 Free shipping on orders over ${money(FREE_SHIP)}</li><li>💬 Questions? <a href="#/messages">Message us</a> or <a href="#/quote">request a quote</a></li></ul>
   ${compareHtml(p)}
   ${coverageOf(p) ? `<div class="calc"><h3>📐 How many do I need?</h3><div class="row"><label>Area (sq ft) <input type="number" id="area" min="1" value="200"></label>
   <label>Waste % <input type="number" id="waste" min="0" max="30" value="10"></label></div><p class="out" id="calcout"></p></div>` : ''}</div></div>
@@ -262,14 +270,16 @@ async function cartLines() {
 }
 pages.cart = async () => {
   const lines = await cartLines();
-  if (!lines.length) return '<h1>Your cart</h1><p>Your cart is empty. <a href="#/shop">Keep shopping</a></p>';
+  if (!lines.length) return '<div class="empty"><div style="font-size:3rem">🛒</div><h1>Your cart is empty</h1><p class="muted">Browse our insulation and add what you need.</p><a class="btn" href="#/shop">Start shopping</a></div>';
   const t = totals(lines.reduce((a, l) => a + l.price_cents * l.qty, 0));
-  const left = FREE_SHIP - t.sub;
-  return `<h1>Your cart</h1><p>${left > 0 ? `Add <b>${money(left)}</b> more for free shipping` : '🎉 You qualify for free shipping!'}</p><div class="progress"><i style="width:${Math.min(100, t.sub / FREE_SHIP * 100)}%"></i></div><form id="cartform"><table><tr><th>Product</th><th>Price</th><th>Qty</th><th>Total</th></tr>
-  ${lines.map((l) => `<tr><td><a href="#/product/${esc(l.slug)}">${esc(l.name)}</a></td><td>${money(l.price_cents)}</td>
-  <td><input type="number" name="${l.id}" value="${l.qty}" min="0" max="${l.stock}"></td><td>${money(l.price_cents * l.qty)}</td></tr>`).join('')}</table>
-  <button class="btn alt">Update quantities</button> <span class="muted">(set 0 to remove)</span></form>
-  <form id="promo" class="row" style="margin-top:14px"><input name="code" placeholder="Discount code" value="${esc(getPromo()?.code || '')}" aria-label="Discount code"><button class="btn ghost">Apply</button></form>${totalsHtml(t)}<a class="btn" href="#/checkout">Checkout</a>`;
+  const left = FREE_SHIP - (t.sub - t.disc);
+  return `<h1>Your cart</h1><div class="cartwrap"><form id="cartform"><div class="citems">${lines.map((l) => `<div class="citem"><a href="#/product/${esc(l.slug)}" class="cthumb">${img(l)}</a>
+    <div class="cinfo"><a class="cname" href="#/product/${esc(l.slug)}">${esc(l.name)}</a><small class="muted">${money(l.price_cents)} per ${esc(l.unit)}</small></div>
+    <div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="${l.id}" value="${l.qty}" min="0" max="${l.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div>
+    <b class="ctotal">${money(l.price_cents * l.qty)}</b><button type="button" class="crm" data-id="${l.id}" aria-label="Remove ${esc(l.name)}">✕</button></div>`).join('')}</div></form>
+  <aside class="summary"><h3>Order summary</h3><p class="muted" style="margin:0">${left > 0 ? `Add <b>${money(left)}</b> more for free shipping` : '🎉 You qualify for free shipping!'}</p><div class="progress"><i style="width:${Math.min(100, (t.sub - t.disc) / FREE_SHIP * 100)}%"></i></div>
+  <form id="promo" class="row" style="flex-wrap:nowrap"><input name="code" placeholder="Discount code" value="${esc(getPromo()?.code || '')}" aria-label="Discount code" style="flex:1;min-width:0"><button class="btn ghost">Apply</button></form>
+  ${totalsHtml(t)}<a class="btn block" href="#/checkout">Checkout</a><a class="muted" href="#/shop" style="text-align:center;display:block;margin-top:10px">← Continue shopping</a></aside></div>`;
 };
 pages.cart.after = () => {
   document.getElementById('promo')?.addEventListener('submit', async (e) => {
@@ -280,6 +290,9 @@ pages.cart.after = () => {
     if (!data) { localStorage.removeItem('promo'); flash('That code is not valid for this order.', 'error'); return route(); }
     localStorage.setItem('promo', JSON.stringify({ code, percent: data })); flash(`Code ${code} applied: ${data}% off.`); route();
   });
+  const cf = document.getElementById('cartform'); let tm = null;
+  cf?.addEventListener('change', () => { clearTimeout(tm); tm = setTimeout(() => cf.requestSubmit(), 350); });
+  cf?.addEventListener('click', (e) => { const r = e.target.closest('.crm'); if (r) { cf.querySelector(`input[name="${r.dataset.id}"]`).value = 0; cf.requestSubmit(); } });
   document.getElementById('cartform')?.addEventListener('submit', (e) => {
   e.preventDefault(); const cart = {};
   for (const [id, v] of new FormData(e.target)) { const q = parseInt(v, 10); if (q > 0) cart[id] = q; }

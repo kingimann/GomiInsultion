@@ -13,27 +13,38 @@ const THEME_OPTS = {
   density: { label: 'Density', vals: [['', 'Comfortable'], ['compact', 'Compact']] },
 };
 const PRESETS = { Default: {}, Ocean: { accent: 'blue', radius: 'pill' }, Forest: { accent: 'green', font: 'classic' }, Midnight: { mode: 'dark', accent: 'purple' }, Workshop: { accent: 'slate', radius: 'sharp', font: 'technical', density: 'compact' } };
+// The theme is site-wide: only admins can change it (saved in the database); everyone else just receives it.
+// A cached copy is applied immediately to avoid a flash of the default look.
 let theme = {};
-try { theme = JSON.parse(localStorage.getItem('theme') || 'null') || window.GOMI.DEFAULT_THEME || {}; } catch { theme = window.GOMI.DEFAULT_THEME || {}; }
+try { theme = JSON.parse(localStorage.getItem('site_theme') || 'null') || window.GOMI.DEFAULT_THEME || {}; } catch { theme = window.GOMI.DEFAULT_THEME || {}; }
 function applyTheme() {
   for (const k of Object.keys(THEME_OPTS)) { if (theme[k]) document.documentElement.dataset[k] = theme[k]; else delete document.documentElement.dataset[k]; }
-  try { localStorage.setItem('theme', JSON.stringify(theme)); } catch {}
+  try { localStorage.setItem('site_theme', JSON.stringify(theme)); } catch {}
 }
 applyTheme();
+async function loadSiteTheme() {
+  const { data } = await sb.from('site_settings').select('value').eq('key', 'theme').maybeSingle();
+  if (data) { theme = data.value || {}; applyTheme(); }
+}
+async function saveSiteTheme() {
+  if (!profile?.is_admin) return;
+  const { error } = await sb.from('site_settings').upsert({ key: 'theme', value: theme, updated_at: new Date().toISOString() });
+  error ? fail(error) : flash('Site style saved for all visitors.');
+}
 function buildStylePanel() {
   const el = document.getElementById('stylepanel'); if (!el) return;
-  el.innerHTML = `<h3>🎨 Customize style</h3><fieldset><legend>Presets</legend><div class="opts">${Object.keys(PRESETS).map((n) => `<button data-preset="${n}">${n}</button>`).join('')}</div></fieldset>
+  el.innerHTML = `<h3>🎨 Site style</h3><p class="muted" style="margin:-4px 0 10px;font-size:.85rem">Changes apply to every visitor (admins only).</p><fieldset><legend>Presets</legend><div class="opts">${Object.keys(PRESETS).map((n) => `<button data-preset="${n}">${n}</button>`).join('')}</div></fieldset>
   ${Object.entries(THEME_OPTS).map(([k, o]) => `<fieldset><legend>${o.label}</legend><div class="opts">${o.vals.map(([v, l]) => o.swatch
     ? `<button class="sw" data-k="${k}" data-v="${v}" style="background:${l}" aria-label="${v || 'orange'}" aria-pressed="${(theme[k] || '') === v}"></button>`
     : `<button data-k="${k}" data-v="${v}" aria-pressed="${(theme[k] || '') === v}">${l}</button>`).join('')}</div></fieldset>`).join('')}`;
 }
 document.addEventListener('click', (e) => {
   const panel = document.getElementById('stylepanel');
-  if (e.target.closest('#stylebtn')) { buildStylePanel(); panel.hidden = !panel.hidden; return; }
+  if (e.target.closest('#stylebtn')) { if (!profile?.is_admin) return; buildStylePanel(); panel.hidden = !panel.hidden; return; }
   if (panel && !panel.hidden && !e.target.closest('#stylepanel')) panel.hidden = true;
-  const b = e.target.closest('#stylepanel button'); if (!b) return;
+  const b = e.target.closest('#stylepanel button'); if (!b || !profile?.is_admin) return;
   if (b.dataset.preset) theme = { ...PRESETS[b.dataset.preset] }; else theme = { ...theme, [b.dataset.k]: b.dataset.v };
-  applyTheme(); buildStylePanel();
+  applyTheme(); buildStylePanel(); saveSiteTheme();
 });
 
 // ---- helpers ----
@@ -70,14 +81,14 @@ const dateOf = (s) => new Date(s).toLocaleString();
 async function loadSession() {
   const { data } = await sb.auth.getSession(); session = data.session; profile = null;
   if (session) { const r = await sb.from('profiles').select('*').eq('id', session.user.id).maybeSingle(); profile = r.data; }
-  renderNav();
+  renderNav(); if (!profile?.is_admin) { const pn = document.getElementById('stylepanel'); if (pn) pn.hidden = true; }
 }
 function renderNav() {
   const n = Object.values(getCart()).reduce((a, b) => a + b, 0);
   document.getElementById('cartlink').innerHTML = `<a class="cart" href="#/cart">🛒 Cart (${n})</a>`;
   document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a><a href="#/quote">Get a quote</a><a href="#/wishlist">♡ ${getWish().length}</a>` + (session
     ? `${profile?.is_admin ? '<a href="#/admin">Admin</a>' : ''}<a href="#/account">${esc((profile?.name || 'Account').split(' ')[0])}</a><button class="link" id="logout">Log out</button>`
-    : `<a href="#/login">Log in</a><a href="#/register">Sign up</a>`) + `<button class="stylebtn" id="stylebtn" aria-label="Customize style">🎨 Style</button>`;
+    : `<a href="#/login">Log in</a><a href="#/register">Sign up</a>`) + `${profile?.is_admin ? '<button class="stylebtn" id="stylebtn" aria-label="Customize site style">🎨 Style</button>' : ''}`;
   document.getElementById('logout')?.addEventListener('click', async () => { await sb.auth.signOut(); location.hash = '#/'; });
 }
 const setMenu = (open) => { document.body.classList.toggle('menu-open', open); document.getElementById('menubtn').setAttribute('aria-expanded', String(open)); document.getElementById('menubtn').textContent = open ? '✕' : '☰'; };
@@ -460,4 +471,5 @@ sb.auth.onAuthStateChange((ev) => {
   if (ev === 'SIGNED_OUT') { session = null; profile = null; renderNav(); }
 });
 if (C.ANNOUNCEMENT) { const a = document.createElement('div'); a.className = 'announce'; a.textContent = C.ANNOUNCEMENT; document.body.prepend(a); }
+loadSiteTheme();
 loadSession().then(route);

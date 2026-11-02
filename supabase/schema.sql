@@ -286,3 +286,11 @@ begin
 end $$;
 drop trigger if exists low_stock_notify on public.products;
 create trigger low_stock_notify after update of stock on public.products for each row execute function public.trg_low_stock();
+
+-- Site-wide settings (e.g. the storefront theme). Everyone can read; only admins can change.
+create table if not exists public.site_settings (key text primary key, value jsonb not null, updated_at timestamptz not null default now());
+alter table public.site_settings enable row level security;
+drop policy if exists "read settings" on public.site_settings;
+create policy "read settings" on public.site_settings for select using (true);
+drop policy if exists "admin settings" on public.site_settings;
+create policy "admin settings" on public.site_settings for all using (public.is_admin()) with check (public.is_admin());

@@ -69,5 +69,5 @@ Postgres triggers call the `notify` edge function (customer order confirmation, 
 Until step 4 is done the triggers do nothing, so orders are never affected.
 
 ## Styling
-Visitors can press **🎨 Style** to pick a preset (Default, Ocean, Forest, Midnight, Workshop) or mix mode (auto/light/dark), colour, corner shape, font and density; the choice is remembered per browser.
-Set the default look for new visitors with `DEFAULT_THEME` in `web/config.js`, e.g. `{ accent: 'blue', radius: 'pill' }`.
+Admins see a **🎨 Style** button: pick a preset (Default, Ocean, Forest, Midnight, Workshop) or mix mode (auto/light/dark), colour, corner shape, font and density. The choice is saved in the database (`site_settings`) and applies to every visitor. Customers never see the button.
+`DEFAULT_THEME` in `web/config.js` is only the fallback before a theme has been saved.

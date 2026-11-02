@@ -259,7 +259,25 @@ pages.order = async ([id], q) => {
 const authForm = (reg) => `<div class="narrow"><h1>${reg ? 'Create account' : 'Log in'}</h1><form id="auth" class="stack">
   ${reg ? '<label>Name<input name="name" required></label>' : ''}<label>Email<input type="email" name="email" required></label>
   <label>Password<input type="password" name="password" required minlength="${reg ? 8 : 1}"></label><button class="btn">${reg ? 'Sign up' : 'Log in'}</button></form>
+  ${reg ? '' : '<p><a href="#/forgot">Forgot your password?</a></p>'}
   <p>${reg ? 'Have an account? <a href="#/login">Log in</a>' : 'New here? <a href="#/register">Create an account</a>'}</p></div>`;
+pages.forgot = () => `<div class="narrow"><h1>Reset your password</h1><p class="muted">Enter your email and we'll send you a link to choose a new password.</p>
+  <form id="ff" class="stack"><label>Email<input type="email" name="email" required autocomplete="email"></label><button class="btn">Send reset link</button></form><p><a href="#/login">Back to log in</a></p></div>`;
+pages.forgot.after = () => document.getElementById('ff')?.addEventListener('submit', async (e) => {
+  e.preventDefault(); const email = new FormData(e.target).get('email').trim();
+  const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+  if (error) return fail(error);
+  e.target.outerHTML = '<p class="flash ok">If an account exists for that email, a reset link is on its way. Check your inbox (and spam).</p>';
+});
+pages.reset = () => !session ? '<div class="narrow"><h1>Link expired</h1><p>This reset link is invalid or has expired. <a href="#/forgot">Request a new one</a>.</p></div>'
+  : `<div class="narrow"><h1>Choose a new password</h1><form id="rp" class="stack"><label>New password<input type="password" name="password" minlength="8" required autocomplete="new-password"></label>
+  <label>Confirm password<input type="password" name="confirm" minlength="8" required autocomplete="new-password"></label><button class="btn">Update password</button></form></div>`;
+pages.reset.after = () => document.getElementById('rp')?.addEventListener('submit', async (e) => {
+  e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+  if (f.password !== f.confirm) return fail(new Error('Passwords do not match.'));
+  const { error } = await sb.auth.updateUser({ password: f.password });
+  if (error) return fail(error); flash('Password updated.'); location.hash = '#/account';
+});
 pages.login = () => authForm(false); pages.register = () => authForm(true);
 const authAfter = (reg) => () => document.getElementById('auth')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
@@ -278,6 +296,7 @@ pages.account = async () => {
   const { data } = await sb.from('orders').select('*').eq('user_id', session.user.id).order('id', { ascending: false });
   const addrs = (await sb.from('addresses').select('*').order('is_default', { ascending: false }).order('id')).data;
   return `<h1>My account</h1><p>${esc(profile?.name)} · ${esc(session.user.email)}</p><h2>Order history</h2>${ordersTable(data, '#/order')}
+  <h2>Password</h2><form id="cpw" class="row"><input type="password" name="password" minlength="8" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn ghost">Change password</button></form>
   <h2>Saved addresses</h2>${addrs.length ? addrs.map((a) => `<div class="addr"><b>${esc(a.label)}</b>${a.is_default ? ' <span class="status paid">default</span>' : ''}<br>${esc(a.name)}<br>${esc(a.address)}, ${esc(a.city)} ${esc(a.postcode)}${a.phone ? '<br>' + esc(a.phone) : ''}<br>
   ${a.is_default ? '' : `<button class="link defaddr" data-id="${a.id}" style="color:var(--brand)">Make default</button> · `}<button class="link deladdr" data-id="${a.id}" style="color:var(--err)">Delete</button></div>`).join('') : '<p class="muted">No saved addresses yet.</p>'}
   <h3>Add an address</h3><form id="af" class="stack narrow"><label>Label<input name="label" value="Home" maxlength="60"></label><label>Full name<input name="name" required value="${esc(profile?.name || '')}"></label><label>Phone<input name="phone"></label>
@@ -302,6 +321,10 @@ pages.quote.after = () => document.getElementById('qf')?.addEventListener('submi
 });
 
 pages.account.after = () => {
+  document.getElementById('cpw')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const { error } = await sb.auth.updateUser({ password: new FormData(e.target).get('password') });
+    error ? fail(error) : (flash('Password changed.'), e.target.reset());
+  });
   document.getElementById('af')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const makeDef = !!f.is_default; delete f.is_default;
     const { data, error } = await sb.from('addresses').insert(f).select('id').single(); if (error) return fail(error);
@@ -431,6 +454,10 @@ async function route() {
     void $app.offsetWidth; $app.classList.add('in'); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
 }
 window.addEventListener('hashchange', route);
-sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_IN' && /access_token|type=signup/.test(location.hash)) setTimeout(async () => { await loadSession(); flash('Email confirmed. Welcome!'); location.hash = '#/account'; }, 0); if (ev === 'SIGNED_OUT') { session = null; profile = null; renderNav(); } });
+sb.auth.onAuthStateChange((ev) => {
+  if (ev === 'PASSWORD_RECOVERY') setTimeout(async () => { await loadSession(); location.hash = '#/reset'; route(); }, 0);
+  else if (ev === 'SIGNED_IN' && /type=signup/.test(location.hash)) setTimeout(async () => { await loadSession(); flash('Email confirmed. Welcome!'); location.hash = '#/account'; }, 0);
+  if (ev === 'SIGNED_OUT') { session = null; profile = null; renderNav(); }
+});
 if (C.ANNOUNCEMENT) { const a = document.createElement('div'); a.className = 'announce'; a.textContent = C.ANNOUNCEMENT; document.body.prepend(a); }
 loadSession().then(route);

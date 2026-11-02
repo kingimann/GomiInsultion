@@ -116,3 +116,15 @@ insert into public.products (slug,name,category,description,price_cents,unit,r_v
  ('vapour-barrier-6mil','Poly Vapour Barrier 6 mil','Accessories','Clear polyethylene sheeting, 10 x 100 ft roll.',6499,'roll','',70),
  ('sealing-tape','Acoustic Sealant & Tape Kit','Accessories','Sealing tape and acoustical sealant for air-tight assemblies.',1999,'kit','',80)
 on conflict (slug) do nothing;
+
+-- Quote requests (anyone can submit; only admins can read)
+create table if not exists public.quotes (
+  id bigint generated always as identity primary key, user_id uuid references auth.users(id),
+  name text not null check (length(name) between 1 and 200), email text not null check (length(email) between 3 and 200),
+  phone text not null default '' check (length(phone) <= 50), message text not null check (length(message) between 1 and 5000),
+  created_at timestamptz not null default now());
+alter table public.quotes enable row level security;
+drop policy if exists "submit quote" on public.quotes;
+create policy "submit quote" on public.quotes for insert with check (user_id is null or user_id = auth.uid());
+drop policy if exists "admin read quotes" on public.quotes;
+create policy "admin read quotes" on public.quotes for select using (public.is_admin());

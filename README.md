@@ -30,3 +30,12 @@ Without a Stripe key, orders are placed as "pending" and invoiced manually.
 ## Hosting
 GitHub Pages only serves static files, so it can't run this server. Deploy the repo to any Node host
 (Render, Railway, Fly.io…) using the included `Dockerfile`; mount a persistent volume at `/app/data`.
+
+## Running from GitHub (for now)
+Open the repo on GitHub → **Code → Codespaces → Create codespace**. It starts the store automatically and
+opens it on forwarded port 3000 (admin login is in `.devcontainer/devcontainer.json` — change the password).
+Codespaces sleep when idle, so this is for testing/demos, not a public shop.
+
+## Moving to Supabase later
+All data access is in `src/db.js` and the SQL in `src/server.js`; accounts live in `src/auth.js`.
+The migration would swap SQLite for Supabase Postgres, and (optionally) the custom accounts for Supabase Auth.

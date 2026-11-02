@@ -1,0 +1,8 @@
+{
+  "name": "Gomi Insulation",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "forwardPorts": [3000],
+  "portsAttributes": { "3000": { "label": "Store", "onAutoForward": "openBrowser" } },
+  "containerEnv": { "ADMIN_EMAIL": "admin@gomiinsulation.com", "ADMIN_PASSWORD": "change-me-now" },
+  "postAttachCommand": "npm start"
+}

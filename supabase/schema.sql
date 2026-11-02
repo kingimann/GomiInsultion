@@ -139,3 +139,17 @@ drop policy if exists "admin update images" on storage.objects;
 create policy "admin update images" on storage.objects for update using (bucket_id = 'product-images' and public.is_admin());
 drop policy if exists "admin delete images" on storage.objects;
 create policy "admin delete images" on storage.objects for delete using (bucket_id = 'product-images' and public.is_admin());
+
+-- Payment helpers: callable only by the Stripe edge functions (service role)
+create or replace function public.mark_order_paid(oid bigint) returns void language sql security definer set search_path = public as $$
+  update orders set status = 'paid' where id = oid and status = 'pending' $$;
+create or replace function public.cancel_unpaid_order(oid bigint) returns void language plpgsql security definer set search_path = public as $$
+declare i record;
+begin
+  perform 1 from orders where id = oid and status = 'pending' for update;
+  if not found then return; end if;
+  for i in select * from order_items where order_id = oid loop update products set stock = stock + i.qty where id = i.product_id; end loop;
+  update orders set status = 'cancelled' where id = oid;
+end $$;
+revoke all on function public.mark_order_paid(bigint), public.cancel_unpaid_order(bigint) from public, anon, authenticated;
+grant execute on function public.mark_order_paid(bigint), public.cancel_unpaid_order(bigint) to service_role;

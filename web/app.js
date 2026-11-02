@@ -138,7 +138,7 @@ pages.checkout = async () => {
   ${f('name', 'Full name', profile?.name, 'required')}${f('email', 'Email', session?.user.email, 'type="email" required')}${f('phone', 'Phone')}
   ${f('address', 'Delivery address', '', 'required')}${f('city', 'City', '', 'required')}${f('postcode', 'Postal / ZIP code', '', 'required')}
   <label>Order notes<textarea name="notes"></textarea></label>
-  <p class="muted">Payment: we'll email you an invoice and payment options once your order is confirmed.</p><button class="btn">Place order</button></form>
+  <p class="muted">${C.PAYMENTS ? 'You will be taken to a secure Stripe page to pay by card.' : "Payment: we'll email you an invoice and payment options once your order is confirmed."}</p><button class="btn">${C.PAYMENTS ? 'Continue to payment' : 'Place order'}</button></form>
   <aside><h3>Order summary</h3><ul>${lines.map((l) => `<li>${l.qty} × ${esc(l.name)} <span>${money(l.qty * l.price_cents)}</span></li>`).join('')}</ul>${totalsHtml(t)}</aside></div>`;
 };
 pages.checkout.after = () => document.getElementById('co')?.addEventListener('submit', async (e) => {
@@ -147,7 +147,12 @@ pages.checkout.after = () => document.getElementById('co')?.addEventListener('su
   const items = Object.entries(getCart()).map(([id, qty]) => ({ id: Number(id), qty }));
   const { data, error } = await sb.rpc('place_order', { items, customer });
   btn.disabled = false; if (error) return fail(error);
-  setCart({}); flash(`Thanks! Order #${data.id} received. We'll email you an invoice shortly.`);
+  setCart({});
+  if (C.PAYMENTS) {
+    const pay = await sb.functions.invoke('create-checkout', { body: { order_id: data.id, key: session ? null : data.key } });
+    if (pay.data?.url) return (location.href = pay.data.url);
+    flash('Order saved, but we could not start the payment. We will contact you to arrange it.', 'error');
+  } else flash(`Thanks! Order #${data.id} received. We'll email you an invoice shortly.`);
   location.hash = `#/order/${data.id}` + (session ? '' : `?k=${data.key}`);
 });
 
@@ -158,6 +163,7 @@ const orderHtml = (o, items, admin) => `<h1>Order #${o.id}</h1><p><span class="s
   <h3>Delivery</h3><p>${esc(o.name)}<br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br>${esc(o.email)} ${esc(o.phone)}</p>${o.notes ? `<p><em>${esc(o.notes)}</em></p>` : ''}
   ${admin ? `<form class="row" id="status"><select name="status">${STATUSES.map((s) => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select><button class="btn alt">Update status</button></form>` : ''}`;
 pages.order = async ([id], q) => {
+  if (q.get('paid')) flash('Payment received. Thank you! Your order will update to "paid" in a moment.');
   let o, items;
   if (q.get('k')) { const { data } = await sb.rpc('get_guest_order', { oid: Number(id), k: q.get('k') }); if (data) { o = data; items = data.items; } }
   else { o = (await sb.from('orders').select('*').eq('id', id).maybeSingle()).data; if (o) items = (await sb.from('order_items').select('*').eq('order_id', id)).data; }

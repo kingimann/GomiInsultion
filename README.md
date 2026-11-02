@@ -45,3 +45,11 @@ A static storefront (no Node server) that uses Supabase for accounts (Auth), pro
 security) and order placement (`place_order` RPC, which takes prices/stock from the DB). `supabase/schema.sql` creates everything.
 Deploys to GitHub Pages via `.github/workflows/pages.yml` (Settings → Pages → Source: **GitHub Actions**).
 To make yourself admin after signing up: `update public.profiles set is_admin = true where email = 'you@example.com';`
+
+## Card payments on the Supabase version (Stripe)
+1. Install the [Supabase CLI](https://supabase.com/docs/guides/cli) and run `supabase login`, then `supabase link --project-ref lsvcpblpycvqnagxfvlz`.
+2. Set secrets (never commit these): `supabase secrets set STRIPE_SECRET_KEY=sk_... SITE_URL=https://kingimann.github.io/GomiInsultion`
+3. Deploy: `supabase functions deploy create-checkout` and `supabase functions deploy stripe-webhook --no-verify-jwt`
+4. In the Stripe dashboard add a webhook to `https://lsvcpblpycvqnagxfvlz.supabase.co/functions/v1/stripe-webhook`
+   for `checkout.session.completed` and `checkout.session.expired`, then `supabase secrets set STRIPE_WEBHOOK_SECRET=whsec_...`
+5. Set `PAYMENTS: true` in `web/config.js` and push. Use Stripe test keys first (card 4242 4242 4242 4242).

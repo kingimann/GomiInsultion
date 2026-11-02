@@ -108,3 +108,17 @@ body{padding-bottom:env(safe-area-inset-bottom)}.top{padding-top:env(safe-area-i
 @media(max-width:760px){#flash{left:16px;right:16px;transform:none;max-width:none;text-align:center;padding:10px 14px;font-size:.95rem}}
 .fld{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px;margin:8px 0}.fld .row{gap:8px}.fld .btn{padding:8px 12px;min-height:0}
 code{background:var(--brand-soft);padding:2px 6px;border-radius:6px;font-size:.88em;word-break:break-all}
+/* notifications & messaging */
+.dot{display:inline-block;min-width:18px;padding:0 5px;margin-left:4px;border-radius:99px;background:#dc2626;color:#fff;font-size:.72rem;font-weight:700;line-height:18px;text-align:center}
+.bell{position:relative;margin-right:6px}
+#notifpanel{position:fixed;right:16px;top:64px;z-index:45;width:min(380px,calc(100vw - 32px));background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 12px 40px rgba(0,0,0,.25);padding:14px;max-height:75vh;overflow:auto}
+#notifpanel[hidden]{display:none}
+.notif{display:grid;gap:2px;padding:10px 12px;margin:6px 0;border-radius:var(--rb);text-decoration:none;color:var(--fg);background:var(--bg);border:1px solid var(--line)}
+.notif.unread{border-left:4px solid var(--brand);background:var(--brand-soft)}.notif span{font-size:.9rem;color:var(--muted)}
+.thread{display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow-y:auto;padding:4px}
+.bubble{max-width:80%;padding:10px 14px;border-radius:var(--r);background:var(--card);border:1px solid var(--line)}.bubble.mine{align-self:flex-end;background:var(--brand);color:#fff;border-color:transparent}
+.bubble .who{font-size:.75rem;font-weight:700;opacity:.8}.bubble .txt{white-space:pre-wrap;word-break:break-word}.bubble small{opacity:.7;font-size:.72rem}
+.conv{display:grid;gap:2px;padding:14px 16px;margin:8px 0;border-radius:var(--r);background:var(--card);border:1px solid var(--line);text-decoration:none;color:var(--fg);box-shadow:var(--shadow)}.conv.unread{border-left:4px solid var(--brand)}
+@media(max-width:760px){#notifpanel{left:0;right:0;top:auto;bottom:0;width:auto;border-radius:20px 20px 0 0;max-height:75vh;padding-bottom:calc(14px + env(safe-area-inset-bottom))}.bubble{max-width:92%}}
+@media(min-width:761px){.bar{gap:10px;flex-wrap:nowrap}.search{min-width:110px}nav{gap:2px;flex-wrap:nowrap}nav a,nav button.link{padding:6px 9px;white-space:nowrap}#cartlink{white-space:nowrap}}
+@media(min-width:761px) and (max-width:1060px){.bar{flex-wrap:wrap}}

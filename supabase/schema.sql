@@ -401,3 +401,188 @@ begin
 end $$;
 drop trigger if exists form_submitted_notify on public.form_submissions;
 create trigger form_submitted_notify after insert on public.form_submissions for each row execute function public.trg_form_submitted();
+
+-- More form options: new field types (radio, multi, rating, url, time, display blocks), per-field limits,
+-- and form-level settings (button label, close date, response cap, login required).
+alter table public.forms add column if not exists submit_label text not null default 'Submit' check (length(submit_label) between 1 and 60);
+alter table public.forms add column if not exists closes_at timestamptz;
+alter table public.forms add column if not exists max_responses int check (max_responses is null or max_responses > 0);
+alter table public.forms add column if not exists require_login boolean not null default false;
+
+create or replace function public.form_status(form_slug text) returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare f public.forms; n int;
+begin
+  select * into f from forms where slug = form_slug and active;
+  if not found then return jsonb_build_object('open', false, 'reason', 'missing'); end if;
+  if f.closes_at is not null and f.closes_at <= now() then return jsonb_build_object('open', false, 'reason', 'closed'); end if;
+  if f.max_responses is not null then
+    select count(*) into n from form_submissions where form_id = f.id;
+    if n >= f.max_responses then return jsonb_build_object('open', false, 'reason', 'full'); end if;
+  end if;
+  return jsonb_build_object('open', true, 'reason', '');
+end $$;
+grant execute on function public.form_status(text) to anon, authenticated;
+
+create or replace function public.submit_form(form_slug text, answers jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare f public.forms; fld jsonb; v jsonb; txt text; k text; clean jsonb := '{}'; ftype text; item text; st jsonb; lim numeric;
+begin
+  select * into f from forms where slug = form_slug and active;
+  if not found then raise exception 'This form is not available'; end if;
+  st := public.form_status(form_slug);
+  if not (st->>'open')::boolean then raise exception 'This form is no longer accepting responses'; end if;
+  if f.require_login and auth.uid() is null then raise exception 'Please log in to submit this form'; end if;
+  if (select count(*) from form_submissions where form_id = f.id and created_at > now() - interval '1 hour') >= 200 then
+    raise exception 'Too many submissions right now, please try again later'; end if;
+  for fld in select * from jsonb_array_elements(f.fields) loop
+    k := fld->>'id'; ftype := coalesce(fld->>'type', 'text'); v := answers->k;
+    if ftype in ('heading', 'paragraph', 'divider') then continue; end if;
+    if ftype = 'multi' then
+      if jsonb_typeof(v) = 'array' and jsonb_array_length(v) > 0 then
+        if jsonb_array_length(v) > 50 then raise exception '"%" has too many choices', fld->>'label'; end if;
+        for item in select jsonb_array_elements_text(v) loop
+          if not (fld->'options') ? item then raise exception '"%" has an invalid choice', fld->>'label'; end if;
+        end loop;
+        clean := clean || jsonb_build_object(k, v);
+      elsif coalesce((fld->>'required')::boolean, false) then raise exception '"%" is required', fld->>'label';
+      end if;
+      continue;
+    end if;
+    txt := case jsonb_typeof(v) when 'string' then v #>> '{}' when 'boolean' then v::text when 'number' then v::text else null end;
+    if coalesce((fld->>'required')::boolean, false) and (txt is null or btrim(txt) = '' or txt = 'false') then
+      raise exception '"%" is required', fld->>'label'; end if;
+    if txt is null or btrim(txt) = '' then continue; end if;
+    if length(txt) > coalesce(nullif(fld->>'maxlength', '')::int, 5000) then raise exception '"%" is too long', fld->>'label'; end if;
+    if ftype = 'email' and txt !~ '^\S+@\S+\.\S+$' then raise exception '"%" must be a valid email', fld->>'label'; end if;
+    if ftype = 'url' and txt !~* '^https?://\S+$' then raise exception '"%" must be a link starting with http:// or https://', fld->>'label'; end if;
+    if ftype = 'time' and txt !~ '^[0-9]{2}:[0-9]{2}$' then raise exception '"%" must be a time', fld->>'label'; end if;
+    if ftype = 'date' and txt !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then raise exception '"%" must be a date', fld->>'label'; end if;
+    if ftype = 'rating' and txt !~ '^[1-5]$' then raise exception '"%" must be between 1 and 5', fld->>'label'; end if;
+    if ftype = 'number' then
+      if txt !~ '^-?[0-9]+(\.[0-9]+)?$' then raise exception '"%" must be a number', fld->>'label'; end if;
+      lim := nullif(fld->>'min', '')::numeric; if lim is not null and txt::numeric < lim then raise exception '"%" must be at least %', fld->>'label', lim; end if;
+      lim := nullif(fld->>'max', '')::numeric; if lim is not null and txt::numeric > lim then raise exception '"%" must be at most %', fld->>'label', lim; end if;
+    end if;
+    if ftype in ('select', 'radio') and not (fld->'options') ? txt then raise exception '"%" has an invalid choice', fld->>'label'; end if;
+    if ftype = 'file' and (txt not like f.slug || '/%' or not exists (select 1 from storage.objects where bucket_id = 'form-uploads' and name = txt)) then
+      raise exception '"%" upload was not found, please try again', fld->>'label'; end if;
+    clean := clean || jsonb_build_object(k, case when ftype = 'checkbox' then to_jsonb(txt = 'true') else to_jsonb(txt) end);
+  end loop;
+  insert into form_submissions (form_id, data, user_id) values (f.id, clean, auth.uid());
+end $$;
+
+-- ===== In-app notifications =====
+create table if not exists public.notifications (
+  id bigint generated always as identity primary key, user_id uuid not null references auth.users(id) on delete cascade,
+  kind text not null, title text not null, body text not null default '', link text not null default '',
+  read boolean not null default false, created_at timestamptz not null default now());
+create index if not exists notifications_user_idx on public.notifications (user_id, read, created_at desc);
+alter table public.notifications enable row level security;
+drop policy if exists "own notifications" on public.notifications;
+create policy "own notifications" on public.notifications for select using (user_id = auth.uid());
+drop policy if exists "mark own read" on public.notifications;
+create policy "mark own read" on public.notifications for update using (user_id = auth.uid()) with check (user_id = auth.uid());
+drop policy if exists "delete own notifications" on public.notifications;
+create policy "delete own notifications" on public.notifications for delete using (user_id = auth.uid());
+-- (no insert policy: only the trigger helpers below create notifications)
+
+create or replace function public.notify_user(uid uuid, k text, t text, b text, l text) returns void
+language sql security definer set search_path = public as $$
+  insert into notifications (user_id, kind, title, body, link) select uid, k, left(t, 200), left(b, 300), l where uid is not null $$;
+create or replace function public.notify_admins(k text, t text, b text, l text) returns void
+language sql security definer set search_path = public as $$
+  insert into notifications (user_id, kind, title, body, link) select id, k, left(t, 200), left(b, 300), l from profiles where is_admin $$;
+revoke all on function public.notify_user(uuid, text, text, text, text), public.notify_admins(text, text, text, text) from public, anon, authenticated;
+
+create or replace function public.trg_n_order() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if tg_op = 'INSERT' then
+    perform notify_admins('order', 'New order #' || new.id, new.name || ' · $' || to_char(new.total_cents / 100.0, 'FM999990.00'), '#/admin/orders/' || new.id);
+    perform notify_user(new.user_id, 'order', 'Order #' || new.id || ' received', 'Total $' || to_char(new.total_cents / 100.0, 'FM999990.00'), '#/order/' || new.id);
+  elsif new.status is distinct from old.status then
+    perform notify_user(new.user_id, 'order', 'Order #' || new.id || ' is now ' || new.status, '', '#/order/' || new.id);
+  end if;
+  return new;
+end $$;
+drop trigger if exists n_order_ins on public.orders;
+create trigger n_order_ins after insert on public.orders for each row execute function public.trg_n_order();
+drop trigger if exists n_order_upd on public.orders;
+create trigger n_order_upd after update of status on public.orders for each row execute function public.trg_n_order();
+
+create or replace function public.trg_n_stock() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.stock <= 10 and old.stock > 10 then perform notify_admins('stock', 'Low stock: ' || new.name, new.stock || ' left', '#/admin/products/' || new.id); end if;
+  return new;
+end $$;
+drop trigger if exists n_stock on public.products;
+create trigger n_stock after update of stock on public.products for each row execute function public.trg_n_stock();
+
+create or replace function public.trg_n_form() returns trigger language plpgsql security definer set search_path = public as $$
+declare t text; n boolean;
+begin
+  select title, notify into t, n from forms where id = new.form_id;
+  if n then perform notify_admins('form', 'New response: ' || t, '', '#/admin/forms/' || new.form_id || '/responses'); end if;
+  return new;
+end $$;
+drop trigger if exists n_form on public.form_submissions;
+create trigger n_form after insert on public.form_submissions for each row execute function public.trg_n_form();
+
+create or replace function public.trg_n_quote() returns trigger language plpgsql security definer set search_path = public as $$
+begin perform notify_admins('quote', 'New quote request', new.name || ': ' || left(new.message, 120), '#/admin/quotes'); return new; end $$;
+drop trigger if exists n_quote on public.quotes;
+create trigger n_quote after insert on public.quotes for each row execute function public.trg_n_quote();
+
+-- ===== Private messaging (customer <-> store team) =====
+create table if not exists public.conversations (
+  id bigint generated always as identity primary key, customer_id uuid not null references auth.users(id) on delete cascade,
+  created_by uuid not null default auth.uid() references auth.users(id), subject text not null check (length(subject) between 1 and 200),
+  closed boolean not null default false, created_at timestamptz not null default now(), last_message_at timestamptz not null default now());
+create table if not exists public.messages (
+  id bigint generated always as identity primary key, conversation_id bigint not null references public.conversations(id) on delete cascade,
+  sender_id uuid not null default auth.uid() references auth.users(id), body text not null check (length(btrim(body)) between 1 and 5000),
+  created_at timestamptz not null default now());
+create index if not exists messages_conv_idx on public.messages (conversation_id, id);
+alter table public.conversations enable row level security;
+alter table public.messages enable row level security;
+drop policy if exists "view conversations" on public.conversations;
+create policy "view conversations" on public.conversations for select using (customer_id = auth.uid() or public.is_admin());
+drop policy if exists "start conversation" on public.conversations;
+create policy "start conversation" on public.conversations for insert with check (created_by = auth.uid() and (customer_id = auth.uid() or public.is_admin()));
+drop policy if exists "admin manage conversations" on public.conversations;
+create policy "admin manage conversations" on public.conversations for update using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "admin delete conversations" on public.conversations;
+create policy "admin delete conversations" on public.conversations for delete using (public.is_admin());
+drop policy if exists "view messages" on public.messages;
+create policy "view messages" on public.messages for select using (exists (select 1 from public.conversations c where c.id = conversation_id and (c.customer_id = auth.uid() or public.is_admin())));
+drop policy if exists "send message" on public.messages;
+create policy "send message" on public.messages for insert with check (sender_id = auth.uid() and exists (
+  select 1 from public.conversations c where c.id = conversation_id and (public.is_admin() or (c.customer_id = auth.uid() and not c.closed))));
+
+create or replace function public.trg_msg_before() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if (select count(*) from messages where sender_id = new.sender_id and created_at > now() - interval '1 hour') >= 40 then
+    raise exception 'You are sending messages too quickly, please wait a bit'; end if;
+  return new;
+end $$;
+drop trigger if exists msg_before on public.messages;
+create trigger msg_before before insert on public.messages for each row execute function public.trg_msg_before();
+create or replace function public.trg_msg_after() returns trigger language plpgsql security definer set search_path = public as $$
+declare c public.conversations; who text;
+begin
+  select * into c from conversations where id = new.conversation_id;
+  update conversations set last_message_at = new.created_at where id = c.id;
+  if new.sender_id = c.customer_id then
+    select coalesce(nullif(name, ''), email) into who from profiles where id = c.customer_id;
+    perform notify_admins('message', 'New message from ' || coalesce(who, 'a customer'), c.subject || ': ' || left(new.body, 120), '#/messages/' || c.id);
+  else
+    perform notify_user(c.customer_id, 'message', 'New reply from the store team', c.subject || ': ' || left(new.body, 120), '#/messages/' || c.id);
+  end if;
+  perform public.send_notification('new_message', jsonb_build_object('message_id', new.id));
+  return new;
+end $$;
+drop trigger if exists msg_after on public.messages;
+create trigger msg_after after insert on public.messages for each row execute function public.trg_msg_after();
+
+-- Realtime: push new notifications and messages to open browsers (row-level security still applies)
+do $$ begin alter publication supabase_realtime add table public.notifications; exception when others then null; end $$;
+do $$ begin alter publication supabase_realtime add table public.messages; exception when others then null; end $$;

@@ -81,3 +81,9 @@ Submissions go through the `submit_form` database function, which re-checks requ
 Each response has a **status** (New / In progress / Done) and a **notes** box, with filters by status and both included in the CSV export.
 "Email me when someone submits this form" (on by default, per form) uses the same email pipeline as order emails — after pulling these changes, redeploy the function:
 `supabase functions deploy notify --no-verify-jwt`. The email lists every answer and uses the submitter's email (if the form has an email question) as Reply-To.
+
+## Notifications and private messaging
+- **Bell (🔔):** logged-in users get live in-app notifications (a red badge plus a pop-up the moment something happens) and a **Notifications** page; they can also opt in to desktop alerts.
+  Customers are notified about their orders (received, paid, shipped…) and replies to their messages. Admins are notified about new orders, low stock, form responses, quote requests and customer messages.
+- **Messages (💬):** customers send private messages to the store team (only they and admins can read the thread); admins reply from the same inbox, close/reopen conversations, and can start a conversation with any customer from **Admin → Customers**. New messages arrive live.
+- Message emails reuse the `notify` function (redeploy it after pulling: `supabase functions deploy notify --no-verify-jwt`).

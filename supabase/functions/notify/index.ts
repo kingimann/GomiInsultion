@@ -28,6 +28,21 @@ Deno.serve(async (req) => {
     return new Response('ok');
   }
 
+  if (body.kind === 'new_message') {
+    const { data: m } = await admin.from('messages').select('*, conversations(*)').eq('id', body.message_id).single();
+    if (!m) return new Response('no message', { status: 404 });
+    const c = m.conversations;
+    const fromCustomer = m.sender_id === c.customer_id;
+    let to = owner, heading = 'New message from a customer';
+    if (!fromCustomer) {
+      const { data: cust } = await admin.from('profiles').select('email').eq('id', c.customer_id).single();
+      if (!cust?.email) return new Response('no recipient');
+      to = cust.email; heading = 'You have a new reply from the store team';
+    }
+    await send(to, `${heading}: ${c.subject}`, `<h2>${esc(heading)}</h2><p><b>${esc(c.subject)}</b></p><blockquote style="white-space:pre-wrap">${esc(m.body)}</blockquote><p><a href="${site}/#/messages/${c.id}">Open the conversation</a></p>`);
+    return new Response('ok');
+  }
+
   if (body.kind === 'form_submitted') {
     const { data: sub } = await admin.from('form_submissions').select('*, forms(*)').eq('id', body.submission_id).single();
     if (!sub) return new Response('no submission', { status: 404 });

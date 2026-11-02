@@ -52,6 +52,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const money = (c) => `${C.CURRENCY}${(c / 100).toFixed(2)}`;
 const safeUrl = (u) => (/^(https?:\/\/|\/)/.test(u || '') ? u : '');
 let session = null, profile = null;
+let unread = { all: 0, msg: 0 }, notifChan = null, threadChan = null;
 const getCart = () => { try { return JSON.parse(localStorage.getItem('cart') || '{}'); } catch { return {}; } };
 const setCart = (c) => { localStorage.setItem('cart', JSON.stringify(c)); renderNav(); };
 function flash(msg, type = 'ok') {
@@ -81,12 +82,13 @@ const dateOf = (s) => new Date(s).toLocaleString();
 async function loadSession() {
   const { data } = await sb.auth.getSession(); session = data.session; profile = null;
   if (session) { const r = await sb.from('profiles').select('*').eq('id', session.user.id).maybeSingle(); profile = r.data; }
-  renderNav(); if (!profile?.is_admin) { const pn = document.getElementById('stylepanel'); if (pn) pn.hidden = true; }
+  renderNav(); startRealtime(); refreshUnread();
+  if (!profile?.is_admin) { const pn = document.getElementById('stylepanel'); if (pn) pn.hidden = true; }
 }
 function renderNav() {
   const n = Object.values(getCart()).reduce((a, b) => a + b, 0);
-  document.getElementById('cartlink').innerHTML = `<a class="cart" href="#/cart">🛒 Cart (${n})</a>`;
-  document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a><a href="#/quote">Get a quote</a><a href="#/wishlist">♡ ${getWish().length}</a>` + (session
+  document.getElementById('cartlink').innerHTML = (session ? `<button class="stylebtn bell" id="bellbtn" aria-label="Notifications">🔔${unread.all ? `<span class="dot">${unread.all > 99 ? '99+' : unread.all}</span>` : ''}</button> ` : '') + `<a class="cart" href="#/cart">🛒 Cart (${n})</a>`;
+  document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a><a href="#/quote">Get a quote</a><a href="#/wishlist">♡ ${getWish().length}</a>` + (session ? `<a href="#/messages">💬 Messages${unread.msg ? ` <span class="dot">${unread.msg}</span>` : ''}</a>` : '') + (session
     ? `${profile?.is_admin ? '<a href="#/admin">Admin</a>' : ''}<a href="#/account">${esc((profile?.name || 'Account').split(' ')[0])}</a><button class="link" id="logout">Log out</button>`
     : `<a href="#/login">Log in</a><a href="#/register">Sign up</a>`) + `${profile?.is_admin ? '<button class="stylebtn" id="stylebtn" aria-label="Customize site style">🎨 Style</button>' : ''}`;
   document.getElementById('logout')?.addEventListener('click', async () => { await sb.auth.signOut(); location.hash = '#/'; });
@@ -306,7 +308,7 @@ pages.account = async () => {
   if (!session) { location.hash = '#/login'; return ''; }
   const { data } = await sb.from('orders').select('*').eq('user_id', session.user.id).order('id', { ascending: false });
   const addrs = (await sb.from('addresses').select('*').order('is_default', { ascending: false }).order('id')).data;
-  return `<h1>My account</h1><p>${esc(profile?.name)} · ${esc(session.user.email)}</p><h2>Order history</h2>${ordersTable(data, '#/order')}
+  return `<h1>My account</h1><p>${esc(profile?.name)} · ${esc(session.user.email)}</p><p><a class="btn ghost" href="#/messages">💬 My messages</a> <a class="btn ghost" href="#/notifications">🔔 Notifications</a></p><h2>Order history</h2>${ordersTable(data, '#/order')}
   <h2>Password</h2><form id="cpw" class="row"><input type="password" name="password" minlength="8" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn ghost">Change password</button></form>
   <h2>Saved addresses</h2>${addrs.length ? addrs.map((a) => `<div class="addr"><b>${esc(a.label)}</b>${a.is_default ? ' <span class="status paid">default</span>' : ''}<br>${esc(a.name)}<br>${esc(a.address)}, ${esc(a.city)} ${esc(a.postcode)}${a.phone ? '<br>' + esc(a.phone) : ''}<br>
   ${a.is_default ? '' : `<button class="link defaddr" data-id="${a.id}" style="color:var(--brand)">Make default</button> · `}<button class="link deladdr" data-id="${a.id}" style="color:var(--err)">Delete</button></div>`).join('') : '<p class="muted">No saved addresses yet.</p>'}
@@ -453,7 +455,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   if (sub === 'orders') return `<h1>Orders</h1><p><button class="btn ghost" id="csv">⬇ Export CSV</button></p>${ordersTable((await sb.from('orders').select('*').order('id', { ascending: false })).data, '#/admin/orders')}`;
   if (sub === 'customers') {
     const us = (await sb.from('profiles').select('*').order('created_at', { ascending: false })).data;
-    return `<h1>Customers</h1><table><tr><th>Name</th><th>Email</th><th>Joined</th></tr>${us.map((u) => `<tr><td>${esc(u.name)}${u.is_admin ? ' (admin)' : ''}</td><td>${esc(u.email)}</td><td>${dateOf(u.created_at)}</td></tr>`).join('')}</table>`;
+    return `<h1>Customers</h1><table><tr><th>Name</th><th>Email</th><th>Joined</th><th></th></tr>${us.map((u) => `<tr><td>${esc(u.name)}${u.is_admin ? ' (admin)' : ''}</td><td>${esc(u.email)}</td><td>${dateOf(u.created_at)}</td><td>${u.is_admin ? '' : `<a href="#/messages/new?to=${u.id}">💬 Message</a>`}</td></tr>`).join('')}</table>`;
   }
   if (sub === 'products' && (id === 'new' || id)) {
     const p = id === 'new' ? {} : (await sb.from('products').select('*').eq('id', id).single()).data;
@@ -599,8 +601,124 @@ pages.admin.after = ([sub, id, extra]) => {
   });
 };
 
+// ---- notifications & private messaging ----
+const ago = (d) => { const sec = Math.max(1, (Date.now() - new Date(d)) / 1000); if (sec < 60) return 'just now'; if (sec < 3600) return `${Math.floor(sec / 60)}m ago`; if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`; return new Date(d).toLocaleDateString(); };
+const safeLink = (l) => (/^#\/[\w\-/?=&.%]*$/.test(l || '') ? l : '#/');
+async function refreshUnread() {
+  if (!session) { unread = { all: 0, msg: 0 }; return renderNav(); }
+  const { data } = await sb.from('notifications').select('kind').eq('read', false).limit(500);
+  unread = { all: (data || []).length, msg: (data || []).filter((n) => n.kind === 'message').length }; renderNav();
+}
+function startRealtime() {
+  if (notifChan) { sb.removeChannel(notifChan); notifChan = null; }
+  if (!session) return;
+  notifChan = sb.channel('notif-' + session.user.id).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${session.user.id}` }, (payload) => {
+    const n = payload.new; unread.all++; if (n.kind === 'message') unread.msg++; renderNav();
+    flash(`🔔 ${n.title}`);
+    if (document.hidden && 'Notification' in window && Notification.permission === 'granted') new Notification(n.title, { body: n.body });
+    if (!document.getElementById('notifpanel').hidden) buildNotifPanel();
+    if (location.hash === '#/messages' || location.hash.startsWith('#/notifications')) route();
+  }).subscribe();
+}
+const notifRow = (n) => `<a class="notif ${n.read ? '' : 'unread'}" href="${esc(safeLink(n.link))}" data-id="${n.id}"><b>${esc(n.title)}</b>${n.body ? `<span>${esc(n.body)}</span>` : ''}<small class="muted">${ago(n.created_at)}</small></a>`;
+async function buildNotifPanel() {
+  const el = document.getElementById('notifpanel'); if (!el || !session) return;
+  const { data } = await sb.from('notifications').select('*').order('id', { ascending: false }).limit(12);
+  el.innerHTML = `<div class="row" style="justify-content:space-between"><h3 style="margin:0">Notifications</h3><button class="link" id="markall" style="color:var(--brand)">Mark all read</button></div>
+  ${(data || []).length ? data.map(notifRow).join('') : '<p class="muted">Nothing yet.</p>'}<p style="margin:10px 0 0"><a href="#/notifications">See all notifications</a></p>`;
+}
+document.addEventListener('click', async (e) => {
+  const panel = document.getElementById('notifpanel');
+  if (e.target.closest('#bellbtn')) { panel.hidden = !panel.hidden; if (!panel.hidden) buildNotifPanel(); return; }
+  if (e.target.closest('#markall')) { await sb.from('notifications').update({ read: true }).eq('read', false); await refreshUnread(); buildNotifPanel(); if (location.hash.startsWith('#/notifications')) route(); return; }
+  const n = e.target.closest('.notif');
+  if (n) { if (n.classList.contains('unread')) { await sb.from('notifications').update({ read: true }).eq('id', n.dataset.id); refreshUnread(); } panel.hidden = true; return; }
+  if (panel && !panel.hidden && !e.target.closest('#notifpanel')) panel.hidden = true;
+});
+pages.notifications = async () => {
+  if (!session) { location.hash = '#/login'; return ''; }
+  const { data } = await sb.from('notifications').select('*').order('id', { ascending: false }).limit(100);
+  const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  return `<h1>Notifications</h1><div class="row" style="margin-bottom:12px"><button class="btn ghost" id="markall">Mark all read</button><button class="btn ghost" id="clearall">Clear all</button>
+  ${perm === 'default' ? '<button class="btn ghost" id="desktopn">🔔 Enable desktop alerts</button>' : perm === 'granted' ? '<span class="muted">Desktop alerts on</span>' : ''}</div>
+  <div class="notifs">${data.length ? data.map(notifRow).join('') : '<p class="muted">No notifications yet.</p>'}</div>`;
+};
+pages.notifications.after = () => {
+  document.getElementById('clearall')?.addEventListener('click', async () => { if (!confirm('Delete all notifications?')) return; await sb.from('notifications').delete().gte('id', 0); await refreshUnread(); route(); });
+  document.getElementById('desktopn')?.addEventListener('click', async () => { await Notification.requestPermission(); route(); });
+};
+
+const bubble = (m, conv, me, isAdmin, custName) => {
+  const fromStore = m.sender_id !== conv.customer_id, mine = isAdmin ? fromStore : !fromStore;
+  return `<div class="bubble ${mine ? 'mine' : 'theirs'}" data-id="${m.id}"><div class="who">${fromStore ? 'Store team' : (isAdmin ? esc(custName) : 'You')}</div><div class="txt">${esc(m.body)}</div><small>${ago(m.created_at)}</small></div>`;
+};
+pages.messages = async ([id], q) => {
+  if (!session) { location.hash = '#/login'; return ''; }
+  const isAdmin = !!profile?.is_admin;
+  if (id === 'new') {
+    let target = q.get('to') || '', who = '';
+    let pick = '';
+    if (isAdmin) {
+      const custs = (await sb.from('profiles').select('id,name,email').eq('is_admin', false).order('name')).data || [];
+      pick = `<label>To<select name="to" required><option value="">Choose a customer…</option>${custs.map((c) => `<option value="${c.id}" ${c.id === target ? 'selected' : ''}>${esc(c.name || c.email)} — ${esc(c.email)}</option>`).join('')}</select></label>`;
+    }
+    return `<div class="narrow"><h1>New message</h1><p class="muted">${isAdmin ? 'Start a private conversation with a customer.' : 'Send a private message to the store team. Only you and our team can see it.'}</p>
+    <form id="mf" class="stack">${pick}<label>Subject<input name="subject" required maxlength="200" placeholder="e.g. Question about my order"></label>
+    <label>Message<textarea name="body" rows="6" required maxlength="5000"></textarea></label><button class="btn">Send message</button></form></div>`;
+  }
+  if (id) {
+    const conv = (await sb.from('conversations').select('*').eq('id', id).maybeSingle()).data;
+    if (!conv) return '<h1>Conversation not found</h1><p><a href="#/messages">← Back to messages</a></p>';
+    const msgs = (await sb.from('messages').select('*').eq('conversation_id', id).order('id')).data || [];
+    const cust = isAdmin ? (await sb.from('profiles').select('name,email').eq('id', conv.customer_id).maybeSingle()).data : null;
+    const custName = cust ? (cust.name || cust.email) : 'Customer';
+    THREAD = { conv, isAdmin, custName };
+    await sb.from('notifications').update({ read: true }).eq('link', `#/messages/${id}`).eq('read', false); refreshUnread();
+    return `<p><a href="#/messages">← All messages</a></p><h1>${esc(conv.subject)}</h1>${isAdmin ? `<p class="muted">With ${esc(custName)}${cust ? ' · ' + esc(cust.email) : ''}${conv.closed ? ' · <b>Closed</b>' : ''}</p>` : (conv.closed ? '<p class="muted"><b>This conversation is closed.</b></p>' : '')}
+    <div class="thread" id="thread">${msgs.map((m) => bubble(m, conv, session.user.id, isAdmin, custName)).join('')}</div>
+    ${conv.closed && !isAdmin ? '' : `<form id="rf2" class="stack" style="margin-top:14px"><textarea name="body" rows="3" required maxlength="5000" placeholder="Write a reply…" aria-label="Reply"></textarea><div class="row"><button class="btn">Send</button>${isAdmin ? `<button type="button" class="btn ghost" id="toggleclosed">${conv.closed ? 'Reopen conversation' : 'Close conversation'}</button>` : ''}</div></form>`}`;
+  }
+  const convs = (await sb.from('conversations').select('*').order('last_message_at', { ascending: false }).limit(100)).data || [];
+  const ids = convs.map((c) => c.id);
+  const last = {}; if (ids.length) ((await sb.from('messages').select('conversation_id,body,sender_id,created_at').in('conversation_id', ids).order('id', { ascending: false }).limit(400)).data || []).forEach((m) => { if (!last[m.conversation_id]) last[m.conversation_id] = m; });
+  const unreadLinks = new Set(((await sb.from('notifications').select('link').eq('read', false).eq('kind', 'message')).data || []).map((n) => n.link));
+  const names = {}; if (isAdmin && convs.length) ((await sb.from('profiles').select('id,name,email').in('id', [...new Set(convs.map((c) => c.customer_id))])).data || []).forEach((u) => (names[u.id] = u.name || u.email));
+  return `<h1>Messages</h1><p><a class="btn" href="#/messages/new">+ New message</a></p>
+  ${convs.length ? convs.map((c) => `<a class="conv ${unreadLinks.has('#/messages/' + c.id) ? 'unread' : ''}" href="#/messages/${c.id}"><div class="row" style="justify-content:space-between"><b>${esc(c.subject)}</b><small class="muted">${ago(c.last_message_at)}</small></div>
+    ${isAdmin ? `<small class="muted">${esc(names[c.customer_id] || '')}${c.closed ? ' · closed' : ''}</small>` : (c.closed ? '<small class="muted">closed</small>' : '')}
+    <span class="muted">${last[c.id] ? (last[c.id].sender_id === session.user.id ? 'You: ' : '') + esc(last[c.id].body.slice(0, 120)) : ''}</span></a>`).join('') : `<p class="muted">${isAdmin ? 'No conversations yet.' : 'No messages yet. Questions about an order or a product? Send us a message.'}</p>`}`;
+};
+let THREAD = null;
+pages.messages.after = ([id]) => {
+  document.getElementById('mf')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const btn = e.target.querySelector('button'); btn.disabled = true;
+    const customer_id = profile?.is_admin ? f.to : session.user.id;
+    const c = await sb.from('conversations').insert({ customer_id, subject: f.subject.trim() }).select('id').single();
+    if (c.error) { btn.disabled = false; return fail(c.error); }
+    const m = await sb.from('messages').insert({ conversation_id: c.data.id, body: f.body.trim() });
+    btn.disabled = false; if (m.error) return fail(m.error);
+    flash('Message sent.'); location.hash = `#/messages/${c.data.id}`;
+  });
+  const thread = document.getElementById('thread'); if (!thread || !THREAD) return;
+  const { conv, isAdmin, custName } = THREAD; thread.scrollTop = thread.scrollHeight;
+  const add = (m) => { if (thread.querySelector(`[data-id="${m.id}"]`)) return; thread.insertAdjacentHTML('beforeend', bubble(m, conv, session.user.id, isAdmin, custName)); thread.scrollTop = thread.scrollHeight; };
+  document.getElementById('rf2')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const ta = e.target.elements.body; const body = ta.value.trim(); if (!body) return;
+    const btn = e.target.querySelector('button'); btn.disabled = true;
+    const { data, error } = await sb.from('messages').insert({ conversation_id: conv.id, body }).select('*').single();
+    btn.disabled = false; if (error) return fail(error); ta.value = ''; add(data);
+  });
+  document.getElementById('toggleclosed')?.addEventListener('click', async () => {
+    const { error } = await sb.from('conversations').update({ closed: !conv.closed }).eq('id', conv.id); error ? fail(error) : route();
+  });
+  threadChan = sb.channel('thread-' + conv.id).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conv.id}` }, (payload) => {
+    add(payload.new); sb.from('notifications').update({ read: true }).eq('link', `#/messages/${conv.id}`).eq('read', false).then(refreshUnread);
+  }).subscribe();
+};
+
 // ---- router ----
 async function route() {
+  if (threadChan) { sb.removeChannel(threadChan); threadChan = null; }
   let h = location.hash.slice(1); if (!h.startsWith('/')) h = '/'; // e.g. #access_token=… after email confirmation
   const [path, qs] = h.split('?'); const q = new URLSearchParams(qs || '');
   const [name = 'home', ...args] = path.split('/').filter(Boolean); const page = pages[name === '' ? 'home' : name];
@@ -616,7 +734,7 @@ window.addEventListener('hashchange', route);
 sb.auth.onAuthStateChange((ev) => {
   if (ev === 'PASSWORD_RECOVERY') setTimeout(async () => { await loadSession(); location.hash = '#/reset'; route(); }, 0);
   else if (ev === 'SIGNED_IN' && /type=signup/.test(location.hash)) setTimeout(async () => { await loadSession(); flash('Email confirmed. Welcome!'); location.hash = '#/account'; }, 0);
-  if (ev === 'SIGNED_OUT') { session = null; profile = null; renderNav(); }
+  if (ev === 'SIGNED_OUT') { session = null; profile = null; unread = { all: 0, msg: 0 }; if (notifChan) { sb.removeChannel(notifChan); notifChan = null; } renderNav(); }
 });
 if (C.ANNOUNCEMENT) { const a = document.createElement('div'); a.className = 'announce'; a.textContent = C.ANNOUNCEMENT; document.body.prepend(a); }
 loadSiteTheme();

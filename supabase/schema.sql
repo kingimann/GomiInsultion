@@ -233,3 +233,56 @@ create trigger review_author before insert on public.reviews for each row execut
 create or replace view public.product_ratings as
   select product_id, round(avg(rating)::numeric, 1)::float8 as avg, count(*)::int as count from public.reviews group by product_id;
 grant select on public.product_ratings to anon, authenticated;
+
+-- Saved addresses
+create table if not exists public.addresses (
+  id bigint generated always as identity primary key, user_id uuid not null references auth.users(id) on delete cascade default auth.uid(),
+  label text not null default 'Home' check (length(label) <= 60), name text not null, phone text not null default '',
+  address text not null, city text not null, postcode text not null, is_default boolean not null default false,
+  created_at timestamptz not null default now());
+alter table public.addresses enable row level security;
+drop policy if exists "own addresses" on public.addresses;
+create policy "own addresses" on public.addresses for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- Extra product photos (gallery)
+create table if not exists public.product_images (
+  id bigint generated always as identity primary key, product_id bigint not null references public.products(id) on delete cascade,
+  url text not null, position int not null default 0);
+alter table public.product_images enable row level security;
+drop policy if exists "view gallery" on public.product_images;
+create policy "view gallery" on public.product_images for select using (true);
+drop policy if exists "admin gallery" on public.product_images;
+create policy "admin gallery" on public.product_images for all using (public.is_admin()) with check (public.is_admin());
+
+-- Email notifications: Postgres -> edge function `notify` (via pg_net). No-ops until configured.
+create extension if not exists pg_net with schema extensions;
+create table if not exists public.app_config (key text primary key, value text not null);
+alter table public.app_config enable row level security; -- no policies: only service role / security-definer code can read
+create or replace function public.send_notification(kind text, payload jsonb) returns void
+language plpgsql security definer set search_path = public, extensions as $$
+declare u text := (select value from app_config where key = 'notify_url'); s text := (select value from app_config where key = 'notify_secret');
+begin
+  if u is null or s is null then return; end if;
+  perform net.http_post(url := u, body := jsonb_build_object('kind', kind) || payload, headers := jsonb_build_object('Content-Type','application/json','x-notify-secret', s));
+exception when others then null; -- never block an order because email failed
+end $$;
+revoke all on function public.send_notification(text, jsonb) from public, anon, authenticated;
+create or replace function public.trg_order_created() returns trigger language plpgsql as $$
+begin perform public.send_notification('order_created', jsonb_build_object('order_id', new.id)); return new; end $$;
+drop trigger if exists order_created_notify on public.orders;
+create trigger order_created_notify after insert on public.orders for each row execute function public.trg_order_created();
+create or replace function public.trg_order_status() returns trigger language plpgsql as $$
+begin
+  if new.status is distinct from old.status and new.status in ('paid','shipped','delivered') then
+    perform public.send_notification('order_' || new.status, jsonb_build_object('order_id', new.id)); end if;
+  return new;
+end $$;
+drop trigger if exists order_status_notify on public.orders;
+create trigger order_status_notify after update of status on public.orders for each row execute function public.trg_order_status();
+create or replace function public.trg_low_stock() returns trigger language plpgsql as $$
+begin
+  if new.stock <= 10 and old.stock > 10 then perform public.send_notification('low_stock', jsonb_build_object('product_id', new.id)); end if;
+  return new;
+end $$;
+drop trigger if exists low_stock_notify on public.products;
+create trigger low_stock_notify after update of stock on public.products for each row execute function public.trg_low_stock();

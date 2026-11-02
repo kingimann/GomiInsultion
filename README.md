@@ -53,3 +53,21 @@ To make yourself admin after signing up: `update public.profiles set is_admin = 
 4. In the Stripe dashboard add a webhook to `https://lsvcpblpycvqnagxfvlz.supabase.co/functions/v1/stripe-webhook`
    for `checkout.session.completed` and `checkout.session.expired`, then `supabase secrets set STRIPE_WEBHOOK_SECRET=whsec_...`
 5. Set `PAYMENTS: true` in `web/config.js` and push. Use Stripe test keys first (card 4242 4242 4242 4242).
+
+## Order & low-stock emails (Resend)
+Postgres triggers call the `notify` edge function (customer order confirmation, "paid/shipped/delivered" updates, new-order alert and low-stock alert to you).
+1. Create a [Resend](https://resend.com) account, verify your sending domain, and create an API key.
+2. `supabase secrets set RESEND_API_KEY=re_... FROM_EMAIL="Gomi Insulation <orders@yourdomain.com>" ADMIN_EMAIL=you@example.com NOTIFY_SECRET=<long-random-string> SITE_URL=https://kingimann.github.io/GomiInsultion`
+3. `supabase functions deploy notify --no-verify-jwt`
+4. Tell the database where to send them (run in the SQL editor, same secret as above):
+   ```sql
+   insert into public.app_config (key, value) values
+     ('notify_url', 'https://lsvcpblpycvqnagxfvlz.supabase.co/functions/v1/notify'),
+     ('notify_secret', '<the same NOTIFY_SECRET>')
+   on conflict (key) do update set value = excluded.value;
+   ```
+Until step 4 is done the triggers do nothing, so orders are never affected.
+
+## Styling
+Visitors can press **🎨 Style** to pick a preset (Default, Ocean, Forest, Midnight, Workshop) or mix mode (auto/light/dark), colour, corner shape, font and density; the choice is remembered per browser.
+Set the default look for new visitors with `DEFAULT_THEME` in `web/config.js`, e.g. `{ accent: 'blue', radius: 'pill' }`.

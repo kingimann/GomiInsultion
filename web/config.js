@@ -7,4 +7,6 @@ window.GOMI = {
   ANNOUNCEMENT: '🚚 Free shipping on orders over $500 · Use code WELCOME10 for 10% off your first order',
   // Set to true after deploying the Stripe edge functions (see README).
   PAYMENTS: false,
+  // Default look for first-time visitors (visitors can change it with the 🎨 Style button). e.g. { accent: 'blue', radius: 'pill' }
+  DEFAULT_THEME: {},
 };

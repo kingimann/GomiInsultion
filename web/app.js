@@ -4,6 +4,38 @@ const $app = document.getElementById('app');
 const STATUSES = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'];
 const FREE_SHIP = 50000, SHIP = 1500;
 
+// ---- themes ----
+const THEME_OPTS = {
+  mode: { label: 'Mode', vals: [['', 'Auto'], ['light', 'Light'], ['dark', 'Dark']] },
+  accent: { label: 'Colour', vals: [['', '#ea580c'], ['blue', '#2563eb'], ['green', '#16a34a'], ['purple', '#7c3aed'], ['slate', '#334155']], swatch: true },
+  radius: { label: 'Corners', vals: [['sharp', 'Sharp'], ['', 'Rounded'], ['pill', 'Pill']] },
+  font: { label: 'Font', vals: [['', 'Modern'], ['classic', 'Classic'], ['technical', 'Technical']] },
+  density: { label: 'Density', vals: [['', 'Comfortable'], ['compact', 'Compact']] },
+};
+const PRESETS = { Default: {}, Ocean: { accent: 'blue', radius: 'pill' }, Forest: { accent: 'green', font: 'classic' }, Midnight: { mode: 'dark', accent: 'purple' }, Workshop: { accent: 'slate', radius: 'sharp', font: 'technical', density: 'compact' } };
+let theme = {};
+try { theme = JSON.parse(localStorage.getItem('theme') || 'null') || window.GOMI.DEFAULT_THEME || {}; } catch { theme = window.GOMI.DEFAULT_THEME || {}; }
+function applyTheme() {
+  for (const k of Object.keys(THEME_OPTS)) { if (theme[k]) document.documentElement.dataset[k] = theme[k]; else delete document.documentElement.dataset[k]; }
+  try { localStorage.setItem('theme', JSON.stringify(theme)); } catch {}
+}
+applyTheme();
+function buildStylePanel() {
+  const el = document.getElementById('stylepanel'); if (!el) return;
+  el.innerHTML = `<h3>🎨 Customize style</h3><fieldset><legend>Presets</legend><div class="opts">${Object.keys(PRESETS).map((n) => `<button data-preset="${n}">${n}</button>`).join('')}</div></fieldset>
+  ${Object.entries(THEME_OPTS).map(([k, o]) => `<fieldset><legend>${o.label}</legend><div class="opts">${o.vals.map(([v, l]) => o.swatch
+    ? `<button class="sw" data-k="${k}" data-v="${v}" style="background:${l}" aria-label="${v || 'orange'}" aria-pressed="${(theme[k] || '') === v}"></button>`
+    : `<button data-k="${k}" data-v="${v}" aria-pressed="${(theme[k] || '') === v}">${l}</button>`).join('')}</div></fieldset>`).join('')}`;
+}
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('stylepanel');
+  if (e.target.closest('#stylebtn')) { buildStylePanel(); panel.hidden = !panel.hidden; return; }
+  if (panel && !panel.hidden && !e.target.closest('#stylepanel')) panel.hidden = true;
+  const b = e.target.closest('#stylepanel button'); if (!b) return;
+  if (b.dataset.preset) theme = { ...PRESETS[b.dataset.preset] }; else theme = { ...theme, [b.dataset.k]: b.dataset.v };
+  applyTheme(); buildStylePanel();
+});
+
 // ---- helpers ----
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (c) => `${C.CURRENCY}${(c / 100).toFixed(2)}`;
@@ -44,7 +76,7 @@ function renderNav() {
   const n = Object.values(getCart()).reduce((a, b) => a + b, 0);
   document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a><a href="#/quote">Get a quote</a><a href="#/wishlist">♡ ${getWish().length}</a>` + (session
     ? `${profile?.is_admin ? '<a href="#/admin">Admin</a>' : ''}<a href="#/account">${esc((profile?.name || 'Account').split(' ')[0])}</a><button class="link" id="logout">Log out</button>`
-    : `<a href="#/login">Log in</a><a href="#/register">Sign up</a>`) + `<a class="cart" href="#/cart">Cart (${n})</a>`;
+    : `<a href="#/login">Log in</a><a href="#/register">Sign up</a>`) + `<button class="stylebtn" id="stylebtn" aria-label="Customize style">🎨 Style</button><a class="cart" href="#/cart">Cart (${n})</a>`;
   document.getElementById('logout')?.addEventListener('click', async () => { await sb.auth.signOut(); location.hash = '#/'; });
 }
 document.getElementById('search').addEventListener('submit', (e) => { e.preventDefault(); location.hash = `#/shop?q=${encodeURIComponent(new FormData(e.target).get('q'))}`; });
@@ -94,7 +126,10 @@ pages.product = async ([slug]) => {
   <label>Comment<textarea name="comment" rows="3" maxlength="2000"></textarea></label><button class="btn">Post review</button></form>`}`;
   const related = (await sb.from('products').select('*').eq('active', true).neq('id', p.id).limit(40)).data
     .sort((a, b) => (b.category === p.category) - (a.category === p.category)).slice(0, 4);
-  return `<div class="detail"><div>${img(p, true)}</div><div><span class="tag">${esc(p.category)}</span><h1>${esc(p.name)}</h1>
+  const extra = (await sb.from('product_images').select('url').eq('product_id', p.id).order('position')).data || [];
+  const pics = [p.image_url, ...extra.map((x) => x.url)].filter((u) => safeUrl(u));
+  const gallery = pics.length ? `<div class="gallery"><img class="big" id="mainpic" src="${esc(pics[0])}" alt="${esc(p.name)}">${pics.length > 1 ? `<div class="thumbs">${pics.map((u, i) => `<img src="${esc(u)}" alt="Photo ${i + 1}" class="${i ? '' : 'on'}">`).join('')}</div>` : ''}</div>` : img(p, true);
+  return `<div class="detail"><div>${gallery}</div><div><span class="tag">${esc(p.category)}</span><h1>${esc(p.name)}</h1>
   <p class="price big">${money(p.price_cents)} <small>per ${esc(p.unit)}</small></p>${p.r_value ? `<p><strong>R-value:</strong> ${esc(p.r_value)}</p>` : ''}<p>${esc(p.description)}</p>
   ${p.stock > 0 ? `<form class="row" id="add"><input type="number" name="qty" value="1" min="1" max="${p.stock}" aria-label="Quantity"><button class="btn">Add to cart</button></form>
   <p class="muted">${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : '<p class="flash error">Out of stock</p>'}
@@ -105,6 +140,9 @@ pages.product = async ([slug]) => {
 };
 const coverageOf = (p) => { const m = /(\d+)\s*sq\s*ft/i.exec(p.unit); return m ? Number(m[1]) : 0; };
 pages.product.after = ([slug]) => {
+  document.querySelectorAll('.thumbs img').forEach((t) => t.addEventListener('click', () => {
+    document.getElementById('mainpic').src = t.src; document.querySelectorAll('.thumbs img').forEach((x) => x.classList.toggle('on', x === t));
+  }));
   document.getElementById('rf')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
     const { data: p } = await sb.from('products').select('id').eq('slug', slug).single();
@@ -114,6 +152,7 @@ pages.product.after = ([slug]) => {
   document.querySelectorAll('.delrev').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.from('reviews').delete().eq('id', b.dataset.id); error ? fail(error) : route(); }));
   const area = document.getElementById('area'); if (area) {
     sb.from('products').select('*').eq('slug', slug).single().then(({ data: p }) => {
+      if (!document.getElementById('waste')) return; // navigated away
       const upd = () => {
         const need = Math.ceil((Number(area.value) || 0) * (1 + (Number(document.getElementById('waste').value) || 0) / 100) / coverageOf(p));
         const out = document.getElementById('calcout');
@@ -163,18 +202,27 @@ pages.cart.after = () => {
 });
 };
 
+let SAVED = [];
 pages.checkout = async () => {
   const lines = await cartLines(); if (!lines.length) return '<h1>Checkout</h1><p>Your cart is empty.</p>';
+  SAVED = session ? (await sb.from('addresses').select('*').order('is_default', { ascending: false }).order('id')).data || [] : [];
+  const d = SAVED[0] || {};
   const t = totals(lines.reduce((a, l) => a + l.price_cents * l.qty, 0));
   const f = (n, l, v = '', x = '') => `<label>${l}<input name="${n}" value="${esc(v)}" ${x}></label>`;
   return `<h1>Checkout</h1><div class="two"><form id="co" class="stack">
-  ${f('name', 'Full name', profile?.name, 'required')}${f('email', 'Email', session?.user.email, 'type="email" required')}${f('phone', 'Phone')}
-  ${f('address', 'Delivery address', '', 'required')}${f('city', 'City', '', 'required')}${f('postcode', 'Postal / ZIP code', '', 'required')}
+  ${SAVED.length ? `<label>Use a saved address<select id="savedaddr">${SAVED.map((a, i) => `<option value="${i}">${esc(a.label)} — ${esc(a.address)}, ${esc(a.city)}</option>`).join('')}<option value="">Enter a new address</option></select></label>` : ''}
+  ${f('name', 'Full name', d.name || profile?.name, 'required')}${f('email', 'Email', session?.user.email, 'type="email" required')}${f('phone', 'Phone', d.phone)}
+  ${f('address', 'Delivery address', d.address, 'required')}${f('city', 'City', d.city, 'required')}${f('postcode', 'Postal / ZIP code', d.postcode, 'required')}
   <label>Order notes<textarea name="notes"></textarea></label>
   <p class="muted">${C.PAYMENTS ? 'You will be taken to a secure Stripe page to pay by card.' : "Payment: we'll email you an invoice and payment options once your order is confirmed."}</p><button class="btn">${C.PAYMENTS ? 'Continue to payment' : 'Place order'}</button></form>
   <aside><h3>Order summary</h3><ul>${lines.map((l) => `<li>${l.qty} × ${esc(l.name)} <span>${money(l.qty * l.price_cents)}</span></li>`).join('')}</ul>${totalsHtml(t)}</aside></div>`;
 };
-pages.checkout.after = () => document.getElementById('co')?.addEventListener('submit', async (e) => {
+pages.checkout.after = () => {
+  document.getElementById('savedaddr')?.addEventListener('change', (e) => {
+    const a = SAVED[e.target.value] || { name: '', phone: '', address: '', city: '', postcode: '' };
+    for (const k of ['name', 'phone', 'address', 'city', 'postcode']) document.querySelector(`#co [name=${k}]`).value = a[k] || '';
+  });
+  document.getElementById('co')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const btn = e.target.querySelector('button'); btn.disabled = true;
   const customer = { ...Object.fromEntries(new FormData(e.target)), code: getPromo()?.code || '' };
   const items = Object.entries(getCart()).map(([id, qty]) => ({ id: Number(id), qty }));
@@ -187,7 +235,8 @@ pages.checkout.after = () => document.getElementById('co')?.addEventListener('su
     flash('Order saved, but we could not start the payment. We will contact you to arrange it.', 'error');
   } else flash(`Thanks! Order #${data.id} received. We'll email you an invoice shortly.`);
   location.hash = `#/order/${data.id}` + (session ? '' : `?k=${data.key}`);
-});
+  });
+};
 
 const orderHtml = (o, items, admin) => `<h1>Order #${o.id}</h1><p><span class="status ${esc(o.status)}">${esc(o.status)}</span> · placed ${dateOf(o.created_at)}</p>
   ${o.status === 'cancelled' ? '' : `<div class="steps">${['pending', 'paid', 'shipped', 'delivered'].map((st, i) => `<span class="${i <= ['pending', 'paid', 'shipped', 'delivered'].indexOf(o.status) ? 'done' : ''}">${st}</span>`).join('')}</div>`}
@@ -219,10 +268,17 @@ const authAfter = (reg) => () => document.getElementById('auth')?.addEventListen
 pages.login.after = authAfter(false); pages.register.after = authAfter(true);
 
 const ordersTable = (os, base) => os.length ? `<table><tr><th>Order</th><th>Date</th><th>Status</th><th>Total</th></tr>${os.map((o) => `<tr><td><a href="${base}/${o.id}">#${o.id}</a>${base.includes('admin') ? ' · ' + esc(o.name) : ''}</td><td>${dateOf(o.created_at)}</td><td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}</td></tr>`).join('')}</table>` : '<p>No orders yet.</p>';
+const setDefault = async (id) => { await sb.from('addresses').update({ is_default: false }).neq('id', id); await sb.from('addresses').update({ is_default: true }).eq('id', id); };
 pages.account = async () => {
   if (!session) { location.hash = '#/login'; return ''; }
   const { data } = await sb.from('orders').select('*').eq('user_id', session.user.id).order('id', { ascending: false });
-  return `<h1>My account</h1><p>${esc(profile?.name)} · ${esc(session.user.email)}</p><h2>Order history</h2>${ordersTable(data, '#/order')}`;
+  const addrs = (await sb.from('addresses').select('*').order('is_default', { ascending: false }).order('id')).data;
+  return `<h1>My account</h1><p>${esc(profile?.name)} · ${esc(session.user.email)}</p><h2>Order history</h2>${ordersTable(data, '#/order')}
+  <h2>Saved addresses</h2>${addrs.length ? addrs.map((a) => `<div class="addr"><b>${esc(a.label)}</b>${a.is_default ? ' <span class="status paid">default</span>' : ''}<br>${esc(a.name)}<br>${esc(a.address)}, ${esc(a.city)} ${esc(a.postcode)}${a.phone ? '<br>' + esc(a.phone) : ''}<br>
+  ${a.is_default ? '' : `<button class="link defaddr" data-id="${a.id}" style="color:var(--brand)">Make default</button> · `}<button class="link deladdr" data-id="${a.id}" style="color:var(--err)">Delete</button></div>`).join('') : '<p class="muted">No saved addresses yet.</p>'}
+  <h3>Add an address</h3><form id="af" class="stack narrow"><label>Label<input name="label" value="Home" maxlength="60"></label><label>Full name<input name="name" required value="${esc(profile?.name || '')}"></label><label>Phone<input name="phone"></label>
+  <label>Address<input name="address" required></label><label>City<input name="city" required></label><label>Postal / ZIP code<input name="postcode" required></label>
+  <label class="check"><input type="checkbox" name="is_default" ${addrs.length ? '' : 'checked'}> Make this my default</label><button class="btn">Save address</button></form>`;
 };
 
 pages.wishlist = async () => {
@@ -240,6 +296,16 @@ pages.quote.after = () => document.getElementById('qf')?.addEventListener('submi
   const { error } = await sb.from('quotes').insert({ ...f, user_id: session?.user.id ?? null });
   if (error) return fail(error); flash("Thanks! We'll be in touch soon."); location.hash = '#/';
 });
+
+pages.account.after = () => {
+  document.getElementById('af')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const makeDef = !!f.is_default; delete f.is_default;
+    const { data, error } = await sb.from('addresses').insert(f).select('id').single(); if (error) return fail(error);
+    if (makeDef) await setDefault(data.id); flash('Address saved.'); route();
+  });
+  document.querySelectorAll('.deladdr').forEach((b) => b.addEventListener('click', async () => { await sb.from('addresses').delete().eq('id', b.dataset.id); route(); }));
+  document.querySelectorAll('.defaddr').forEach((b) => b.addEventListener('click', async () => { await setDefault(b.dataset.id); route(); }));
+};
 
 // ---- admin ----
 const needAdmin = () => { if (!profile?.is_admin) { $app.innerHTML = '<h1>Forbidden</h1>'; return false; } return true; };
@@ -272,6 +338,7 @@ pages.admin = async ([sub, id]) => {
   }
   if (sub === 'products' && (id === 'new' || id)) {
     const p = id === 'new' ? {} : (await sb.from('products').select('*').eq('id', id).single()).data;
+    const extras = id === 'new' ? [] : (await sb.from('product_images').select('*').eq('product_id', id).order('position')).data;
     const t = (n, l, x = '') => `<label>${l}<input name="${n}" value="${esc(p[n] ?? '')}" ${x}></label>`;
     return `<h1>${p.id ? 'Edit product' : 'New product'}</h1><form id="pf" class="stack narrow" data-id="${p.id || ''}">${t('name', 'Name', 'required')}${t('category', 'Category', 'required')}
     <label>Description<textarea name="description" rows="5">${esc(p.description)}</textarea></label>
@@ -279,7 +346,9 @@ pages.admin = async ([sub, id]) => {
     ${t('unit', 'Unit (e.g. bundle, roll)', 'required')}${t('r_value', 'R-value')}<label>Stock<input name="stock" type="number" min="0" required value="${p.stock ?? 0}"></label>
     ${p.image_url ? `<img src="${esc(safeUrl(p.image_url))}" alt="" style="max-width:160px;border-radius:10px">` : ''}
     <label>Photo (JPG, PNG, WebP, up to 5 MB)<input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif"></label>
-    <input type="hidden" name="image_url" value="${esc(p.image_url || '')}"><label class="check"><input type="checkbox" name="active" ${p.id && !p.active ? '' : 'checked'}> Visible in store</label><button class="btn">Save</button></form>`;
+    <input type="hidden" name="image_url" value="${esc(p.image_url || '')}">
+    ${extras.length ? `<div class="extras">${extras.map((x) => `<figure><img src="${esc(x.url)}" alt=""><button type="button" class="link delimg" data-id="${x.id}" style="color:var(--err)">Remove</button></figure>`).join('')}</div>` : ''}
+    <label>More photos for the gallery (optional, you can pick several)<input type="file" name="extras" accept="image/jpeg,image/png,image/webp,image/gif" multiple></label><label class="check"><input type="checkbox" name="active" ${p.id && !p.active ? '' : 'checked'}> Visible in store</label><button class="btn">Save</button></form>`;
   }
   if (sub === 'products') {
     const ps = (await sb.from('products').select('*').order('name')).data;
@@ -316,9 +385,11 @@ pages.admin.after = ([sub, id]) => {
     e.preventDefault(); const { error } = await sb.rpc('set_order_status', { oid: Number(id), new_status: new FormData(e.target).get('status') });
     error ? fail(error) : (flash('Order updated.'), route());
   });
+  document.querySelectorAll('.delimg').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.from('product_images').delete().eq('id', b.dataset.id); error ? fail(error) : route(); }));
   document.getElementById('pf')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), pid = e.target.dataset.id;
-    const file = f.image; delete f.image;
+    const file = f.image; delete f.image; delete f.extras;
+    const extraFiles = new FormData(e.target).getAll('extras').filter((x) => x && x.size);
     if (file && file.size) {
       if (file.size > 5 * 1024 * 1024) return fail(new Error('Photo must be under 5 MB.'));
       const path = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-60)}`;
@@ -329,8 +400,16 @@ pages.admin.after = ([sub, id]) => {
     const row = { name: f.name.trim(), category: f.category.trim(), description: f.description, price_cents: Math.round(parseFloat(f.price) * 100), unit: f.unit.trim(),
       r_value: f.r_value.trim(), stock: parseInt(f.stock, 10), image_url: safeUrl(f.image_url.trim()), active: !!f.active };
     if (!pid) row.slug = (row.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'product') + '-' + Math.floor(Math.random() * 1000);
-    const { error } = pid ? await sb.from('products').update(row).eq('id', pid) : await sb.from('products').insert(row);
-    error ? fail(error) : (flash('Product saved.'), (location.hash = '#/admin/products'));
+    const res = pid ? await sb.from('products').update(row).eq('id', pid).select('id').single() : await sb.from('products').insert(row).select('id').single();
+    if (res.error) return fail(res.error);
+    for (const [n, xf] of extraFiles.entries()) {
+      if (xf.size > 5 * 1024 * 1024) { flash('A gallery photo was over 5 MB and was skipped.', 'error'); continue; }
+      const path = `${Date.now()}-${n}-${xf.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-60)}`;
+      const up = await sb.storage.from('product-images').upload(path, xf, { contentType: xf.type });
+      if (up.error) return fail(up.error);
+      await sb.from('product_images').insert({ product_id: res.data.id, url: sb.storage.from('product-images').getPublicUrl(path).data.publicUrl, position: n });
+    }
+    flash('Product saved.'); location.hash = '#/admin/products';
   });
 };
 

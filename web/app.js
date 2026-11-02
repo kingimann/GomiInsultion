@@ -280,11 +280,12 @@ pages.admin.after = ([sub, id]) => {
 
 // ---- router ----
 async function route() {
-  const [path, qs] = (location.hash.slice(1) || '/').split('?'); const q = new URLSearchParams(qs || '');
+  let h = location.hash.slice(1); if (!h.startsWith('/')) h = '/'; // e.g. #access_token=… after email confirmation
+  const [path, qs] = h.split('?'); const q = new URLSearchParams(qs || '');
   const [name = 'home', ...args] = path.split('/').filter(Boolean); const page = pages[name === '' ? 'home' : name];
   if (!page) { $app.innerHTML = '<h1>Not found</h1>'; return; }
   try { $app.innerHTML = await page(args, q); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
 }
 window.addEventListener('hashchange', route);
-sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') { session = null; profile = null; renderNav(); } });
+sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_IN' && /access_token|type=signup/.test(location.hash)) setTimeout(async () => { await loadSession(); flash('Email confirmed. Welcome!'); location.hash = '#/account'; }, 0); if (ev === 'SIGNED_OUT') { session = null; profile = null; renderNav(); } });
 loadSession().then(route);

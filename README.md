@@ -69,7 +69,7 @@ Postgres triggers call the `notify` edge function (customer order confirmation, 
 Until step 4 is done the triggers do nothing, so orders are never affected.
 
 ## Styling
-Admins see a **🎨 Style** button: pick a preset (Default, Ocean, Forest, Midnight, Workshop) or mix mode (auto/light/dark), colour, corner shape, font and density. The choice is saved in the database (`site_settings`) and applies to every visitor. Customers never see the button.
+Admins see a **🎨 Style** button: pick a preset (Default, Sunrise, Ocean, Forest, Fresh, Midnight, Boutique, Playful, Workshop) or mix mode (auto/light/dark), colour (9 presets or any custom colour), header, home banner, card and button styles, corner shape, font, text size, spacing and page width. Admins can also edit the store name and the announcement bar text. The choice is saved in the database (`site_settings`) and applies to every visitor. Customers never see the button.
 `DEFAULT_THEME` in `web/config.js` is only the fallback before a theme has been saved.
 
 ## Custom forms

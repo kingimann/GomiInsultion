@@ -7,20 +7,53 @@ const FREE_SHIP = 50000, SHIP = 1500;
 // ---- themes ----
 const THEME_OPTS = {
   mode: { label: 'Mode', vals: [['', 'Auto'], ['light', 'Light'], ['dark', 'Dark']] },
-  accent: { label: 'Colour', vals: [['', '#ea580c'], ['blue', '#2563eb'], ['green', '#16a34a'], ['purple', '#7c3aed'], ['slate', '#334155']], swatch: true },
+  accent: { label: 'Colour', swatch: true, vals: [['', '#ea580c'], ['amber', '#d97706'], ['rose', '#e11d48'], ['pink', '#db2777'], ['purple', '#7c3aed'], ['blue', '#2563eb'], ['teal', '#0d9488'], ['green', '#16a34a'], ['slate', '#334155']] },
+  header: { label: 'Header', vals: [['', 'Light'], ['brand', 'Brand colour'], ['dark', 'Dark']] },
+  hero: { label: 'Home banner', vals: [['', 'Gradient'], ['solid', 'Solid'], ['minimal', 'Minimal']] },
+  cards: { label: 'Cards', vals: [['', 'Soft'], ['flat', 'Flat'], ['outlined', 'Outlined'], ['lifted', 'Lifted']] },
+  buttons: { label: 'Buttons', vals: [['', 'Solid'], ['outline', 'Outline'], ['gradient', 'Gradient']] },
   radius: { label: 'Corners', vals: [['sharp', 'Sharp'], ['', 'Rounded'], ['pill', 'Pill']] },
-  font: { label: 'Font', vals: [['', 'Modern'], ['classic', 'Classic'], ['technical', 'Technical']] },
-  density: { label: 'Density', vals: [['', 'Comfortable'], ['compact', 'Compact']] },
+  font: { label: 'Font', vals: [['', 'Modern'], ['rounded', 'Rounded'], ['classic', 'Classic'], ['elegant', 'Elegant'], ['technical', 'Technical']] },
+  size: { label: 'Text size', vals: [['small', 'Small'], ['', 'Normal'], ['large', 'Large']] },
+  density: { label: 'Spacing', vals: [['', 'Comfortable'], ['compact', 'Compact']] },
+  width: { label: 'Page width', vals: [['narrow', 'Narrow'], ['', 'Standard'], ['wide', 'Wide']] },
 };
-const PRESETS = { Default: {}, Ocean: { accent: 'blue', radius: 'pill' }, Forest: { accent: 'green', font: 'classic' }, Midnight: { mode: 'dark', accent: 'purple' }, Workshop: { accent: 'slate', radius: 'sharp', font: 'technical', density: 'compact' } };
+const PRESETS = {
+  Default: {}, Sunrise: { accent: 'amber', header: 'brand', hero: 'solid', buttons: 'gradient', radius: 'pill' },
+  Ocean: { accent: 'blue', header: 'brand', radius: 'pill' }, Forest: { accent: 'green', font: 'classic', hero: 'minimal' },
+  Fresh: { accent: 'teal', header: 'brand', cards: 'flat', font: 'rounded' }, Midnight: { mode: 'dark', accent: 'purple', header: 'dark' },
+  Boutique: { accent: 'rose', font: 'elegant', cards: 'outlined', hero: 'minimal', radius: 'sharp' }, Playful: { accent: 'pink', font: 'rounded', radius: 'pill', buttons: 'gradient', cards: 'lifted' },
+  Workshop: { accent: 'slate', radius: 'sharp', font: 'technical', density: 'compact' },
+};
 // The theme is site-wide: only admins can change it (saved in the database); everyone else just receives it.
 // A cached copy is applied immediately to avoid a flash of the default look.
 let theme = {};
 try { theme = JSON.parse(localStorage.getItem('site_theme') || 'null') || window.GOMI.DEFAULT_THEME || {}; } catch { theme = window.GOMI.DEFAULT_THEME || {}; }
+const HEX = /^#[0-9a-f]{6}$/i;
+const isDark = () => document.documentElement.dataset.mode === 'dark' || (!document.documentElement.dataset.mode && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
 function applyTheme() {
-  for (const k of Object.keys(THEME_OPTS)) { if (theme[k]) document.documentElement.dataset[k] = theme[k]; else delete document.documentElement.dataset[k]; }
+  const root = document.documentElement;
+  for (const [k, o] of Object.entries(THEME_OPTS)) { const v = theme[k]; if (v && o.vals.some(([x]) => x === v)) root.dataset[k] = v; else delete root.dataset[k]; }
+  const custom = ['--brand', '--brand-d', '--brand-soft', '--hero-a', '--hero-b', '--hero-c', '--hero-fg', '--ph-a', '--ph-b', '--ph-fg'];
+  custom.forEach((v) => root.style.removeProperty(v));
+  if (HEX.test(theme.custom || '')) {
+    const c = theme.custom, mix = (pct, w) => `color-mix(in srgb, ${c} ${pct}%, ${w})`;
+    root.style.setProperty('--brand', c); root.style.setProperty('--brand-d', mix(82, '#000'));
+    root.style.setProperty('--ph-a', mix(35, '#fff')); root.style.setProperty('--ph-b', mix(75, '#fff')); root.style.setProperty('--ph-fg', mix(45, '#000'));
+    if (!isDark()) { root.style.setProperty('--brand-soft', mix(14, '#fff')); root.style.setProperty('--hero-a', mix(55, '#fff')); root.style.setProperty('--hero-b', mix(32, '#fff')); root.style.setProperty('--hero-c', mix(10, '#fff')); root.style.setProperty('--hero-fg', mix(28, '#000')); }
+  }
   try { localStorage.setItem('site_theme', JSON.stringify(theme)); } catch {}
+  applyBranding();
 }
+function applyBranding() {
+  const name = (theme.name || '').trim() || 'Gomi Insulation';
+  const brand = document.querySelector('.brand'); if (brand) brand.textContent = '🏠 ' + name;
+  const fb = document.querySelector('footer .foot b'); if (fb) fb.textContent = '🏠 ' + name;
+  const text = typeof theme.announce === 'string' ? theme.announce.trim() : window.GOMI.ANNOUNCEMENT;
+  let el = document.querySelector('.announce');
+  if (text) { if (!el) { el = document.createElement('div'); el.className = 'announce'; document.body.prepend(el); } el.textContent = text; } else el?.remove();
+}
+window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
 applyTheme();
 async function loadSiteTheme() {
   const { data } = await sb.from('site_settings').select('value').eq('key', 'theme').maybeSingle();
@@ -33,18 +66,32 @@ async function saveSiteTheme() {
 }
 function buildStylePanel() {
   const el = document.getElementById('stylepanel'); if (!el) return;
-  el.innerHTML = `<h3>🎨 Site style</h3><p class="muted" style="margin:-4px 0 10px;font-size:.85rem">Changes apply to every visitor (admins only).</p><fieldset><legend>Presets</legend><div class="opts">${Object.keys(PRESETS).map((n) => `<button data-preset="${n}">${n}</button>`).join('')}</div></fieldset>
+  el.innerHTML = `<h3>🎨 Site style</h3><p class="muted" style="margin:-4px 0 10px;font-size:.85rem">Changes apply to every visitor (admins only).</p>
+  <fieldset><legend>Presets</legend><div class="opts">${Object.keys(PRESETS).map((n) => `<button data-preset="${n}">${n}</button>`).join('')}</div></fieldset>
   ${Object.entries(THEME_OPTS).map(([k, o]) => `<fieldset><legend>${o.label}</legend><div class="opts">${o.vals.map(([v, l]) => o.swatch
-    ? `<button class="sw" data-k="${k}" data-v="${v}" style="background:${l}" aria-label="${v || 'orange'}" aria-pressed="${(theme[k] || '') === v}"></button>`
-    : `<button data-k="${k}" data-v="${v}" aria-pressed="${(theme[k] || '') === v}">${l}</button>`).join('')}</div></fieldset>`).join('')}`;
+    ? `<button class="sw" data-k="${k}" data-v="${v}" style="background:${l}" aria-label="${v || 'orange'}" aria-pressed="${!theme.custom && (theme[k] || '') === v}"></button>`
+    : `<button data-k="${k}" data-v="${v}" aria-pressed="${(theme[k] || '') === v}">${l}</button>`).join('')}</div>
+    ${k === 'accent' ? `<div class="row" style="margin-top:8px"><label class="muted" style="display:flex;gap:8px;align-items:center">Custom <input type="color" id="customcolor" value="${HEX.test(theme.custom || '') ? theme.custom : '#ea580c'}" style="width:48px;height:34px;padding:2px"></label>${theme.custom ? '<button class="link" id="clearcolor" style="color:var(--brand)">Use preset colour</button>' : ''}</div>` : ''}</fieldset>`).join('')}
+  <fieldset><legend>Store name</legend><input id="storename" maxlength="40" value="${esc(theme.name || '')}" placeholder="Gomi Insulation" style="width:100%"></fieldset>
+  <fieldset><legend>Announcement bar</legend><input id="announce" maxlength="200" value="${esc(typeof theme.announce === 'string' ? theme.announce : (window.GOMI.ANNOUNCEMENT || ''))}" placeholder="Leave empty to hide the bar" style="width:100%"></fieldset>`;
 }
 document.addEventListener('click', (e) => {
   const panel = document.getElementById('stylepanel');
   if (e.target.closest('#stylebtn')) { if (!profile?.is_admin) return; buildStylePanel(); panel.hidden = !panel.hidden; return; }
   if (panel && !panel.hidden && !e.target.closest('#stylepanel')) panel.hidden = true;
   const b = e.target.closest('#stylepanel button'); if (!b || !profile?.is_admin) return;
-  if (b.dataset.preset) theme = { ...PRESETS[b.dataset.preset] }; else theme = { ...theme, [b.dataset.k]: b.dataset.v };
+  if (b.id === 'clearcolor') delete theme.custom;
+  else if (b.dataset.preset) { const keep = {}; if ('name' in theme) keep.name = theme.name; if ('announce' in theme) keep.announce = theme.announce; theme = { ...keep, ...PRESETS[b.dataset.preset] }; }
+  else if (b.dataset.k) { theme = { ...theme, [b.dataset.k]: b.dataset.v }; if (b.dataset.k === 'accent') delete theme.custom; }
+  else return;
   applyTheme(); buildStylePanel(); saveSiteTheme();
+});
+document.addEventListener('input', (e) => { if (e.target.id === 'customcolor' && profile?.is_admin) { theme = { ...theme, custom: e.target.value }; applyTheme(); } });
+document.addEventListener('change', (e) => {
+  if (!profile?.is_admin) return;
+  if (e.target.id === 'customcolor') { theme = { ...theme, custom: e.target.value }; applyTheme(); buildStylePanel(); saveSiteTheme(); }
+  else if (e.target.id === 'storename') { theme = { ...theme, name: e.target.value.trim().slice(0, 40) }; applyTheme(); saveSiteTheme(); }
+  else if (e.target.id === 'announce') { theme = { ...theme, announce: e.target.value.trim().slice(0, 200) }; applyTheme(); saveSiteTheme(); }
 });
 
 // ---- helpers ----
@@ -774,6 +821,6 @@ sb.auth.onAuthStateChange((ev) => {
   else if (ev === 'SIGNED_IN' && /type=signup/.test(location.hash)) setTimeout(async () => { await loadSession(); flash('Email confirmed. Welcome!'); location.hash = '#/account'; }, 0);
   if (ev === 'SIGNED_OUT') { session = null; profile = null; unread = { all: 0, msg: 0 }; if (notifChan) { sb.removeChannel(notifChan); notifChan = null; } renderNav(); }
 });
-if (C.ANNOUNCEMENT) { const a = document.createElement('div'); a.className = 'announce'; a.textContent = C.ANNOUNCEMENT; document.body.prepend(a); }
+applyBranding();
 loadSiteTheme();
 loadSession().then(route);

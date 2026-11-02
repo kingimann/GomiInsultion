@@ -1,0 +1,210 @@
+const C = window.GOMI;
+const sb = supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY);
+const $app = document.getElementById('app');
+const STATUSES = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'];
+const FREE_SHIP = 50000, SHIP = 1500;
+
+// ---- helpers ----
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = (c) => `${C.CURRENCY}${(c / 100).toFixed(2)}`;
+const safeUrl = (u) => (/^(https?:\/\/|\/)/.test(u || '') ? u : '');
+let session = null, profile = null;
+const getCart = () => { try { return JSON.parse(localStorage.getItem('cart') || '{}'); } catch { return {}; } };
+const setCart = (c) => { localStorage.setItem('cart', JSON.stringify(c)); renderNav(); };
+function flash(msg, type = 'ok') {
+  const f = document.getElementById('flash'); f.textContent = msg; f.className = `flash ${type}`; f.hidden = false;
+  clearTimeout(flash.t); flash.t = setTimeout(() => (f.hidden = true), 5000);
+}
+const img = (p, big) => (safeUrl(p.image_url) ? `<img class="${big ? 'big' : ''}" src="${esc(safeUrl(p.image_url))}" alt="${esc(p.name)}">` : `<div class="ph ${big ? 'big' : ''}">${esc(p.r_value || '🧱')}</div>`);
+const card = (p) => `<article class="card"><a href="#/product/${esc(p.slug)}">${img(p)}</a><div class="pad"><span class="tag">${esc(p.category)}</span>
+  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p><p class="price">${money(p.price_cents)}</p></div></article>`;
+const totals = (sub) => { const ship = !sub || sub >= FREE_SHIP ? 0 : SHIP; return { sub, ship, total: sub + ship }; };
+const totalsHtml = (t) => `<dl class="totals"><dt>Subtotal</dt><dd>${money(t.sub)}</dd><dt>Shipping</dt><dd>${t.ship ? money(t.ship) : 'Free'}</dd><dt>Total</dt><dd><strong>${money(t.total)}</strong></dd></dl>`;
+const fail = (e) => { console.error(e); flash(e.message || 'Something went wrong', 'error'); };
+const dateOf = (s) => new Date(s).toLocaleString();
+
+async function loadSession() {
+  const { data } = await sb.auth.getSession(); session = data.session; profile = null;
+  if (session) { const r = await sb.from('profiles').select('*').eq('id', session.user.id).maybeSingle(); profile = r.data; }
+  renderNav();
+}
+function renderNav() {
+  const n = Object.values(getCart()).reduce((a, b) => a + b, 0);
+  document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a>` + (session
+    ? `${profile?.is_admin ? '<a href="#/admin">Admin</a>' : ''}<a href="#/account">${esc((profile?.name || 'Account').split(' ')[0])}</a><button class="link" id="logout">Log out</button>`
+    : `<a href="#/login">Log in</a><a href="#/register">Sign up</a>`) + `<a class="cart" href="#/cart">Cart (${n})</a>`;
+  document.getElementById('logout')?.addEventListener('click', async () => { await sb.auth.signOut(); location.hash = '#/'; });
+}
+document.getElementById('search').addEventListener('submit', (e) => { e.preventDefault(); location.hash = `#/shop?q=${encodeURIComponent(new FormData(e.target).get('q'))}`; });
+
+// ---- pages ----
+const pages = {};
+pages.home = async () => {
+  const { data, error } = await sb.from('products').select('*').eq('active', true).order('id').limit(8); if (error) throw error;
+  const cats = [...new Set((await sb.from('products').select('category').eq('active', true)).data.map((r) => r.category))].sort();
+  return `<section class="hero"><h1>Insulation for every build.</h1><p>Batts, spray foam, rigid board and more. Order online and get it delivered to your site.</p><a class="btn" href="#/shop">Shop all products</a></section>
+  <h2>Shop by category</h2><div class="chips">${cats.map((c) => `<a class="chip" href="#/shop?category=${encodeURIComponent(c)}">${esc(c)}</a>`).join('')}</div>
+  <h2>Featured</h2><div class="grid">${data.map(card).join('')}</div>`;
+};
+pages.shop = async (_, q) => {
+  const category = q.get('category') || '', term = (q.get('q') || '').replace(/[%,()]/g, '');
+  let req = sb.from('products').select('*').eq('active', true).order('name');
+  if (category) req = req.eq('category', category);
+  if (term) req = req.or(`name.ilike.%${term}%,description.ilike.%${term}%,category.ilike.%${term}%`);
+  const { data, error } = await req; if (error) throw error;
+  const cats = [...new Set((await sb.from('products').select('category').eq('active', true)).data.map((r) => r.category))].sort();
+  return `<h1>${esc(category || 'All products')}</h1><div class="chips"><a class="chip ${!category ? 'on' : ''}" href="#/shop">All</a>
+  ${cats.map((c) => `<a class="chip ${c === category ? 'on' : ''}" href="#/shop?category=${encodeURIComponent(c)}">${esc(c)}</a>`).join('')}</div>
+  ${term ? `<p class="muted">Results for “${esc(term)}”</p>` : ''}${data.length ? `<div class="grid">${data.map(card).join('')}</div>` : '<p>No products found.</p>'}`;
+};
+pages.product = async ([slug]) => {
+  const { data: p } = await sb.from('products').select('*').eq('slug', slug).maybeSingle();
+  if (!p) return '<h1>Not found</h1>';
+  return `<div class="detail"><div>${img(p, true)}</div><div><span class="tag">${esc(p.category)}</span><h1>${esc(p.name)}</h1>
+  <p class="price big">${money(p.price_cents)} <small>per ${esc(p.unit)}</small></p>${p.r_value ? `<p><strong>R-value:</strong> ${esc(p.r_value)}</p>` : ''}<p>${esc(p.description)}</p>
+  ${p.stock > 0 ? `<form class="row" id="add"><input type="number" name="qty" value="1" min="1" max="${p.stock}" aria-label="Quantity"><button class="btn">Add to cart</button></form>
+  <p class="muted">${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : '<p class="flash error">Out of stock</p>'}</div></div>`;
+};
+pages.product.after = ([slug]) => document.getElementById('add')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const { data: p } = await sb.from('products').select('id,stock,name').eq('slug', slug).single();
+  const cart = getCart(); const qty = Math.max(1, parseInt(new FormData(e.target).get('qty'), 10) || 1);
+  cart[p.id] = Math.min((cart[p.id] || 0) + qty, p.stock); setCart(cart); flash(`Added ${p.name} to your cart.`); location.hash = '#/cart';
+});
+
+async function cartLines() {
+  const cart = getCart(), ids = Object.keys(cart); if (!ids.length) return [];
+  const { data } = await sb.from('products').select('*').in('id', ids).eq('active', true);
+  return data.filter((p) => p.stock > 0).map((p) => ({ ...p, qty: Math.min(cart[p.id], p.stock) }));
+}
+pages.cart = async () => {
+  const lines = await cartLines();
+  if (!lines.length) return '<h1>Your cart</h1><p>Your cart is empty. <a href="#/shop">Keep shopping</a></p>';
+  const t = totals(lines.reduce((a, l) => a + l.price_cents * l.qty, 0));
+  return `<h1>Your cart</h1><form id="cartform"><table><tr><th>Product</th><th>Price</th><th>Qty</th><th>Total</th></tr>
+  ${lines.map((l) => `<tr><td><a href="#/product/${esc(l.slug)}">${esc(l.name)}</a></td><td>${money(l.price_cents)}</td>
+  <td><input type="number" name="${l.id}" value="${l.qty}" min="0" max="${l.stock}"></td><td>${money(l.price_cents * l.qty)}</td></tr>`).join('')}</table>
+  <button class="btn alt">Update quantities</button> <span class="muted">(set 0 to remove)</span></form>${totalsHtml(t)}<a class="btn" href="#/checkout">Checkout</a>`;
+};
+pages.cart.after = () => document.getElementById('cartform')?.addEventListener('submit', (e) => {
+  e.preventDefault(); const cart = {};
+  for (const [id, v] of new FormData(e.target)) { const q = parseInt(v, 10); if (q > 0) cart[id] = q; }
+  setCart(cart); route();
+});
+
+pages.checkout = async () => {
+  const lines = await cartLines(); if (!lines.length) return '<h1>Checkout</h1><p>Your cart is empty.</p>';
+  const t = totals(lines.reduce((a, l) => a + l.price_cents * l.qty, 0));
+  const f = (n, l, v = '', x = '') => `<label>${l}<input name="${n}" value="${esc(v)}" ${x}></label>`;
+  return `<h1>Checkout</h1><div class="two"><form id="co" class="stack">
+  ${f('name', 'Full name', profile?.name, 'required')}${f('email', 'Email', session?.user.email, 'type="email" required')}${f('phone', 'Phone')}
+  ${f('address', 'Delivery address', '', 'required')}${f('city', 'City', '', 'required')}${f('postcode', 'Postal / ZIP code', '', 'required')}
+  <label>Order notes<textarea name="notes"></textarea></label>
+  <p class="muted">Payment: we'll email you an invoice and payment options once your order is confirmed.</p><button class="btn">Place order</button></form>
+  <aside><h3>Order summary</h3><ul>${lines.map((l) => `<li>${l.qty} × ${esc(l.name)} <span>${money(l.qty * l.price_cents)}</span></li>`).join('')}</ul>${totalsHtml(t)}</aside></div>`;
+};
+pages.checkout.after = () => document.getElementById('co')?.addEventListener('submit', async (e) => {
+  e.preventDefault(); const btn = e.target.querySelector('button'); btn.disabled = true;
+  const customer = Object.fromEntries(new FormData(e.target));
+  const items = Object.entries(getCart()).map(([id, qty]) => ({ id: Number(id), qty }));
+  const { data, error } = await sb.rpc('place_order', { items, customer });
+  btn.disabled = false; if (error) return fail(error);
+  setCart({}); flash(`Thanks! Order #${data.id} received. We'll email you an invoice shortly.`);
+  location.hash = `#/order/${data.id}` + (session ? '' : `?k=${data.key}`);
+});
+
+const orderHtml = (o, items, admin) => `<h1>Order #${o.id}</h1><p><span class="status ${esc(o.status)}">${esc(o.status)}</span> · placed ${dateOf(o.created_at)}</p>
+  <table><tr><th>Item</th><th>Price</th><th>Qty</th><th>Total</th></tr>${items.map((i) => `<tr><td>${esc(i.name)}</td><td>${money(i.price_cents)}</td><td>${i.qty}</td><td>${money(i.price_cents * i.qty)}</td></tr>`).join('')}</table>
+  ${totalsHtml({ sub: o.subtotal_cents, ship: o.shipping_cents, total: o.total_cents })}
+  <h3>Delivery</h3><p>${esc(o.name)}<br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br>${esc(o.email)} ${esc(o.phone)}</p>${o.notes ? `<p><em>${esc(o.notes)}</em></p>` : ''}
+  ${admin ? `<form class="row" id="status"><select name="status">${STATUSES.map((s) => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select><button class="btn alt">Update status</button></form>` : ''}`;
+pages.order = async ([id], q) => {
+  let o, items;
+  if (q.get('k')) { const { data } = await sb.rpc('get_guest_order', { oid: Number(id), k: q.get('k') }); if (data) { o = data; items = data.items; } }
+  else { o = (await sb.from('orders').select('*').eq('id', id).maybeSingle()).data; if (o) items = (await sb.from('order_items').select('*').eq('order_id', id)).data; }
+  return o ? orderHtml(o, items, false) : '<h1>Order not found</h1>';
+};
+
+const authForm = (reg) => `<div class="narrow"><h1>${reg ? 'Create account' : 'Log in'}</h1><form id="auth" class="stack">
+  ${reg ? '<label>Name<input name="name" required></label>' : ''}<label>Email<input type="email" name="email" required></label>
+  <label>Password<input type="password" name="password" required minlength="${reg ? 8 : 1}"></label><button class="btn">${reg ? 'Sign up' : 'Log in'}</button></form>
+  <p>${reg ? 'Have an account? <a href="#/login">Log in</a>' : 'New here? <a href="#/register">Create an account</a>'}</p></div>`;
+pages.login = () => authForm(false); pages.register = () => authForm(true);
+const authAfter = (reg) => () => document.getElementById('auth')?.addEventListener('submit', async (e) => {
+  e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+  const r = reg ? await sb.auth.signUp({ email: f.email, password: f.password, options: { data: { name: f.name } } })
+    : await sb.auth.signInWithPassword({ email: f.email, password: f.password });
+  if (r.error) return fail(r.error);
+  if (reg && !r.data.session) { flash('Check your email to confirm your account, then log in.'); return (location.hash = '#/login'); }
+  await loadSession(); flash(reg ? 'Welcome! Your account is ready.' : 'Logged in.'); location.hash = '#/account';
+});
+pages.login.after = authAfter(false); pages.register.after = authAfter(true);
+
+const ordersTable = (os, base) => os.length ? `<table><tr><th>Order</th><th>Date</th><th>Status</th><th>Total</th></tr>${os.map((o) => `<tr><td><a href="${base}/${o.id}">#${o.id}</a>${base.includes('admin') ? ' · ' + esc(o.name) : ''}</td><td>${dateOf(o.created_at)}</td><td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}</td></tr>`).join('')}</table>` : '<p>No orders yet.</p>';
+pages.account = async () => {
+  if (!session) { location.hash = '#/login'; return ''; }
+  const { data } = await sb.from('orders').select('*').eq('user_id', session.user.id).order('id', { ascending: false });
+  return `<h1>My account</h1><p>${esc(profile?.name)} · ${esc(session.user.email)}</p><h2>Order history</h2>${ordersTable(data, '#/order')}`;
+};
+
+// ---- admin ----
+const needAdmin = () => { if (!profile?.is_admin) { $app.innerHTML = '<h1>Forbidden</h1>'; return false; } return true; };
+pages.admin = async ([sub, id]) => {
+  if (!profile?.is_admin) return '<h1>Forbidden</h1>';
+  if (sub === 'orders' && id) {
+    const o = (await sb.from('orders').select('*').eq('id', id).single()).data;
+    return orderHtml(o, (await sb.from('order_items').select('*').eq('order_id', id)).data, true);
+  }
+  if (sub === 'orders') return `<h1>Orders</h1>${ordersTable((await sb.from('orders').select('*').order('id', { ascending: false })).data, '#/admin/orders')}`;
+  if (sub === 'customers') {
+    const us = (await sb.from('profiles').select('*').order('created_at', { ascending: false })).data;
+    return `<h1>Customers</h1><table><tr><th>Name</th><th>Email</th><th>Joined</th></tr>${us.map((u) => `<tr><td>${esc(u.name)}${u.is_admin ? ' (admin)' : ''}</td><td>${esc(u.email)}</td><td>${dateOf(u.created_at)}</td></tr>`).join('')}</table>`;
+  }
+  if (sub === 'products' && (id === 'new' || id)) {
+    const p = id === 'new' ? {} : (await sb.from('products').select('*').eq('id', id).single()).data;
+    const t = (n, l, x = '') => `<label>${l}<input name="${n}" value="${esc(p[n] ?? '')}" ${x}></label>`;
+    return `<h1>${p.id ? 'Edit product' : 'New product'}</h1><form id="pf" class="stack narrow" data-id="${p.id || ''}">${t('name', 'Name', 'required')}${t('category', 'Category', 'required')}
+    <label>Description<textarea name="description" rows="5">${esc(p.description)}</textarea></label>
+    <label>Price<input name="price" type="number" step="0.01" min="0" required value="${p.price_cents != null ? (p.price_cents / 100).toFixed(2) : ''}"></label>
+    ${t('unit', 'Unit (e.g. bundle, roll)', 'required')}${t('r_value', 'R-value')}<label>Stock<input name="stock" type="number" min="0" required value="${p.stock ?? 0}"></label>
+    ${t('image_url', 'Image URL (optional)')}<label class="check"><input type="checkbox" name="active" ${p.id && !p.active ? '' : 'checked'}> Visible in store</label><button class="btn">Save</button></form>`;
+  }
+  if (sub === 'products') {
+    const ps = (await sb.from('products').select('*').order('name')).data;
+    return `<h1>Products</h1><p><a class="btn" href="#/admin/products/new">+ New product</a></p><table><tr><th>Name</th><th>Category</th><th>Price</th><th>Stock</th><th>Status</th></tr>
+    ${ps.map((p) => `<tr><td><a href="#/admin/products/${p.id}">${esc(p.name)}</a></td><td>${esc(p.category)}</td><td>${money(p.price_cents)}</td><td>${p.stock}</td><td>${p.active ? 'Live' : 'Hidden'}</td></tr>`).join('')}</table>`;
+  }
+  const [oc, pc, rev, cc, low] = await Promise.all([
+    sb.from('orders').select('*', { count: 'exact', head: true }), sb.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+    sb.from('orders').select('total_cents').neq('status', 'cancelled'), sb.from('profiles').select('*', { count: 'exact', head: true }).eq('is_admin', false),
+    sb.from('products').select('*').lte('stock', 10).order('stock').limit(10)]);
+  const revenue = rev.data.reduce((a, o) => a + o.total_cents, 0);
+  return `<h1>Admin</h1><div class="stats"><div><b>${oc.count}</b>orders</div><div><b>${pc.count}</b>pending</div><div><b>${money(revenue)}</b>revenue</div><div><b>${cc.count}</b>customers</div></div>
+  <p><a class="btn" href="#/admin/orders">Orders</a> <a class="btn" href="#/admin/products">Products</a> <a class="btn" href="#/admin/customers">Customers</a></p>
+  <h2>Low stock</h2>${low.data.length ? `<ul>${low.data.map((p) => `<li><a href="#/admin/products/${p.id}">${esc(p.name)}</a> — ${p.stock} left</li>`).join('')}</ul>` : '<p>All good.</p>'}`;
+};
+pages.admin.after = ([sub, id]) => {
+  document.getElementById('status')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const { error } = await sb.rpc('set_order_status', { oid: Number(id), new_status: new FormData(e.target).get('status') });
+    error ? fail(error) : (flash('Order updated.'), route());
+  });
+  document.getElementById('pf')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), pid = e.target.dataset.id;
+    const row = { name: f.name.trim(), category: f.category.trim(), description: f.description, price_cents: Math.round(parseFloat(f.price) * 100), unit: f.unit.trim(),
+      r_value: f.r_value.trim(), stock: parseInt(f.stock, 10), image_url: safeUrl(f.image_url.trim()), active: !!f.active };
+    if (!pid) row.slug = (row.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'product') + '-' + Math.floor(Math.random() * 1000);
+    const { error } = pid ? await sb.from('products').update(row).eq('id', pid) : await sb.from('products').insert(row);
+    error ? fail(error) : (flash('Product saved.'), (location.hash = '#/admin/products'));
+  });
+};
+
+// ---- router ----
+async function route() {
+  const [path, qs] = (location.hash.slice(1) || '/').split('?'); const q = new URLSearchParams(qs || '');
+  const [name = 'home', ...args] = path.split('/').filter(Boolean); const page = pages[name === '' ? 'home' : name];
+  if (!page) { $app.innerHTML = '<h1>Not found</h1>'; return; }
+  try { $app.innerHTML = await page(args, q); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
+}
+window.addEventListener('hashchange', route);
+sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') { session = null; profile = null; renderNav(); } });
+loadSession().then(route);

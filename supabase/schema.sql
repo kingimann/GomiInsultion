@@ -1,0 +1,118 @@
+-- Gomi Insulation schema. Run in the Supabase SQL editor (or via the management API).
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  name text not null default '', email text not null default '',
+  is_admin boolean not null default false, created_at timestamptz not null default now());
+
+create or replace function public.handle_new_user() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.profiles (id, name, email) values (new.id, coalesce(new.raw_user_meta_data->>'name',''), new.email);
+  return new;
+end $$;
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created after insert on auth.users for each row execute function public.handle_new_user();
+
+create or replace function public.is_admin() returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((select is_admin from public.profiles where id = auth.uid()), false) $$;
+
+create table if not exists public.products (
+  id bigint generated always as identity primary key, slug text unique not null, name text not null,
+  category text not null, description text not null default '', price_cents int not null check (price_cents >= 0),
+  unit text not null default 'each', r_value text not null default '', stock int not null default 0 check (stock >= 0),
+  image_url text not null default '', active boolean not null default true);
+
+create table if not exists public.orders (
+  id bigint generated always as identity primary key, user_id uuid references auth.users(id),
+  guest_key uuid not null default gen_random_uuid(),
+  email text not null, name text not null, phone text not null default '', address text not null,
+  city text not null, postcode text not null, notes text not null default '',
+  status text not null default 'pending' check (status in ('pending','paid','shipped','delivered','cancelled')),
+  subtotal_cents int not null, shipping_cents int not null, total_cents int not null,
+  created_at timestamptz not null default now());
+
+create table if not exists public.order_items (
+  id bigint generated always as identity primary key, order_id bigint not null references public.orders(id) on delete cascade,
+  product_id bigint references public.products(id), name text not null, price_cents int not null, qty int not null check (qty > 0));
+
+alter table public.profiles enable row level security;
+alter table public.products enable row level security;
+alter table public.orders enable row level security;
+alter table public.order_items enable row level security;
+
+drop policy if exists "own profile" on public.profiles;
+create policy "own profile" on public.profiles for select using (id = auth.uid() or public.is_admin());
+drop policy if exists "view products" on public.products;
+create policy "view products" on public.products for select using (active or public.is_admin());
+drop policy if exists "admin write products" on public.products;
+create policy "admin write products" on public.products for all using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "own orders" on public.orders;
+create policy "own orders" on public.orders for select using (user_id = auth.uid() or public.is_admin());
+drop policy if exists "own order items" on public.order_items;
+create policy "own order items" on public.order_items for select using (
+  exists (select 1 from public.orders o where o.id = order_id and (o.user_id = auth.uid() or public.is_admin())));
+
+-- Place an order. Prices and stock come from the database, never from the browser.
+create or replace function public.place_order(items jsonb, customer jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare it jsonb; p public.products; q int; sub int := 0; ship int; oid bigint; gk uuid;
+  free_over int := 50000; flat int := 1500;
+begin
+  if jsonb_array_length(items) = 0 then raise exception 'Cart is empty'; end if;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint and active for update;
+    if not found or q < 1 or p.stock < q then raise exception 'Not enough stock for %', coalesce(p.name, 'an item'); end if;
+    sub := sub + p.price_cents * q;
+  end loop;
+  ship := case when sub >= free_over then 0 else flat end;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents)
+  values (auth.uid(), customer->>'email', customer->>'name', coalesce(customer->>'phone',''), customer->>'address',
+          customer->>'city', customer->>'postcode', coalesce(customer->>'notes',''), sub, ship, sub + ship)
+  returning id, guest_key into oid, gk;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint;
+    insert into order_items (order_id, product_id, name, price_cents, qty) values (oid, p.id, p.name, p.price_cents, q);
+    update products set stock = stock - q where id = p.id;
+  end loop;
+  return jsonb_build_object('id', oid, 'key', gk);
+end $$;
+
+create or replace function public.get_guest_order(oid bigint, k uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select to_jsonb(o) - 'guest_key' || jsonb_build_object('items',
+    (select coalesce(jsonb_agg(to_jsonb(i)), '[]') from order_items i where i.order_id = o.id))
+  from orders o where o.id = oid and o.guest_key = k $$;
+
+create or replace function public.set_order_status(oid bigint, new_status text) returns void
+language plpgsql security definer set search_path = public as $$
+declare old text; i record;
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  select status into old from orders where id = oid for update;
+  if old is null then raise exception 'No such order'; end if;
+  if new_status = 'cancelled' and old <> 'cancelled' then
+    for i in select * from order_items where order_id = oid loop update products set stock = stock + i.qty where id = i.product_id; end loop;
+  elsif old = 'cancelled' and new_status <> 'cancelled' then
+    for i in select * from order_items where order_id = oid loop update products set stock = greatest(0, stock - i.qty) where id = i.product_id; end loop;
+  end if;
+  update orders set status = new_status where id = oid;
+end $$;
+
+revoke all on function public.get_guest_order(bigint, uuid), public.place_order(jsonb, jsonb), public.set_order_status(bigint, text) from public;
+grant execute on function public.get_guest_order(bigint, uuid), public.place_order(jsonb, jsonb) to anon, authenticated;
+grant execute on function public.set_order_status(bigint, text) to authenticated;
+
+insert into public.products (slug,name,category,description,price_cents,unit,r_value,stock) values
+ ('fiberglass-batts-r13','Fiberglass Batts R-13','Batts & Rolls','Classic unfaced fiberglass batts for 2x4 walls.',4999,'bundle (88 sq ft)','R-13',120),
+ ('fiberglass-batts-r19','Fiberglass Batts R-19','Batts & Rolls','Fits 2x6 framing and standard floor joists.',6999,'bundle (80 sq ft)','R-19',90),
+ ('mineral-wool-r15','Mineral Wool Batts R-15','Batts & Rolls','Fire resistant, water repellent, excellent acoustic performance.',8999,'bundle (60 sq ft)','R-15',60),
+ ('spray-foam-kit-600','Closed-Cell Spray Foam Kit (600 bf)','Spray Foam','Two-component kit for sealing gaps, rim joists and small walls.',52900,'kit','R-6.5/in',25),
+ ('spray-foam-can','Expanding Foam Sealant Can','Spray Foam','Fill gaps and cracks around windows, doors and penetrations.',899,'can (500 ml)','',300),
+ ('xps-board-2in','XPS Rigid Foam Board 2"','Rigid Board','Moisture-resistant extruded polystyrene for foundations and basements. 4x8 ft sheet.',3499,'sheet (4x8)','R-10',150),
+ ('polyiso-board-1in','Polyiso Foil-Faced Board 1"','Rigid Board','Highest R-value per inch of any rigid board.',2899,'sheet (4x8)','R-6',110),
+ ('blown-cellulose','Blown-In Cellulose','Loose Fill','Recycled-content attic insulation. Covers about 40 sq ft at R-19.',2199,'bag (25 lb)','R-3.7/in',200),
+ ('attic-baffles','Attic Rafter Vent Baffles','Accessories','Keeps soffit vents clear when adding attic insulation.',249,'each','',500),
+ ('vapour-barrier-6mil','Poly Vapour Barrier 6 mil','Accessories','Clear polyethylene sheeting, 10 x 100 ft roll.',6499,'roll','',70),
+ ('sealing-tape','Acoustic Sealant & Tape Kit','Accessories','Sealing tape and acoustical sealant for air-tight assemblies.',1999,'kit','',80)
+on conflict (slug) do nothing;

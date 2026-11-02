@@ -39,3 +39,9 @@ Codespaces sleep when idle, so this is for testing/demos, not a public shop.
 ## Moving to Supabase later
 All data access is in `src/db.js` and the SQL in `src/server.js`; accounts live in `src/auth.js`.
 The migration would swap SQLite for Supabase Postgres, and (optionally) the custom accounts for Supabase Auth.
+
+## Supabase + GitHub Pages version (`web/`, `supabase/`)
+A static storefront (no Node server) that uses Supabase for accounts (Auth), products/orders (Postgres with row-level
+security) and order placement (`place_order` RPC, which takes prices/stock from the DB). `supabase/schema.sql` creates everything.
+Deploys to GitHub Pages via `.github/workflows/pages.yml` (Settings → Pages → Source: **GitHub Actions**).
+To make yourself admin after signing up: `update public.profiles set is_admin = true where email = 'you@example.com';`

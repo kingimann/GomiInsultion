@@ -386,3 +386,18 @@ begin
   end loop;
   insert into form_submissions (form_id, data, user_id) values (f.id, clean, auth.uid());
 end $$;
+
+-- Response tracking (status + notes) and "email me new responses"
+alter table public.forms add column if not exists notify boolean not null default true;
+alter table public.form_submissions add column if not exists status text not null default 'new' check (status in ('new','in_progress','done'));
+alter table public.form_submissions add column if not exists notes text not null default '' check (length(notes) <= 5000);
+drop policy if exists "admin update responses" on public.form_submissions;
+create policy "admin update responses" on public.form_submissions for update using (public.is_admin()) with check (public.is_admin());
+create or replace function public.trg_form_submitted() returns trigger language plpgsql as $$
+begin
+  if (select notify from public.forms where id = new.form_id) then
+    perform public.send_notification('form_submitted', jsonb_build_object('submission_id', new.id)); end if;
+  return new;
+end $$;
+drop trigger if exists form_submitted_notify on public.form_submissions;
+create trigger form_submitted_notify after insert on public.form_submissions for each row execute function public.trg_form_submitted();

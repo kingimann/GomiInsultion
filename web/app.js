@@ -393,6 +393,7 @@ const salesChart = (orders) => {
   return `<svg viewBox="0 0 700 200" role="img" aria-label="Sales per day" style="width:100%;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:8px">
   ${days.map((d, i) => { const h = d.v / max * 140; return `<g><title>${d.label}: ${money(d.v)}</title><rect x="${i * 49 + 12}" y="${160 - h}" width="34" height="${Math.max(h, 2)}" rx="5" fill="var(--brand)" opacity="${d.v ? 1 : .25}"/><text x="${i * 49 + 29}" y="182" font-size="10" text-anchor="middle" fill="var(--muted)">${d.label}</text></g>`; }).join('')}</svg>`;
 };
+const RESP_STATUS = { new: 'New', in_progress: 'In progress', done: 'Done' };
 let FB = null; // form being edited in the builder
 const slugify = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 const formUrl = (slug) => `${location.origin}${location.pathname}#/form/${slug}`;
@@ -404,7 +405,7 @@ function fieldRows() {
     <button type="button" class="btn ghost" data-act="del" aria-label="Delete question" style="color:var(--err)">✕</button></div>
     ${f.type === 'select' ? `<textarea data-f="options" rows="3" placeholder="One option per line" style="width:100%;margin-top:8px">${esc((f.options || []).join('\n'))}</textarea>` : ''}</div>`).join('') || '<p class="muted">No questions yet. Add one below.</p>';
 }
-pages.admin = async ([sub, id, extra]) => {
+pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   if (!profile?.is_admin) return '<h1>Forbidden</h1>';
   if (sub === 'orders' && id) {
     const o = (await sb.from('orders').select('*').eq('id', id).single()).data;
@@ -412,12 +413,15 @@ pages.admin = async ([sub, id, extra]) => {
   }
   if (sub === 'forms' && id && extra === 'responses') {
     const f = (await sb.from('forms').select('*').eq('id', id).single()).data;
-    const rows = (await sb.from('form_submissions').select('*').eq('form_id', id).order('id', { ascending: false })).data;
+    const all = (await sb.from('form_submissions').select('*').eq('form_id', id).order('id', { ascending: false })).data;
+    const filter = q.get('status') || '', rows = filter ? all.filter((r) => r.status === filter) : all;
+    const cnt = (st) => all.filter((r) => r.status === st).length;
     return `<h1>${esc(f.title)} — responses</h1><p><a href="#/admin/forms">← All forms</a> · <button class="btn ghost" id="fcsv" data-id="${f.id}">⬇ Export CSV</button></p>
-    ${rows.length ? `<table><tr><th>Received</th>${f.fields.map((x) => `<th>${esc(x.label)}</th>`).join('')}<th></th></tr>${rows.map((r) => `<tr><td>${dateOf(r.created_at)}</td>${f.fields.map((x) => x.type === 'file' ? `<td>${r.data[x.id] ? `<button class="link dlfile" data-path="${esc(r.data[x.id])}" style="color:var(--brand)">⬇ ${esc(r.data[x.id].split('/').pop().replace(/^[0-9a-f-]{36}-/, ''))}</button>` : ''}</td>` : `<td style="white-space:pre-wrap">${esc(typeof r.data[x.id] === 'boolean' ? (r.data[x.id] ? 'Yes' : 'No') : r.data[x.id])}</td>`).join('')}<td><button class="link delresp" data-id="${r.id}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No responses yet.</p>'}`;
+    <div class="chips"><a class="chip ${!filter ? 'on' : ''}" href="#/admin/forms/${f.id}/responses">All (${all.length})</a>${Object.entries(RESP_STATUS).map(([k, l]) => `<a class="chip ${filter === k ? 'on' : ''}" href="#/admin/forms/${f.id}/responses?status=${k}">${l} (${cnt(k)})</a>`).join('')}</div>
+    ${rows.length ? `<table><tr><th>Received</th>${f.fields.map((x) => `<th>${esc(x.label)}</th>`).join('')}<th>Status</th><th>Notes</th><th></th></tr>${rows.map((r) => `<tr><td>${dateOf(r.created_at)}</td>${f.fields.map((x) => x.type === 'file' ? `<td>${r.data[x.id] ? `<button class="link dlfile" data-path="${esc(r.data[x.id])}" style="color:var(--brand)">⬇ ${esc(r.data[x.id].split('/').pop().replace(/^[0-9a-f-]{36}-/, ''))}</button>` : ''}</td>` : `<td style="white-space:pre-wrap">${esc(typeof r.data[x.id] === 'boolean' ? (r.data[x.id] ? 'Yes' : 'No') : r.data[x.id])}</td>`).join('')}<td><select class="rstatus" data-id="${r.id}" aria-label="Status">${Object.entries(RESP_STATUS).map(([k, l]) => `<option value="${k}" ${k === r.status ? 'selected' : ''}>${l}</option>`).join('')}</select></td><td><textarea class="rnotes" data-id="${r.id}" rows="2" maxlength="5000" placeholder="Add a note…" aria-label="Notes">${esc(r.notes)}</textarea></td><td><button class="link delresp" data-id="${r.id}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No responses yet.</p>'}`;
   }
   if (sub === 'forms' && id) {
-    const f = id === 'new' ? { title: '', slug: '', description: '', success_message: 'Thanks! We received your response.', active: true, fields: [] } : (await sb.from('forms').select('*').eq('id', id).single()).data;
+    const f = id === 'new' ? { title: '', slug: '', description: '', success_message: 'Thanks! We received your response.', active: true, notify: true, fields: [] } : (await sb.from('forms').select('*').eq('id', id).single()).data;
     FB = { ...f, fields: (f.fields || []).map((x) => ({ ...x })) };
     return `<h1>${f.id ? 'Edit form' : 'New form'}</h1><div class="narrow stack" id="fbuilder">
     <label>Title<input id="fb_title" value="${esc(f.title)}" maxlength="200"></label>
@@ -425,6 +429,7 @@ pages.admin = async ([sub, id, extra]) => {
     <label>Description (optional)<textarea id="fb_desc" rows="3" maxlength="2000">${esc(f.description)}</textarea></label>
     <label>Message shown after submitting<input id="fb_ok" value="${esc(f.success_message)}" maxlength="1000"></label>
     <label class="check"><input type="checkbox" id="fb_active" ${f.active ? 'checked' : ''}> Published (visible to visitors)</label>
+    <label class="check"><input type="checkbox" id="fb_notify" ${f.notify !== false ? 'checked' : ''}> Email me when someone submits this form</label>
     <h3 style="margin-bottom:0">Questions</h3><div id="fields">${fieldRows()}</div>
     <div class="row"><select id="fb_newtype">${Object.entries(FIELD_TYPES).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select><button type="button" class="btn alt" id="fb_add">+ Add question</button></div>
     <div class="row"><button type="button" class="btn" id="fb_save">Save form</button>${f.id ? `<a class="btn ghost" href="${esc(formUrl(f.slug))}" target="_blank" rel="noopener">View form ↗</a>` : ''}</div>
@@ -433,7 +438,8 @@ pages.admin = async ([sub, id, extra]) => {
   if (sub === 'forms') {
     const fs = (await sb.from('forms').select('*').order('id', { ascending: false })).data;
     const counts = {}; ((await sb.from('form_submissions').select('form_id')).data || []).forEach((r) => (counts[r.form_id] = (counts[r.form_id] || 0) + 1));
-    return `<h1>Forms</h1><p><a class="btn" href="#/admin/forms/new">+ New form</a></p>${fs.length ? `<table><tr><th>Form</th><th>Link</th><th>Status</th><th>Responses</th><th></th></tr>${fs.map((f) => `<tr><td><a href="#/admin/forms/${f.id}">${esc(f.title)}</a></td><td><code>#/form/${esc(f.slug)}</code></td><td>${f.active ? 'Published' : 'Draft'}</td><td><a href="#/admin/forms/${f.id}/responses">${counts[f.id] || 0}</a></td><td><button class="link delform" data-id="${f.id}" data-title="${esc(f.title)}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No forms yet.</p>'}`;
+    const fresh = {}; ((await sb.from('form_submissions').select('form_id').eq('status', 'new')).data || []).forEach((r) => (fresh[r.form_id] = (fresh[r.form_id] || 0) + 1));
+    return `<h1>Forms</h1><p><a class="btn" href="#/admin/forms/new">+ New form</a></p>${fs.length ? `<table><tr><th>Form</th><th>Link</th><th>Status</th><th>Responses</th><th></th></tr>${fs.map((f) => `<tr><td><a href="#/admin/forms/${f.id}">${esc(f.title)}</a></td><td><code>#/form/${esc(f.slug)}</code></td><td>${f.active ? 'Published' : 'Draft'}</td><td><a href="#/admin/forms/${f.id}/responses">${counts[f.id] || 0}</a>${fresh[f.id] ? ` <span class="status pending">${fresh[f.id]} new</span>` : ''}</td><td><button class="link delform" data-id="${f.id}" data-title="${esc(f.title)}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No forms yet.</p>'}`;
   }
   if (sub === 'codes') {
     const cs = (await sb.from('discount_codes').select('*').order('code')).data;
@@ -480,6 +486,12 @@ pages.admin = async ([sub, id, extra]) => {
   <h2>Low stock</h2>${low.data.length ? `<ul>${low.data.map((p) => `<li><a href="#/admin/products/${p.id}">${esc(p.name)}</a> — ${p.stock} left</li>`).join('')}</ul>` : '<p>All good.</p>'}`;
 };
 pages.admin.after = ([sub, id, extra]) => {
+  document.querySelectorAll('.rstatus').forEach((el) => el.addEventListener('change', async () => {
+    const { error } = await sb.from('form_submissions').update({ status: el.value }).eq('id', el.dataset.id); error ? fail(error) : flash('Status updated.');
+  }));
+  document.querySelectorAll('.rnotes').forEach((el) => el.addEventListener('change', async () => {
+    const { error } = await sb.from('form_submissions').update({ notes: el.value }).eq('id', el.dataset.id); error ? fail(error) : flash('Note saved.');
+  }));
   document.querySelectorAll('.dlfile').forEach((b) => b.addEventListener('click', async () => {
     const name = b.dataset.path.split('/').pop().replace(/^[0-9a-f-]{36}-/, '');
     const { data, error } = await sb.storage.from('form-uploads').createSignedUrl(b.dataset.path, 60, { download: name });
@@ -505,8 +517,8 @@ pages.admin.after = ([sub, id, extra]) => {
   document.getElementById('fcsv')?.addEventListener('click', async (e) => {
     const f = (await sb.from('forms').select('*').eq('id', e.target.dataset.id).single()).data;
     const rows = (await sb.from('form_submissions').select('*').eq('form_id', f.id).order('id')).data;
-    const head = ['Received', ...f.fields.map((x) => x.label)].map(csvCell).join(',');
-    const body = rows.map((r) => [r.created_at, ...f.fields.map((x) => r.data[x.id] ?? '')].map(csvCell).join(','));
+    const head = ['Received', ...f.fields.map((x) => x.label), 'Status', 'Notes'].map(csvCell).join(',');
+    const body = rows.map((r) => [r.created_at, ...f.fields.map((x) => r.data[x.id] ?? ''), RESP_STATUS[r.status] || r.status, r.notes].map(csvCell).join(','));
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[head, ...body].join('\n')], { type: 'text/csv' })); a.download = `${f.slug}-responses.csv`; a.click();
   });
   const fields = document.getElementById('fields');
@@ -534,7 +546,7 @@ pages.admin.after = ([sub, id, extra]) => {
       if (FB.fields.some((x) => !x.label.trim())) return fail(new Error('Every question needs a label.'));
       if (FB.fields.some((x) => x.type === 'select' && !(x.options || []).length)) return fail(new Error('Dropdown questions need at least one option.'));
       const row = { title, slug: slugify(document.getElementById('fb_slug').value || title) || 'form-' + Date.now(), description: document.getElementById('fb_desc').value,
-        success_message: document.getElementById('fb_ok').value.trim() || 'Thanks!', active: document.getElementById('fb_active').checked,
+        success_message: document.getElementById('fb_ok').value.trim() || 'Thanks!', active: document.getElementById('fb_active').checked, notify: document.getElementById('fb_notify').checked,
         fields: FB.fields.map((x) => ({ ...x, label: x.label.trim() })) };
       const res = FB.id ? await sb.from('forms').update(row).eq('id', FB.id).select('id').single() : await sb.from('forms').insert(row).select('id').single();
       if (res.error) return fail(res.error.code === '23505' ? new Error('That link name is already used by another form.') : res.error);

@@ -6,11 +6,11 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const money = (c: number) => `$${(c / 100).toFixed(2)}`;
 
-async function send(to: string, subject: string, html: string) {
+async function send(to: string, subject: string, html: string, replyTo?: string) {
   const r = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${Deno.env.get('RESEND_API_KEY')}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: Deno.env.get('FROM_EMAIL'), to, subject, html }),
+    body: JSON.stringify({ from: Deno.env.get('FROM_EMAIL'), to, subject, html, ...(replyTo ? { reply_to: replyTo } : {}) }),
   });
   if (!r.ok) console.error('resend', r.status, await r.text());
 }
@@ -25,6 +25,20 @@ Deno.serve(async (req) => {
   if (body.kind === 'low_stock') {
     const { data: p } = await admin.from('products').select('name,stock').eq('id', body.product_id).single();
     if (p) await send(owner, `Low stock: ${p.name}`, `<p><b>${esc(p.name)}</b> is down to <b>${p.stock}</b> in stock.</p><p><a href="${site}/#/admin/products">Manage products</a></p>`);
+    return new Response('ok');
+  }
+
+  if (body.kind === 'form_submitted') {
+    const { data: sub } = await admin.from('form_submissions').select('*, forms(*)').eq('id', body.submission_id).single();
+    if (!sub) return new Response('no submission', { status: 404 });
+    const fields = sub.forms.fields as any[];
+    const rows = fields.map((f) => {
+      let v = sub.data[f.id]; if (f.type === 'checkbox') v = v ? 'Yes' : 'No';
+      if (f.type === 'file' && v) v = `${String(v).split('/').pop()!.replace(/^[0-9a-f-]{36}-/, '')} (download from the admin page)`;
+      return `<tr><td valign="top"><b>${esc(f.label)}</b></td><td style="white-space:pre-wrap">${esc(v ?? '')}</td></tr>`;
+    }).join('');
+    const replyTo = fields.filter((f) => f.type === 'email').map((f) => sub.data[f.id]).find((v) => v);
+    await send(owner, `New response: ${sub.forms.title}`, `<h2>New response to "${esc(sub.forms.title)}"</h2><table cellpadding="6">${rows}</table><p><a href="${site}/#/admin/forms/${sub.form_id}/responses">Open responses</a></p>`, replyTo);
     return new Response('ok');
   }
 

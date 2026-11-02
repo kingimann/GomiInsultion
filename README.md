@@ -76,3 +76,8 @@ Admins see a **🎨 Style** button: pick a preset (Default, Ocean, Forest, Midni
 Admins build forms in **Admin → Forms**: title, description, a custom "thank you" message and questions (short/long text, email, phone, number, date, dropdown, checkbox; optional or required; reorder freely).
 Each form gets its own link (`#/form/<name>`) you can share. Responses are listed per form, deletable, and exportable as CSV. A "Contact us" form is included.
 Submissions go through the `submit_form` database function, which re-checks required fields, emails, numbers and dropdown choices on the server and caps a form at 200 submissions per hour.
+
+### Form responses: tracking and email alerts
+Each response has a **status** (New / In progress / Done) and a **notes** box, with filters by status and both included in the CSV export.
+"Email me when someone submits this form" (on by default, per form) uses the same email pipeline as order emails — after pulling these changes, redeploy the function:
+`supabase functions deploy notify --no-verify-jwt`. The email lists every answer and uses the submitter's email (if the form has an email question) as Reply-To.

@@ -16,6 +16,10 @@ function flash(msg, type = 'ok') {
   clearTimeout(flash.t); flash.t = setTimeout(() => (f.hidden = true), 5000);
 }
 const img = (p, big) => (safeUrl(p.image_url) ? `<img class="${big ? 'big' : ''}" src="${esc(safeUrl(p.image_url))}" alt="${esc(p.name)}">` : `<div class="ph ${big ? 'big' : ''}">${esc(p.r_value || '🧱')}</div>`);
+let RATINGS = {};
+const loadRatings = async () => { const { data } = await sb.from('product_ratings').select('*'); RATINGS = Object.fromEntries((data || []).map((r) => [r.product_id, r])); };
+const stars = (n) => `<span class="stars" aria-label="${n} out of 5">${'★'.repeat(Math.round(n))}${'☆'.repeat(5 - Math.round(n))}</span>`;
+const ratingLine = (p) => (RATINGS[p.id] ? `<p class="rating">${stars(RATINGS[p.id].avg)} <span class="muted">(${RATINGS[p.id].count})</span></p>` : '');
 const getWish = () => { try { return JSON.parse(localStorage.getItem('wish') || '[]'); } catch { return []; } };
 document.addEventListener('click', (e) => {
   const b = e.target.closest('.heart'); if (!b) return;
@@ -24,9 +28,10 @@ document.addEventListener('click', (e) => {
   b.textContent = w.includes(id) ? '♥' : '♡'; b.style.color = w.includes(id) ? '#dc2626' : ''; renderNav(); if (location.hash.startsWith('#/wishlist')) route();
 });
 const card = (p) => `<article class="card">${p.stock <= 0 ? '<span class="badge">Sold out</span>' : p.stock <= 10 ? '<span class="badge warn">Low stock</span>' : ''}<button class="heart" data-id="${p.id}" aria-label="Save to wishlist" style="${getWish().includes(p.id) ? 'color:#dc2626' : ''}">${getWish().includes(p.id) ? '♥' : '♡'}</button><a href="#/product/${esc(p.slug)}">${img(p)}</a><div class="pad"><span class="tag">${esc(p.category)}</span>
-  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p><p class="price">${money(p.price_cents)}</p></div></article>`;
-const totals = (sub) => { const ship = !sub || sub >= FREE_SHIP ? 0 : SHIP; return { sub, ship, total: sub + ship }; };
-const totalsHtml = (t) => `<dl class="totals"><dt>Subtotal</dt><dd>${money(t.sub)}</dd><dt>Shipping</dt><dd>${t.ship ? money(t.ship) : 'Free'}</dd><dt>Total</dt><dd><strong>${money(t.total)}</strong></dd></dl>`;
+  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}<p class="price">${money(p.price_cents)}</p></div></article>`;
+const getPromo = () => { try { return JSON.parse(localStorage.getItem('promo') || 'null'); } catch { return null; } };
+const totals = (sub) => { const pr = getPromo(), disc = pr && sub ? Math.floor(sub * pr.percent / 100) : 0; const ship = !sub || sub - disc >= FREE_SHIP ? 0 : SHIP; return { sub, disc, code: disc ? pr.code : '', ship, total: sub - disc + ship }; };
+const totalsHtml = (t) => `<dl class="totals"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount${t.code ? ' (' + esc(t.code) + ')' : ''}</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>Shipping</dt><dd>${t.ship ? money(t.ship) : 'Free'}</dd><dt>Total</dt><dd><strong>${money(t.total)}</strong></dd></dl>`;
 const fail = (e) => { console.error(e); flash(e.message || 'Something went wrong', 'error'); };
 const dateOf = (s) => new Date(s).toLocaleString();
 
@@ -47,6 +52,7 @@ document.getElementById('search').addEventListener('submit', (e) => { e.preventD
 // ---- pages ----
 const pages = {};
 pages.home = async () => {
+  await loadRatings();
   const { data, error } = await sb.from('products').select('*').eq('active', true).order('id').limit(8); if (error) throw error;
   const cats = [...new Set((await sb.from('products').select('category').eq('active', true)).data.map((r) => r.category))].sort();
   return `<section class="hero"><h1>Insulation for every build.</h1><p>Batts, spray foam, rigid board and more. Order online and get it delivered to your site.</p><a class="btn" href="#/shop">Shop all products</a><a class="btn ghost" href="#/quote">Request a quote</a></section>
@@ -55,6 +61,7 @@ pages.home = async () => {
   <h2>Featured</h2><div class="grid">${data.map(card).join('')}</div>`;
 };
 pages.shop = async (_, q) => {
+  await loadRatings();
   const category = q.get('category') || '', term = (q.get('q') || '').replace(/[%,()]/g, '');
   const sort = q.get('sort') || 'name', instock = q.get('instock') === '1';
   const ord = { name: ['name', true], price_asc: ['price_cents', true], price_desc: ['price_cents', false], stock: ['stock', false] }[sort] || ['name', true];
@@ -78,6 +85,13 @@ pages.shop.after = (_, q) => document.getElementById('filters')?.addEventListene
 pages.product = async ([slug]) => {
   const { data: p } = await sb.from('products').select('*').eq('slug', slug).maybeSingle();
   if (!p) return '<h1>Not found</h1>';
+  await loadRatings();
+  const revs = (await sb.from('reviews').select('*').eq('product_id', p.id).order('created_at', { ascending: false })).data || [];
+  const mine = session && revs.find((r) => r.user_id === session.user.id);
+  const reviewsHtml = `${RATINGS[p.id] ? `<p>${stars(RATINGS[p.id].avg)} <b>${RATINGS[p.id].avg}</b> from ${RATINGS[p.id].count} review${RATINGS[p.id].count === 1 ? '' : 's'}</p>` : '<p class="muted">No reviews yet.</p>'}
+  ${revs.map((r) => `<div class="review"><div>${stars(r.rating)} <b>${esc(r.author)}</b> <span class="muted">· ${new Date(r.created_at).toLocaleDateString()}</span>${session && (r.user_id === session.user.id || profile?.is_admin) ? ` <button class="link delrev" data-id="${r.id}" style="color:var(--err)">Delete</button>` : ''}</div>${r.comment ? `<p>${esc(r.comment)}</p>` : ''}</div>`).join('')}
+  ${!session ? '<p><a href="#/login">Log in</a> to write a review.</p>' : mine ? '' : `<form id="rf" class="stack narrow"><label>Your rating<select name="rating"><option value="5">★★★★★ Excellent</option><option value="4">★★★★ Good</option><option value="3">★★★ OK</option><option value="2">★★ Poor</option><option value="1">★ Bad</option></select></label>
+  <label>Comment<textarea name="comment" rows="3" maxlength="2000"></textarea></label><button class="btn">Post review</button></form>`}`;
   const related = (await sb.from('products').select('*').eq('active', true).neq('id', p.id).limit(40)).data
     .sort((a, b) => (b.category === p.category) - (a.category === p.category)).slice(0, 4);
   return `<div class="detail"><div>${img(p, true)}</div><div><span class="tag">${esc(p.category)}</span><h1>${esc(p.name)}</h1>
@@ -86,10 +100,18 @@ pages.product = async ([slug]) => {
   <p class="muted">${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : '<p class="flash error">Out of stock</p>'}
   ${coverageOf(p) ? `<div class="calc"><h3>📐 How many do I need?</h3><div class="row"><label>Area (sq ft) <input type="number" id="area" min="1" value="200"></label>
   <label>Waste % <input type="number" id="waste" min="0" max="30" value="10"></label></div><p class="out" id="calcout"></p></div>` : ''}</div></div>
+  <h2>Customer reviews</h2>${reviewsHtml}
   ${related.length ? `<h2>You might also need</h2><div class="grid">${related.map(card).join('')}</div>` : ''}`;
 };
 const coverageOf = (p) => { const m = /(\d+)\s*sq\s*ft/i.exec(p.unit); return m ? Number(m[1]) : 0; };
 pages.product.after = ([slug]) => {
+  document.getElementById('rf')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+    const { data: p } = await sb.from('products').select('id').eq('slug', slug).single();
+    const { error } = await sb.from('reviews').insert({ product_id: p.id, rating: Number(f.rating), comment: f.comment.trim() });
+    error ? fail(error) : (flash('Thanks for your review!'), route());
+  });
+  document.querySelectorAll('.delrev').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.from('reviews').delete().eq('id', b.dataset.id); error ? fail(error) : route(); }));
   const area = document.getElementById('area'); if (area) {
     sb.from('products').select('*').eq('slug', slug).single().then(({ data: p }) => {
       const upd = () => {
@@ -122,13 +144,24 @@ pages.cart = async () => {
   return `<h1>Your cart</h1><p>${left > 0 ? `Add <b>${money(left)}</b> more for free shipping` : '🎉 You qualify for free shipping!'}</p><div class="progress"><i style="width:${Math.min(100, t.sub / FREE_SHIP * 100)}%"></i></div><form id="cartform"><table><tr><th>Product</th><th>Price</th><th>Qty</th><th>Total</th></tr>
   ${lines.map((l) => `<tr><td><a href="#/product/${esc(l.slug)}">${esc(l.name)}</a></td><td>${money(l.price_cents)}</td>
   <td><input type="number" name="${l.id}" value="${l.qty}" min="0" max="${l.stock}"></td><td>${money(l.price_cents * l.qty)}</td></tr>`).join('')}</table>
-  <button class="btn alt">Update quantities</button> <span class="muted">(set 0 to remove)</span></form>${totalsHtml(t)}<a class="btn" href="#/checkout">Checkout</a>`;
+  <button class="btn alt">Update quantities</button> <span class="muted">(set 0 to remove)</span></form>
+  <form id="promo" class="row" style="margin-top:14px"><input name="code" placeholder="Discount code" value="${esc(getPromo()?.code || '')}" aria-label="Discount code"><button class="btn ghost">Apply</button></form>${totalsHtml(t)}<a class="btn" href="#/checkout">Checkout</a>`;
 };
-pages.cart.after = () => document.getElementById('cartform')?.addEventListener('submit', (e) => {
+pages.cart.after = () => {
+  document.getElementById('promo')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const code = new FormData(e.target).get('code').trim().toUpperCase();
+    if (!code) { localStorage.removeItem('promo'); return route(); }
+    const sub = (await cartLines()).reduce((a, l) => a + l.price_cents * l.qty, 0);
+    const { data } = await sb.rpc('check_code', { c: code, subtotal: sub });
+    if (!data) { localStorage.removeItem('promo'); flash('That code is not valid for this order.', 'error'); return route(); }
+    localStorage.setItem('promo', JSON.stringify({ code, percent: data })); flash(`Code ${code} applied: ${data}% off.`); route();
+  });
+  document.getElementById('cartform')?.addEventListener('submit', (e) => {
   e.preventDefault(); const cart = {};
   for (const [id, v] of new FormData(e.target)) { const q = parseInt(v, 10); if (q > 0) cart[id] = q; }
   setCart(cart); route();
 });
+};
 
 pages.checkout = async () => {
   const lines = await cartLines(); if (!lines.length) return '<h1>Checkout</h1><p>Your cart is empty.</p>';
@@ -143,11 +176,11 @@ pages.checkout = async () => {
 };
 pages.checkout.after = () => document.getElementById('co')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const btn = e.target.querySelector('button'); btn.disabled = true;
-  const customer = Object.fromEntries(new FormData(e.target));
+  const customer = { ...Object.fromEntries(new FormData(e.target)), code: getPromo()?.code || '' };
   const items = Object.entries(getCart()).map(([id, qty]) => ({ id: Number(id), qty }));
   const { data, error } = await sb.rpc('place_order', { items, customer });
   btn.disabled = false; if (error) return fail(error);
-  setCart({});
+  setCart({}); localStorage.removeItem('promo');
   if (C.PAYMENTS) {
     const pay = await sb.functions.invoke('create-checkout', { body: { order_id: data.id, key: session ? null : data.key } });
     if (pay.data?.url) return (location.href = pay.data.url);
@@ -159,7 +192,7 @@ pages.checkout.after = () => document.getElementById('co')?.addEventListener('su
 const orderHtml = (o, items, admin) => `<h1>Order #${o.id}</h1><p><span class="status ${esc(o.status)}">${esc(o.status)}</span> · placed ${dateOf(o.created_at)}</p>
   ${o.status === 'cancelled' ? '' : `<div class="steps">${['pending', 'paid', 'shipped', 'delivered'].map((st, i) => `<span class="${i <= ['pending', 'paid', 'shipped', 'delivered'].indexOf(o.status) ? 'done' : ''}">${st}</span>`).join('')}</div>`}
   <table><tr><th>Item</th><th>Price</th><th>Qty</th><th>Total</th></tr>${items.map((i) => `<tr><td>${esc(i.name)}</td><td>${money(i.price_cents)}</td><td>${i.qty}</td><td>${money(i.price_cents * i.qty)}</td></tr>`).join('')}</table>
-  ${totalsHtml({ sub: o.subtotal_cents, ship: o.shipping_cents, total: o.total_cents })}
+  ${totalsHtml({ sub: o.subtotal_cents, disc: o.discount_cents, code: o.promo_code, ship: o.shipping_cents, total: o.total_cents })}
   <h3>Delivery</h3><p>${esc(o.name)}<br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br>${esc(o.email)} ${esc(o.phone)}</p>${o.notes ? `<p><em>${esc(o.notes)}</em></p>` : ''}
   ${admin ? `<form class="row" id="status"><select name="status">${STATUSES.map((s) => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select><button class="btn alt">Update status</button></form>` : ''}`;
 pages.order = async ([id], q) => {
@@ -193,6 +226,7 @@ pages.account = async () => {
 };
 
 pages.wishlist = async () => {
+  await loadRatings();
   const ids = getWish(); if (!ids.length) return '<h1>Wishlist</h1><p>Nothing saved yet. Tap the ♡ on a product.</p>';
   const { data } = await sb.from('products').select('*').in('id', ids).eq('active', true);
   return `<h1>Wishlist</h1><div class="grid">${data.map(card).join('')}</div>`;
@@ -209,11 +243,23 @@ pages.quote.after = () => document.getElementById('qf')?.addEventListener('submi
 
 // ---- admin ----
 const needAdmin = () => { if (!profile?.is_admin) { $app.innerHTML = '<h1>Forbidden</h1>'; return false; } return true; };
+const salesChart = (orders) => {
+  const days = Array.from({ length: 14 }, (_, i) => { const d = new Date(Date.now() - (13 - i) * 864e5); return { k: d.toISOString().slice(0, 10), label: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), v: 0 }; });
+  orders.forEach((o) => { const d = days.find((x) => x.k === o.created_at.slice(0, 10)); if (d) d.v += o.total_cents; });
+  const max = Math.max(...days.map((d) => d.v), 1);
+  return `<svg viewBox="0 0 700 200" role="img" aria-label="Sales per day" style="width:100%;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:8px">
+  ${days.map((d, i) => { const h = d.v / max * 140; return `<g><title>${d.label}: ${money(d.v)}</title><rect x="${i * 49 + 12}" y="${160 - h}" width="34" height="${Math.max(h, 2)}" rx="5" fill="var(--brand)" opacity="${d.v ? 1 : .25}"/><text x="${i * 49 + 29}" y="182" font-size="10" text-anchor="middle" fill="var(--muted)">${d.label}</text></g>`; }).join('')}</svg>`;
+};
 pages.admin = async ([sub, id]) => {
   if (!profile?.is_admin) return '<h1>Forbidden</h1>';
   if (sub === 'orders' && id) {
     const o = (await sb.from('orders').select('*').eq('id', id).single()).data;
     return orderHtml(o, (await sb.from('order_items').select('*').eq('order_id', id)).data, true);
+  }
+  if (sub === 'codes') {
+    const cs = (await sb.from('discount_codes').select('*').order('code')).data;
+    return `<h1>Discount codes</h1><table><tr><th>Code</th><th>Off</th><th>Min order</th><th>Status</th><th></th></tr>${cs.map((c) => `<tr><td><b>${esc(c.code)}</b></td><td>${c.percent}%</td><td>${money(c.min_cents)}</td><td>${c.active ? 'Active' : 'Off'}</td><td><button class="btn ghost togcode" data-code="${esc(c.code)}" data-active="${c.active}">${c.active ? 'Disable' : 'Enable'}</button></td></tr>`).join('')}</table>
+    <h3>New code</h3><form id="cf" class="row"><input name="code" placeholder="SUMMER15" required><input name="percent" type="number" min="1" max="100" placeholder="% off" required><input name="min" type="number" min="0" step="0.01" placeholder="Min order $" value="0"><button class="btn">Add</button></form>`;
   }
   if (sub === 'quotes') {
     const qs = (await sb.from('quotes').select('*').order('id', { ascending: false })).data;
@@ -244,12 +290,22 @@ pages.admin = async ([sub, id]) => {
     sb.from('orders').select('*', { count: 'exact', head: true }), sb.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
     sb.from('orders').select('total_cents').neq('status', 'cancelled'), sb.from('profiles').select('*', { count: 'exact', head: true }).eq('is_admin', false),
     sb.from('products').select('*').lte('stock', 10).order('stock').limit(10)]);
+  const rev14 = await sb.from('orders').select('total_cents,created_at').neq('status', 'cancelled').gte('created_at', new Date(Date.now() - 14 * 864e5).toISOString());
   const revenue = rev.data.reduce((a, o) => a + o.total_cents, 0);
   return `<h1>Admin</h1><div class="stats"><div><b>${oc.count}</b>orders</div><div><b>${pc.count}</b>pending</div><div><b>${money(revenue)}</b>revenue</div><div><b>${cc.count}</b>customers</div></div>
-  <p><a class="btn" href="#/admin/orders">Orders</a> <a class="btn" href="#/admin/products">Products</a> <a class="btn" href="#/admin/customers">Customers</a> <a class="btn" href="#/admin/quotes">Quotes</a></p>
+  <p><a class="btn" href="#/admin/orders">Orders</a> <a class="btn" href="#/admin/products">Products</a> <a class="btn" href="#/admin/customers">Customers</a> <a class="btn" href="#/admin/quotes">Quotes</a> <a class="btn" href="#/admin/codes">Discount codes</a></p>
+  <h2>Sales, last 14 days</h2>${salesChart(rev14.data)}
   <h2>Low stock</h2>${low.data.length ? `<ul>${low.data.map((p) => `<li><a href="#/admin/products/${p.id}">${esc(p.name)}</a> — ${p.stock} left</li>`).join('')}</ul>` : '<p>All good.</p>'}`;
 };
 pages.admin.after = ([sub, id]) => {
+  document.getElementById('cf')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+    const { error } = await sb.from('discount_codes').insert({ code: f.code.trim().toUpperCase(), percent: Number(f.percent), min_cents: Math.round(Number(f.min || 0) * 100) });
+    error ? fail(error) : (flash('Code added.'), route());
+  });
+  document.querySelectorAll('.togcode').forEach((b) => b.addEventListener('click', async () => {
+    const { error } = await sb.from('discount_codes').update({ active: b.dataset.active !== 'true' }).eq('code', b.dataset.code); error ? fail(error) : route();
+  }));
   document.getElementById('csv')?.addEventListener('click', async () => {
     const os = (await sb.from('orders').select('*').order('id')).data, cols = ['id', 'created_at', 'status', 'name', 'email', 'phone', 'address', 'city', 'postcode', 'subtotal_cents', 'shipping_cents', 'total_cents'];
     const cell = (v) => { v = String(v ?? ''); if (/^[=+\-@]/.test(v)) v = "'" + v; return `"${v.replace(/"/g, '""')}"`; };
@@ -284,8 +340,9 @@ async function route() {
   const [path, qs] = h.split('?'); const q = new URLSearchParams(qs || '');
   const [name = 'home', ...args] = path.split('/').filter(Boolean); const page = pages[name === '' ? 'home' : name];
   if (!page) { $app.innerHTML = '<h1>Not found</h1>'; return; }
-  try { $app.innerHTML = await page(args, q); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
+  try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); void $app.offsetWidth; $app.classList.add('in'); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
 }
 window.addEventListener('hashchange', route);
 sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_IN' && /access_token|type=signup/.test(location.hash)) setTimeout(async () => { await loadSession(); flash('Email confirmed. Welcome!'); location.hash = '#/account'; }, 0); if (ev === 'SIGNED_OUT') { session = null; profile = null; renderNav(); } });
+if (C.ANNOUNCEMENT) { const a = document.createElement('div'); a.className = 'announce'; a.textContent = C.ANNOUNCEMENT; document.body.prepend(a); }
 loadSession().then(route);

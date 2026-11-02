@@ -164,3 +164,72 @@ begin
 end $$;
 drop trigger if exists on_auth_user_confirmed on auth.users;
 create trigger on_auth_user_confirmed after update of email_confirmed_at on auth.users for each row execute function public.promote_owner();
+
+-- Discount codes
+alter table public.orders add column if not exists discount_cents int not null default 0;
+alter table public.orders add column if not exists promo_code text;
+create table if not exists public.discount_codes (
+  code text primary key check (code = upper(code)), percent int not null check (percent between 1 and 100),
+  min_cents int not null default 0, active boolean not null default true);
+alter table public.discount_codes enable row level security;
+drop policy if exists "admin codes" on public.discount_codes;
+create policy "admin codes" on public.discount_codes for all using (public.is_admin()) with check (public.is_admin());
+insert into public.discount_codes (code, percent) values ('WELCOME10', 10) on conflict do nothing;
+
+create or replace function public.check_code(c text, subtotal int) returns int language sql stable security definer set search_path = public as $$
+  select percent from discount_codes where code = upper(trim(c)) and active and subtotal >= min_cents $$;
+grant execute on function public.check_code(text, int) to anon, authenticated;
+
+create or replace function public.place_order(items jsonb, customer jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare it jsonb; p public.products; q int; sub int := 0; ship int; oid bigint; gk uuid;
+  disc int := 0; pct int; code text := nullif(upper(trim(coalesce(customer->>'code',''))), '');
+  free_over int := 50000; flat int := 1500;
+begin
+  if jsonb_array_length(items) = 0 then raise exception 'Cart is empty'; end if;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint and active for update;
+    if not found or q < 1 or p.stock < q then raise exception 'Not enough stock for %', coalesce(p.name, 'an item'); end if;
+    sub := sub + p.price_cents * q;
+  end loop;
+  if code is not null then
+    pct := public.check_code(code, sub);
+    if pct is null then raise exception 'That discount code is not valid'; end if;
+    disc := sub * pct / 100;
+  end if;
+  ship := case when sub - disc >= free_over then 0 else flat end;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents, discount_cents, promo_code)
+  values (auth.uid(), customer->>'email', customer->>'name', coalesce(customer->>'phone',''), customer->>'address',
+          customer->>'city', customer->>'postcode', coalesce(customer->>'notes',''), sub, ship, sub - disc + ship, disc, code)
+  returning id, guest_key into oid, gk;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint;
+    insert into order_items (order_id, product_id, name, price_cents, qty) values (oid, p.id, p.name, p.price_cents, q);
+    update products set stock = stock - q where id = p.id;
+  end loop;
+  return jsonb_build_object('id', oid, 'key', gk);
+end $$;
+grant execute on function public.place_order(jsonb, jsonb) to anon, authenticated;
+
+-- Reviews
+create table if not exists public.reviews (
+  id bigint generated always as identity primary key, product_id bigint not null references public.products(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade default auth.uid(), author text not null default '',
+  rating int not null check (rating between 1 and 5), comment text not null default '' check (length(comment) <= 2000),
+  created_at timestamptz not null default now(), unique (product_id, user_id));
+alter table public.reviews enable row level security;
+drop policy if exists "read reviews" on public.reviews;
+create policy "read reviews" on public.reviews for select using (true);
+drop policy if exists "write own review" on public.reviews;
+create policy "write own review" on public.reviews for insert with check (user_id = auth.uid());
+drop policy if exists "delete review" on public.reviews;
+create policy "delete review" on public.reviews for delete using (user_id = auth.uid() or public.is_admin());
+create or replace function public.set_review_author() returns trigger language plpgsql security definer set search_path = public as $$
+begin new.author := coalesce((select nullif(name,'') from profiles where id = new.user_id), 'Customer'); return new; end $$;
+drop trigger if exists review_author on public.reviews;
+create trigger review_author before insert on public.reviews for each row execute function public.set_review_author();
+create or replace view public.product_ratings as
+  select product_id, round(avg(rating)::numeric, 1)::float8 as avg, count(*)::int as count from public.reviews group by product_id;
+grant select on public.product_ratings to anon, authenticated;

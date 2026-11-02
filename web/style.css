@@ -44,3 +44,11 @@ table{width:100%;border-collapse:collapse;background:var(--card);border-radius:v
 footer{border-top:1px solid var(--line);padding:28px 0;color:var(--muted);text-align:center}
 @media(max-width:760px){.detail,.two{grid-template-columns:1fr}.hero{padding:40px 22px}th:nth-child(2),td:nth-child(2){display:none}}
 .card a{text-decoration:none}.hero .btn.ghost{border-color:#431407;color:#431407}
+.announce{background:var(--fg);color:var(--bg);text-align:center;padding:8px 16px;font-size:.9rem;font-weight:500}
+#app.in>*{animation:rise .35s ease both}@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.skeleton{height:320px;border-radius:var(--r);background:linear-gradient(90deg,var(--line),var(--card),var(--line));background-size:200% 100%;animation:shimmer 1.2s infinite}@keyframes shimmer{to{background-position:-200% 0}}
+.stars{color:#f59e0b;letter-spacing:1px}.rating{margin:2px 0;font-size:.9rem}
+.review{padding:14px 0;border-top:1px solid var(--line)}.review p{margin:6px 0 0}
+.foot{display:grid;grid-template-columns:2fr 1fr 1fr;gap:24px;text-align:left;margin-bottom:18px}.foot a{color:var(--muted);text-decoration:none}.foot a:hover{color:var(--brand)}.copy{font-size:.85rem}
+@media(max-width:760px){.foot{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

@@ -99,7 +99,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const money = (c) => `${C.CURRENCY}${(c / 100).toFixed(2)}`;
 const safeUrl = (u) => (/^(https?:\/\/|\/)/.test(u || '') ? u : '');
 let session = null, profile = null;
-let unread = { all: 0, msg: 0 }, notifChan = null, threadChan = null;
+let unread = { all: 0, msg: 0 }, notifChan = null, threadChan = [];
 const getCart = () => { try { return JSON.parse(localStorage.getItem('cart') || '{}'); } catch { return {}; } };
 const setCart = (c) => { localStorage.setItem('cart', JSON.stringify(c)); renderNav(); };
 function flash(msg, type = 'ok') {
@@ -702,7 +702,7 @@ function startRealtime() {
     flash(`🔔 ${n.title}`);
     if (document.hidden && 'Notification' in window && Notification.permission === 'granted') new Notification(n.title, { body: n.body });
     if (!document.getElementById('notifpanel').hidden) buildNotifPanel();
-    if (location.hash === '#/messages' || location.hash.startsWith('#/notifications')) route();
+    if (location.hash.startsWith('#/notifications')) route();
   }).subscribe();
 }
 const notifRow = (n) => `<a class="notif ${n.read ? '' : 'unread'}" href="${esc(safeLink(n.link))}" data-id="${n.id}"><b>${esc(n.title)}</b>${n.body ? `<span>${esc(n.body)}</span>` : ''}<small class="muted">${ago(n.created_at)}</small></a>`;
@@ -733,77 +733,134 @@ pages.notifications.after = () => {
   document.getElementById('desktopn')?.addEventListener('click', async () => { await Notification.requestPermission(); route(); });
 };
 
-const bubble = (m, conv, me, isAdmin, custName) => {
-  const fromStore = m.sender_id !== conv.customer_id, mine = isAdmin ? fromStore : !fromStore;
-  return `<div class="bubble ${mine ? 'mine' : 'theirs'}" data-id="${m.id}"><div class="who">${fromStore ? 'Store team' : (isAdmin ? esc(custName) : 'You')}</div><div class="txt">${esc(m.body)}</div><small>${ago(m.created_at)}</small></div>`;
+// ---- DM-style messaging ----
+const initials = (n) => (n || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
+const avatar = (n, cls = '') => `<span class="avatar ${cls}" aria-hidden="true">${esc(initials(n))}</span>`;
+const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
+const dayLabel = (d) => (sameDay(d, Date.now()) ? 'Today' : sameDay(d, Date.now() - 864e5) ? 'Yesterday' : new Date(d).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }));
+const timeOf = (d) => new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+let DM = null; // current chat state
+const isMine = (m) => (DM.isAdmin ? m.sender_id !== DM.conv.customer_id : m.sender_id === DM.conv.customer_id);
+function threadHtml() {
+  if (!DM.msgs.length) return `<div class="empty-chat"><div style="font-size:2.4rem">👋</div><p><b>${DM.isAdmin ? 'No messages yet' : 'Say hi!'}</b></p><p class="muted">${DM.isAdmin ? 'Write the first message below.' : 'Ask us anything about products, orders or delivery. Replies show up here.'}</p></div>`;
+  let out = '', i = 0;
+  while (i < DM.msgs.length) {
+    const first = DM.msgs[i]; const mine = isMine(first);
+    if (i === 0 || !sameDay(DM.msgs[i - 1].created_at, first.created_at)) out += `<div class="day"><span>${dayLabel(first.created_at)}</span></div>`;
+    let j = i, bubbles = '';
+    while (j < DM.msgs.length && isMine(DM.msgs[j]) === mine && sameDay(DM.msgs[j].created_at, first.created_at) && (j === i || new Date(DM.msgs[j].created_at) - new Date(DM.msgs[j - 1].created_at) < 10 * 60000)) {
+      bubbles += `<div class="msg" data-id="${DM.msgs[j].id}" title="${esc(new Date(DM.msgs[j].created_at).toLocaleString())}">${esc(DM.msgs[j].body)}</div>`; j++;
+    }
+    const lastM = DM.msgs[j - 1];
+    out += `<div class="grp ${mine ? 'mine' : 'theirs'}">${mine ? '' : avatar(DM.peerName, DM.isAdmin ? '' : 'store')}<div class="bstack">${bubbles}<small class="meta">${timeOf(lastM.created_at)}</small></div></div>`;
+    i = j;
+  }
+  const lastMine = [...DM.msgs].reverse().find(isMine);
+  if (lastMine?.read_at) out += `<div class="seen">Seen ${ago(lastMine.read_at)}</div>`;
+  return out;
+}
+function renderThread(forceBottom) {
+  const t = document.getElementById('thread'); if (!t) return;
+  const nearBottom = forceBottom || t.scrollHeight - t.scrollTop - t.clientHeight < 120;
+  t.innerHTML = threadHtml(); if (nearBottom) t.scrollTop = t.scrollHeight;
+}
+async function markRead() {
+  if (!DM?.conv) return;
+  await sb.rpc('mark_conversation_read', { cid: DM.conv.id });
+  await sb.from('notifications').update({ read: true }).eq('link', `#/messages/${DM.conv.id}`).eq('read', false); refreshUnread();
+}
+async function loadInbox() {
+  const convs = (await sb.from('conversations').select('*').order('last_message_at', { ascending: false }).limit(200)).data || [];
+  const ids = convs.map((c) => c.id), last = {}, unreadBy = {};
+  if (ids.length) ((await sb.from('messages').select('conversation_id,body,sender_id,created_at,read_at').in('conversation_id', ids).order('id', { ascending: false }).limit(600)).data || []).forEach((m) => {
+    if (!last[m.conversation_id]) last[m.conversation_id] = m;
+    const c = convs.find((x) => x.id === m.conversation_id); if (c && m.sender_id === c.customer_id && !m.read_at) unreadBy[c.id] = (unreadBy[c.id] || 0) + 1;
+  });
+  const names = {}; if (convs.length) ((await sb.from('profiles').select('id,name,email').in('id', [...new Set(convs.map((c) => c.customer_id))])).data || []).forEach((u) => (names[u.id] = u.name || u.email));
+  return { convs, last, unreadBy, names };
+}
+const listHtml = (inbox, selected, filter = '') => {
+  const rows = inbox.convs.filter((c) => !filter || (inbox.names[c.customer_id] || '').toLowerCase().includes(filter.toLowerCase()));
+  return rows.length ? rows.map((c) => { const nm = inbox.names[c.customer_id] || 'Customer', lm = inbox.last[c.id], un = inbox.unreadBy[c.id] || 0;
+    return `<a class="dmrow ${String(selected) === String(c.id) ? 'on' : ''} ${un ? 'unread' : ''}" href="#/messages/${c.id}">${avatar(nm)}<div class="dmtxt"><div class="row" style="justify-content:space-between;flex-wrap:nowrap"><b>${esc(nm)}</b><small class="muted">${lm ? ago(lm.created_at) : ''}</small></div>
+    <span class="muted prev">${lm ? (lm.sender_id !== c.customer_id ? 'You: ' : '') + esc(lm.body.slice(0, 70)) : 'No messages yet'}</span></div>${un ? `<span class="dot">${un}</span>` : ''}</a>`; }).join('')
+    : '<p class="muted" style="padding:14px">No conversations found.</p>';
 };
 pages.messages = async ([id], q) => {
   if (!session) { location.hash = '#/login'; return ''; }
   const isAdmin = !!profile?.is_admin;
-  if (id === 'new') {
-    let target = q.get('to') || '', who = '';
-    let pick = '';
-    if (isAdmin) {
-      const custs = (await sb.from('profiles').select('id,name,email').eq('is_admin', false).order('name')).data || [];
-      pick = `<label>To<select name="to" required><option value="">Choose a customer…</option>${custs.map((c) => `<option value="${c.id}" ${c.id === target ? 'selected' : ''}>${esc(c.name || c.email)} — ${esc(c.email)}</option>`).join('')}</select></label>`;
-    }
-    return `<div class="narrow"><h1>New message</h1><p class="muted">${isAdmin ? 'Start a private conversation with a customer.' : 'Send a private message to the store team. Only you and our team can see it.'}</p>
-    <form id="mf" class="stack">${pick}<label>Subject<input name="subject" required maxlength="200" placeholder="e.g. Question about my order"></label>
-    <label>Message<textarea name="body" rows="6" required maxlength="5000"></textarea></label><button class="btn">Send message</button></form></div>`;
+  if (id === 'new') { // find or create the DM with a customer, then open it
+    const to = isAdmin ? q.get('to') : session.user.id; if (!to) { location.hash = '#/messages'; return ''; }
+    let c = (await sb.from('conversations').select('id').eq('customer_id', to).order('id', { ascending: false }).limit(1).maybeSingle()).data;
+    if (!c) { const r = await sb.from('conversations').insert({ customer_id: to, subject: 'Direct message' }).select('id').single(); if (r.error) throw r.error; c = r.data; }
+    location.hash = `#/messages/${c.id}`; return '';
   }
-  if (id) {
-    const conv = (await sb.from('conversations').select('*').eq('id', id).maybeSingle()).data;
-    if (!conv) return '<h1>Conversation not found</h1><p><a href="#/messages">← Back to messages</a></p>';
-    const msgs = (await sb.from('messages').select('*').eq('conversation_id', id).order('id')).data || [];
-    const cust = isAdmin ? (await sb.from('profiles').select('name,email').eq('id', conv.customer_id).maybeSingle()).data : null;
-    const custName = cust ? (cust.name || cust.email) : 'Customer';
-    THREAD = { conv, isAdmin, custName };
-    await sb.from('notifications').update({ read: true }).eq('link', `#/messages/${id}`).eq('read', false); refreshUnread();
-    return `<p><a href="#/messages">← All messages</a></p><h1>${esc(conv.subject)}</h1>${isAdmin ? `<p class="muted">With ${esc(custName)}${cust ? ' · ' + esc(cust.email) : ''}${conv.closed ? ' · <b>Closed</b>' : ''}</p>` : (conv.closed ? '<p class="muted"><b>This conversation is closed.</b></p>' : '')}
-    <div class="thread" id="thread">${msgs.map((m) => bubble(m, conv, session.user.id, isAdmin, custName)).join('')}</div>
-    ${conv.closed && !isAdmin ? '' : `<form id="rf2" class="stack" style="margin-top:14px"><textarea name="body" rows="3" required maxlength="5000" placeholder="Write a reply…" aria-label="Reply"></textarea><div class="row"><button class="btn">Send</button>${isAdmin ? `<button type="button" class="btn ghost" id="toggleclosed">${conv.closed ? 'Reopen conversation' : 'Close conversation'}</button>` : ''}</div></form>`}`;
-  }
-  const convs = (await sb.from('conversations').select('*').order('last_message_at', { ascending: false }).limit(100)).data || [];
-  const ids = convs.map((c) => c.id);
-  const last = {}; if (ids.length) ((await sb.from('messages').select('conversation_id,body,sender_id,created_at').in('conversation_id', ids).order('id', { ascending: false }).limit(400)).data || []).forEach((m) => { if (!last[m.conversation_id]) last[m.conversation_id] = m; });
-  const unreadLinks = new Set(((await sb.from('notifications').select('link').eq('read', false).eq('kind', 'message')).data || []).map((n) => n.link));
-  const names = {}; if (isAdmin && convs.length) ((await sb.from('profiles').select('id,name,email').in('id', [...new Set(convs.map((c) => c.customer_id))])).data || []).forEach((u) => (names[u.id] = u.name || u.email));
-  return `<h1>Messages</h1><p><a class="btn" href="#/messages/new">+ New message</a></p>
-  ${convs.length ? convs.map((c) => `<a class="conv ${unreadLinks.has('#/messages/' + c.id) ? 'unread' : ''}" href="#/messages/${c.id}"><div class="row" style="justify-content:space-between"><b>${esc(c.subject)}</b><small class="muted">${ago(c.last_message_at)}</small></div>
-    ${isAdmin ? `<small class="muted">${esc(names[c.customer_id] || '')}${c.closed ? ' · closed' : ''}</small>` : (c.closed ? '<small class="muted">closed</small>' : '')}
-    <span class="muted">${last[c.id] ? (last[c.id].sender_id === session.user.id ? 'You: ' : '') + esc(last[c.id].body.slice(0, 120)) : ''}</span></a>`).join('') : `<p class="muted">${isAdmin ? 'No conversations yet.' : 'No messages yet. Questions about an order or a product? Send us a message.'}</p>`}`;
+  let inbox = null, conv = null, selected = id && /^\d+$/.test(id) ? id : null;
+  if (isAdmin) inbox = await loadInbox();
+  else { const r = await sb.from('conversations').select('*').eq('customer_id', session.user.id).order('id', { ascending: false }).limit(1).maybeSingle(); conv = r.data; selected = conv?.id ?? 'solo'; }
+  if (isAdmin && selected) conv = (await sb.from('conversations').select('*').eq('id', selected).maybeSingle()).data;
+  const msgs = conv ? (await sb.from('messages').select('*').eq('conversation_id', conv.id).order('id')).data || [] : [];
+  const peerName = isAdmin ? (inbox.names[conv?.customer_id] || (conv ? ((await sb.from('profiles').select('name,email').eq('id', conv.customer_id).maybeSingle()).data?.name || 'Customer') : 'Customer')) : 'Store team';
+  DM = { conv, msgs, isAdmin, peerName, inbox, online: false };
+  const chat = (isAdmin && !conv) ? '<div class="empty-chat"><div style="font-size:2.4rem">💬</div><p><b>Select a conversation</b></p><p class="muted">Pick a customer on the left, or start one from Admin → Customers.</p></div>'
+    : `<header class="dmhead">${isAdmin ? '<a class="backbtn" href="#/messages" aria-label="Back">←</a>' : ''}${avatar(peerName, isAdmin ? '' : 'store')}<div><b>${esc(peerName)}</b><div class="dmstatus muted" id="dmstatus">${isAdmin ? esc((await sb.from('profiles').select('email').eq('id', conv.customer_id).maybeSingle()).data?.email || '') : 'Replies usually within a day'}</div></div></header>
+    <div class="thread" id="thread"></div><div class="typing" id="typing" hidden>${esc(peerName)} is typing<span>.</span><span>.</span><span>.</span></div>
+    <form id="dmform" class="composer"><textarea name="body" rows="1" maxlength="5000" placeholder="Message ${esc(isAdmin ? peerName : 'the store team')}…" aria-label="Message" required></textarea><button class="send" aria-label="Send">➤</button></form>`;
+  return `<div class="dm ${isAdmin ? '' : 'solo'} ${conv && isAdmin ? 'has-chat' : ''}">${isAdmin ? `<aside class="dmlist"><div class="dmlist-head"><b>Messages</b><input id="dmsearch" placeholder="Search customers…" aria-label="Search customers"></div><div id="dmrows">${listHtml(inbox, selected)}</div></aside>` : ''}<section class="dmchat">${chat}</section></div>`;
 };
-let THREAD = null;
-pages.messages.after = ([id]) => {
-  document.getElementById('mf')?.addEventListener('submit', async (e) => {
-    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const btn = e.target.querySelector('button'); btn.disabled = true;
-    const customer_id = profile?.is_admin ? f.to : session.user.id;
-    const c = await sb.from('conversations').insert({ customer_id, subject: f.subject.trim() }).select('id').single();
-    if (c.error) { btn.disabled = false; return fail(c.error); }
-    const m = await sb.from('messages').insert({ conversation_id: c.data.id, body: f.body.trim() });
-    btn.disabled = false; if (m.error) return fail(m.error);
-    flash('Message sent.'); location.hash = `#/messages/${c.data.id}`;
+pages.messages.after = () => {
+  if (!DM) return;
+  const listEl = document.getElementById('dmrows');
+  document.getElementById('dmsearch')?.addEventListener('input', (e) => { if (listEl) listEl.innerHTML = listHtml(DM.inbox, DM.conv?.id, e.target.value); });
+  if (DM.isAdmin) {
+    threadChan.push(sb.channel('inbox').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async () => {
+      DM.inbox = await loadInbox(); const el = document.getElementById('dmrows'); if (el) el.innerHTML = listHtml(DM.inbox, DM.conv?.id, document.getElementById('dmsearch')?.value || '');
+    }).subscribe());
+  }
+  const form = document.getElementById('dmform'); if (!form) return;
+  renderThread(true); markRead();
+  const ta = form.elements.body, mine = DM.isAdmin ? 'admin' : 'customer';
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; };
+  let typingChan = null, lastTyping = 0, hideTyping = null;
+  const joinChannel = () => {
+    if (!DM.conv || typingChan) return;
+    const cid = DM.conv.id;
+    typingChan = sb.channel('dm-' + cid, { config: { broadcast: { self: false }, presence: { key: session.user.id } } })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${cid}` }, (pl) => {
+        if (!DM.msgs.some((m) => m.id === pl.new.id)) DM.msgs.push(pl.new);
+        renderThread(isMine(pl.new)); if (!isMine(pl.new)) { document.getElementById('typing').hidden = true; markRead(); }
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${cid}` }, (pl) => {
+        const m = DM.msgs.find((x) => x.id === pl.new.id); if (m) { m.read_at = pl.new.read_at; renderThread(); }
+      })
+      .on('broadcast', { event: 'typing' }, () => { const t = document.getElementById('typing'); if (!t) return; t.hidden = false; const th = document.getElementById('thread'); th.scrollTop = th.scrollHeight; clearTimeout(hideTyping); hideTyping = setTimeout(() => (t.hidden = true), 3000); })
+      .on('presence', { event: 'sync' }, () => {
+        const st = typingChan.presenceState(); DM.online = Object.values(st).flat().some((x) => x.role !== mine);
+        const el = document.getElementById('dmstatus'); if (el) { el.dataset.online = DM.online ? '1' : '0'; if (DM.online) el.innerHTML = '<span class="onl"></span> Online'; else if (!DM.isAdmin) el.textContent = 'Replies usually within a day'; }
+      })
+      .subscribe((status) => { if (status === 'SUBSCRIBED') typingChan.track({ role: mine }); });
+    threadChan.push(typingChan);
+  };
+  joinChannel();
+  ta.addEventListener('input', () => { grow(); if (typingChan && Date.now() - lastTyping > 2000) { lastTyping = Date.now(); typingChan.send({ type: 'broadcast', event: 'typing', payload: {} }); } });
+  const coarse = window.matchMedia?.('(pointer: coarse)').matches;
+  ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !coarse) { e.preventDefault(); form.requestSubmit(); } });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault(); const body = ta.value.trim(); if (!body) return; const btn = form.querySelector('.send'); btn.disabled = true;
+    if (!DM.conv) {
+      const r = await sb.from('conversations').insert({ customer_id: session.user.id, subject: 'Direct message' }).select('*').single();
+      if (r.error) { btn.disabled = false; return fail(r.error); } DM.conv = r.data; joinChannel();
+    }
+    const { data, error } = await sb.from('messages').insert({ conversation_id: DM.conv.id, body }).select('*').single();
+    btn.disabled = false; if (error) return fail(error);
+    ta.value = ''; grow(); if (!DM.msgs.some((m) => m.id === data.id)) DM.msgs.push(data); renderThread(true); ta.focus();
   });
-  const thread = document.getElementById('thread'); if (!thread || !THREAD) return;
-  const { conv, isAdmin, custName } = THREAD; thread.scrollTop = thread.scrollHeight;
-  const add = (m) => { if (thread.querySelector(`[data-id="${m.id}"]`)) return; thread.insertAdjacentHTML('beforeend', bubble(m, conv, session.user.id, isAdmin, custName)); thread.scrollTop = thread.scrollHeight; };
-  document.getElementById('rf2')?.addEventListener('submit', async (e) => {
-    e.preventDefault(); const ta = e.target.elements.body; const body = ta.value.trim(); if (!body) return;
-    const btn = e.target.querySelector('button'); btn.disabled = true;
-    const { data, error } = await sb.from('messages').insert({ conversation_id: conv.id, body }).select('*').single();
-    btn.disabled = false; if (error) return fail(error); ta.value = ''; add(data);
-  });
-  document.getElementById('toggleclosed')?.addEventListener('click', async () => {
-    const { error } = await sb.from('conversations').update({ closed: !conv.closed }).eq('id', conv.id); error ? fail(error) : route();
-  });
-  threadChan = sb.channel('thread-' + conv.id).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conv.id}` }, (payload) => {
-    add(payload.new); sb.from('notifications').update({ read: true }).eq('link', `#/messages/${conv.id}`).eq('read', false).then(refreshUnread);
-  }).subscribe();
+  if (!coarse) ta.focus();
 };
 
 // ---- router ----
 async function route() {
-  if (threadChan) { sb.removeChannel(threadChan); threadChan = null; }
+  threadChan.forEach((c) => sb.removeChannel(c)); threadChan = [];
   let h = location.hash.slice(1); if (!h.startsWith('/')) h = '/'; // e.g. #access_token=… after email confirmation
   const [path, qs] = h.split('?'); const q = new URLSearchParams(qs || '');
   const [name = 'home', ...args] = path.split('/').filter(Boolean); const page = pages[name === '' ? 'home' : name];

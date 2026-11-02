@@ -586,3 +586,20 @@ create trigger msg_after after insert on public.messages for each row execute fu
 -- Realtime: push new notifications and messages to open browsers (row-level security still applies)
 do $$ begin alter publication supabase_realtime add table public.notifications; exception when others then null; end $$;
 do $$ begin alter publication supabase_realtime add table public.messages; exception when others then null; end $$;
+
+-- DM-style chat: read receipts
+alter table public.messages add column if not exists read_at timestamptz;
+create or replace function public.mark_conversation_read(cid bigint) returns void
+language plpgsql security definer set search_path = public as $$
+declare c public.conversations;
+begin
+  select * into c from conversations where id = cid;
+  if not found then return; end if;
+  if public.is_admin() then
+    update messages set read_at = now() where conversation_id = cid and read_at is null and sender_id = c.customer_id;
+  elsif c.customer_id = auth.uid() then
+    update messages set read_at = now() where conversation_id = cid and read_at is null and sender_id <> c.customer_id;
+  end if;
+end $$;
+revoke all on function public.mark_conversation_read(bigint) from public, anon;
+grant execute on function public.mark_conversation_read(bigint) to authenticated;

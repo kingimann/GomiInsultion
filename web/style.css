@@ -172,3 +172,32 @@ details.more{margin-top:8px}details.more summary{cursor:pointer;color:var(--mute
 :root[data-hero=solid] .hero .btn:not(.ghost){background:#fff!important;color:var(--brand)!important;box-shadow:none!important}
 :root[data-hero=solid] .hero .btn.ghost{background:transparent!important;color:#fff!important;box-shadow:none!important}
 :root[data-hero=minimal] .hero .btn.ghost{box-shadow:none!important}
+
+/* ===== DM-style chat ===== */
+.dm{display:grid;grid-template-columns:330px 1fr;height:min(78vh,780px);min-height:460px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--shadow)}
+.dm.solo{grid-template-columns:1fr;max-width:760px;margin:0 auto}
+.dmlist{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}.dmlist-head{padding:14px;display:grid;gap:8px;border-bottom:1px solid var(--line)}.dmlist-head b{font-size:1.15rem}
+#dmrows{overflow-y:auto;flex:1}
+.dmrow{display:flex;gap:10px;align-items:center;padding:12px 14px;text-decoration:none;color:var(--fg);border-bottom:1px solid var(--line)}.dmrow:hover{background:var(--bg)}.dmrow.on{background:var(--brand-soft)}
+.dmrow .dmtxt{flex:1;min-width:0;display:grid}.dmrow .prev{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.88rem}.dmrow.unread b,.dmrow.unread .prev{font-weight:700;color:var(--fg)}
+.avatar{flex:none;width:38px;height:38px;border-radius:50%;background:var(--brand-soft);color:var(--brand);display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem}.avatar.store{background:var(--brand);color:#fff}
+.dmchat{display:flex;flex-direction:column;min-height:0;min-width:0}
+.dmhead{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}.dmstatus{font-size:.82rem}.backbtn{display:none;font-size:1.4rem;text-decoration:none;color:var(--fg);padding:0 6px}
+.onl{display:inline-block;width:9px;height:9px;border-radius:50%;background:#16a34a;margin-right:4px}
+.dm .thread{flex:1;max-height:none;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:6px;background:var(--bg)}
+.day{text-align:center;margin:10px 0 4px}.day span{font-size:.75rem;color:var(--muted);background:var(--card);border:1px solid var(--line);padding:2px 12px;border-radius:99px}
+.grp{display:flex;gap:8px;align-items:flex-end;margin-top:8px}.grp.mine{justify-content:flex-end}.bstack{display:flex;flex-direction:column;gap:2px;max-width:min(78%,520px)}.grp.mine .bstack{align-items:flex-end}
+.msg{width:fit-content;max-width:100%;padding:8px 14px;border-radius:20px;background:var(--card);border:1px solid var(--line);white-space:pre-wrap;word-break:break-word;line-height:1.4}
+.grp.mine .msg{background:var(--brand);color:#fff;border-color:transparent}
+.grp.theirs .msg:not(:last-of-type){border-bottom-left-radius:6px}.grp.theirs .msg+.msg{border-top-left-radius:6px}.grp.theirs .msg:last-of-type{border-bottom-left-radius:6px}
+.grp.mine .msg:not(:last-of-type){border-bottom-right-radius:6px}.grp.mine .msg+.msg{border-top-right-radius:6px}.grp.mine .msg:last-of-type{border-bottom-right-radius:6px}
+.meta{font-size:.7rem;color:var(--muted);padding:0 6px}.seen{align-self:flex-end;font-size:.72rem;color:var(--muted);padding:0 6px}
+.typing{padding:4px 18px 8px;font-size:.82rem;color:var(--muted);background:var(--bg)}.typing span{animation:blink 1.2s infinite}.typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}@keyframes blink{0%,60%,100%{opacity:.2}30%{opacity:1}}
+.composer{display:flex;gap:8px;align-items:flex-end;padding:10px 12px;border-top:1px solid var(--line);background:var(--card)}.composer textarea{flex:1;resize:none;border-radius:20px;padding:10px 16px;max-height:140px;line-height:1.4}
+.send{width:44px;height:44px;border-radius:50%;border:0;background:var(--brand);color:#fff;font-size:1.1rem;cursor:pointer;flex:none}.send:disabled{opacity:.5}
+.empty-chat{margin:auto;text-align:center;padding:24px;max-width:340px}
+@media(max-width:760px){
+  .dm{grid-template-columns:1fr;height:calc(100dvh - 210px);min-height:420px}
+  .dm.has-chat .dmlist{display:none}.dm:not(.has-chat):not(.solo) .dmchat{display:none}.backbtn{display:inline-block}
+  .bstack{max-width:84%}
+}

@@ -128,3 +128,14 @@ drop policy if exists "submit quote" on public.quotes;
 create policy "submit quote" on public.quotes for insert with check (user_id is null or user_id = auth.uid());
 drop policy if exists "admin read quotes" on public.quotes;
 create policy "admin read quotes" on public.quotes for select using (public.is_admin());
+
+-- Product photos: public bucket, only admins can upload/change/delete
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('product-images', 'product-images', true, 5242880, array['image/jpeg','image/png','image/webp','image/gif'])
+on conflict (id) do nothing;
+drop policy if exists "admin upload images" on storage.objects;
+create policy "admin upload images" on storage.objects for insert with check (bucket_id = 'product-images' and public.is_admin());
+drop policy if exists "admin update images" on storage.objects;
+create policy "admin update images" on storage.objects for update using (bucket_id = 'product-images' and public.is_admin());
+drop policy if exists "admin delete images" on storage.objects;
+create policy "admin delete images" on storage.objects for delete using (bucket_id = 'product-images' and public.is_admin());

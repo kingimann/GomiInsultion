@@ -225,7 +225,9 @@ pages.admin = async ([sub, id]) => {
     <label>Description<textarea name="description" rows="5">${esc(p.description)}</textarea></label>
     <label>Price<input name="price" type="number" step="0.01" min="0" required value="${p.price_cents != null ? (p.price_cents / 100).toFixed(2) : ''}"></label>
     ${t('unit', 'Unit (e.g. bundle, roll)', 'required')}${t('r_value', 'R-value')}<label>Stock<input name="stock" type="number" min="0" required value="${p.stock ?? 0}"></label>
-    ${t('image_url', 'Image URL (optional)')}<label class="check"><input type="checkbox" name="active" ${p.id && !p.active ? '' : 'checked'}> Visible in store</label><button class="btn">Save</button></form>`;
+    ${p.image_url ? `<img src="${esc(safeUrl(p.image_url))}" alt="" style="max-width:160px;border-radius:10px">` : ''}
+    <label>Photo (JPG, PNG, WebP, up to 5 MB)<input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif"></label>
+    <input type="hidden" name="image_url" value="${esc(p.image_url || '')}"><label class="check"><input type="checkbox" name="active" ${p.id && !p.active ? '' : 'checked'}> Visible in store</label><button class="btn">Save</button></form>`;
   }
   if (sub === 'products') {
     const ps = (await sb.from('products').select('*').order('name')).data;
@@ -254,6 +256,14 @@ pages.admin.after = ([sub, id]) => {
   });
   document.getElementById('pf')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), pid = e.target.dataset.id;
+    const file = f.image; delete f.image;
+    if (file && file.size) {
+      if (file.size > 5 * 1024 * 1024) return fail(new Error('Photo must be under 5 MB.'));
+      const path = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-60)}`;
+      const up = await sb.storage.from('product-images').upload(path, file, { contentType: file.type });
+      if (up.error) return fail(up.error);
+      f.image_url = sb.storage.from('product-images').getPublicUrl(path).data.publicUrl;
+    }
     const row = { name: f.name.trim(), category: f.category.trim(), description: f.description, price_cents: Math.round(parseFloat(f.price) * 100), unit: f.unit.trim(),
       r_value: f.r_value.trim(), stock: parseInt(f.stock, 10), image_url: safeUrl(f.image_url.trim()), active: !!f.active };
     if (!pid) row.slug = (row.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'product') + '-' + Math.floor(Math.random() * 1000);

@@ -108,9 +108,29 @@ function flash(msg, type = 'ok') {
 }
 const img = (p, big) => (safeUrl(p.image_url) ? `<img class="${big ? 'big' : ''}" src="${esc(safeUrl(p.image_url))}" alt="${esc(p.name)}">` : `<div class="ph ${big ? 'big' : ''}">${esc(p.r_value || '🧱')}</div>`);
 let RATINGS = {};
-const loadRatings = async () => { const { data } = await sb.from('product_ratings').select('*'); RATINGS = Object.fromEntries((data || []).map((r) => [r.product_id, r])); };
+const loadRatings = async () => { const [{ data }] = await Promise.all([sb.from('product_ratings').select('*'), loadCompare()]); RATINGS = Object.fromEntries((data || []).map((r) => [r.product_id, r])); };
 const stars = (n) => `<span class="stars" aria-label="${n} out of 5">${'★'.repeat(Math.round(n))}${'☆'.repeat(5 - Math.round(n))}</span>`;
 const ratingLine = (p) => (RATINGS[p.id] ? `<p class="rating">${stars(RATINGS[p.id].avg)} <span class="muted">(${RATINGS[p.id].count})</span></p>` : '');
+let COMPARE = {};
+const CMP_DAYS = () => window.GOMI.COMPARE_MAX_DAYS || 30;
+async function loadCompare() {
+  const { data } = await sb.from('competitor_prices').select('*, competitors(name,active,sort)'); COMPARE = {};
+  const cut = Date.now() - CMP_DAYS() * 864e5; // prices older than this are never shown to customers
+  (data || []).filter((r) => r.competitors?.active && new Date(r.checked_at) >= cut).forEach((r) => (COMPARE[r.product_id] = COMPARE[r.product_id] || []).push({ ...r, name: r.competitors.name, sort: r.competitors.sort }));
+  Object.values(COMPARE).forEach((a) => a.sort((x, y) => x.sort - y.sort));
+}
+const saveBadge = (p) => {
+  const c = COMPARE[p.id]; if (!c?.length) return ''; const min = Math.min(...c.map((x) => x.price_cents));
+  const pct = Math.round((min - p.price_cents) / min * 100); return pct >= 1 && p.price_cents < min ? `<span class="savebadge">Save ${pct}% vs ${c.length > 1 ? 'other retailers' : esc(c[0].name)}</span>` : '';
+};
+const compareHtml = (p) => {
+  const c = COMPARE[p.id]; if (!c?.length) return '';
+  const rows = c.map((x) => { const diff = x.price_cents - p.price_cents, pct = Math.round(Math.abs(diff) / x.price_cents * 100);
+    const verdict = diff > 0 ? `<b class="up">You save ${money(diff)} (${pct}%)</b>` : diff < 0 ? `<span class="muted">${esc(x.name)} is ${money(-diff)} lower</span>` : '<span class="muted">Same price</span>';
+    return `<tr><td>${esc(x.name)}${x.in_stock ? '' : ' <small class="muted">(out of stock)</small>'}${x.note ? `<br><small class="muted">${esc(x.note)}</small>` : ''}</td><td>${money(x.price_cents)}</td><td>${verdict}</td><td><small class="muted">${new Date(x.checked_at).toLocaleDateString()}</small>${x.url ? `<br><a href="${esc(x.url)}" target="_blank" rel="noopener nofollow">View ↗</a>` : ''}</td></tr>`; }).join('');
+  return `<div class="compare"><h3>💲 Price comparison</h3><table><tr><th>Retailer</th><th>Price</th><th>Difference</th><th>Checked</th></tr><tr class="us"><td><b>${esc(theme.name || 'Gomi Insulation')}</b></td><td><b>${money(p.price_cents)}</b></td><td></td><td></td></tr>${rows}</table>
+  <p class="muted" style="font-size:.8rem;margin:6px 0 0">Other retailers' prices were checked by us on the dates shown and may have changed. Sizes, brands and pack contents can differ, so compare the item listed. Retailer names belong to their owners; we are not affiliated with them.</p></div>`;
+};
 const getWish = () => { try { return JSON.parse(localStorage.getItem('wish') || '[]'); } catch { return []; } };
 document.addEventListener('click', (e) => {
   const b = e.target.closest('.heart'); if (!b) return;
@@ -119,7 +139,7 @@ document.addEventListener('click', (e) => {
   b.textContent = w.includes(id) ? '♥' : '♡'; b.style.color = w.includes(id) ? '#dc2626' : ''; renderNav(); if (location.hash.startsWith('#/wishlist')) route();
 });
 const card = (p) => `<article class="card">${p.stock <= 0 ? '<span class="badge">Sold out</span>' : p.stock <= 10 ? '<span class="badge warn">Low stock</span>' : ''}<button class="heart" data-id="${p.id}" aria-label="Save to wishlist" style="${getWish().includes(p.id) ? 'color:#dc2626' : ''}">${getWish().includes(p.id) ? '♥' : '♡'}</button><a href="#/product/${esc(p.slug)}">${img(p)}</a><div class="pad"><span class="tag">${esc(p.category)}</span>
-  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}<p class="price">${money(p.price_cents)}</p></div></article>`;
+  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}${saveBadge(p)}<p class="price">${money(p.price_cents)}</p></div></article>`;
 const getPromo = () => { try { return JSON.parse(localStorage.getItem('promo') || 'null'); } catch { return null; } };
 const totals = (sub) => { const pr = getPromo(), disc = pr && sub ? Math.floor(sub * pr.percent / 100) : 0; const ship = !sub || sub - disc >= FREE_SHIP ? 0 : SHIP; return { sub, disc, code: disc ? pr.code : '', ship, total: sub - disc + ship }; };
 const totalsHtml = (t) => `<dl class="totals"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount${t.code ? ' (' + esc(t.code) + ')' : ''}</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>Shipping</dt><dd>${t.ship ? money(t.ship) : 'Free'}</dd><dt>Total</dt><dd><strong>${money(t.total)}</strong></dd></dl>`;
@@ -197,6 +217,7 @@ pages.product = async ([slug]) => {
   <p class="price big">${money(p.price_cents)} <small>per ${esc(p.unit)}</small></p>${p.r_value ? `<p><strong>R-value:</strong> ${esc(p.r_value)}</p>` : ''}<p>${esc(p.description)}</p>
   ${p.stock > 0 ? `<form class="row" id="add"><input type="number" name="qty" value="1" min="1" max="${p.stock}" aria-label="Quantity"><button class="btn">Add to cart</button></form>
   <p class="muted">${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : '<p class="flash error">Out of stock</p>'}
+  ${compareHtml(p)}
   ${coverageOf(p) ? `<div class="calc"><h3>📐 How many do I need?</h3><div class="row"><label>Area (sq ft) <input type="number" id="area" min="1" value="200"></label>
   <label>Waste % <input type="number" id="waste" min="0" max="30" value="10"></label></div><p class="out" id="calcout"></p></div>` : ''}</div></div>
   <h2>Customer reviews</h2>${reviewsHtml}
@@ -639,6 +660,31 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <div class="stack" style="margin-top:12px"><input id="pos_name" placeholder="Customer name (optional)"><input id="pos_email" type="email" placeholder="Email for receipt (optional)"><input id="pos_phone" placeholder="Phone (optional)">
     <select id="pos_pay"><option>Cash</option><option>Card</option><option>Cheque</option><option>Other</option></select><button class="btn" id="pos_done">Complete sale</button></div></aside></div>`;
   }
+  if (sub === 'compare' && id) {
+    const [pr, comps, prices] = await Promise.all([sb.from('products').select('id,name,price_cents').eq('id', id).single(), sb.from('competitors').select('*').order('sort'), sb.from('competitor_prices').select('*').eq('product_id', id)]);
+    const prod = pr.data; CMPP = prod;
+    return `<h1>Competitor prices</h1><p><a href="#/admin/compare">← All products</a></p><p><b>${esc(prod.name)}</b> — our price ${money(prod.price_cents)}</p>
+    <form id="cmpform" class="stack narrow">${comps.data.map((c) => { const r = prices.data.find((x) => x.competitor_id === c.id) || {};
+      return `<fieldset class="cmpset" data-c="${c.id}"><legend>${esc(c.name)}${c.active ? '' : ' (hidden)'}</legend>
+      <label>Price<input name="price" type="number" step="0.01" min="0" value="${r.price_cents != null ? (r.price_cents / 100).toFixed(2) : ''}" placeholder="Leave empty if not sold there"></label>
+      <label>Link to their product page (https://…)<input name="url" type="url" value="${esc(r.url || '')}" pattern="https://.*"></label>
+      <label>Comparable item (what you compared)<input name="note" maxlength="200" value="${esc(r.note || '')}" placeholder="e.g. Owens Corning R-13 batt, 88 sq ft"></label>
+      <label class="check"><input type="checkbox" name="in_stock" ${r.in_stock === false ? '' : 'checked'}> In stock there</label>${r.checked_at ? `<small class="muted">Last checked ${dateOf(r.checked_at)}</small>` : ''}</fieldset>`; }).join('')}
+    <button class="btn">Save (marks prices as checked today)</button></form>`;
+  }
+  if (sub === 'compare') {
+    const [prods, comps, prices] = await Promise.all([sb.from('products').select('id,name,price_cents,category').order('name'), sb.from('competitors').select('*').order('sort'), sb.from('competitor_prices').select('*')]);
+    const map = {}; prices.data.forEach((r) => (map[`${r.product_id}:${r.competitor_id}`] = r)); const cut = Date.now() - CMP_DAYS() * 864e5;
+    const staleN = prices.data.filter((r) => new Date(r.checked_at) < cut).length;
+    return `<h1>Price comparison</h1><p class="muted">Enter what competitors charge for a comparable item. Customers see these on product pages (with the date checked) only while they are less than ${CMP_DAYS()} days old.</p>
+    ${staleN ? `<p class="flash error" style="margin-top:0">${staleN} price${staleN === 1 ? ' is' : 's are'} older than ${CMP_DAYS()} days and hidden from customers until re-checked.</p>` : ''}
+    <div class="row" style="margin-bottom:10px"><input id="cmpsearch" placeholder="Filter products…" style="flex:1;max-width:300px"><button class="btn ghost" id="cmpall">✓ Mark all as checked today</button></div>
+    <table id="cmptable"><tr><th>Product</th><th>Our price</th>${comps.data.map((c) => `<th>${esc(c.name)}${c.active ? '' : ' (hidden)'}</th>`).join('')}<th></th></tr>
+    ${prods.data.map((x) => `<tr data-name="${esc(x.name.toLowerCase())}"><td><b>${esc(x.name)}</b><br><small class="muted">${esc(x.category)}</small></td><td>${money(x.price_cents)}</td>${comps.data.map((c) => { const r = map[`${x.id}:${c.id}`]; const stale = r && new Date(r.checked_at) < cut;
+      return `<td><input type="number" step="0.01" min="0" class="cmpq" data-p="${x.id}" data-c="${c.id}" value="${r ? (r.price_cents / 100).toFixed(2) : ''}" placeholder="—" aria-label="${esc(x.name)} at ${esc(c.name)}">${r ? `<br><small class="${stale ? 'down' : 'muted'}">${stale ? 'stale · ' : ''}${new Date(r.checked_at).toLocaleDateString()}</small>` : ''}</td>`; }).join('')}<td><a href="#/admin/compare/${x.id}">Details</a></td></tr>`).join('')}</table>
+    <h2>Retailers</h2><table><tr><th>Name</th><th>Status</th><th></th></tr>${comps.data.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.active ? 'Shown' : 'Hidden'}</td><td><button class="link togcomp" data-id="${c.id}" data-active="${c.active}" style="color:var(--brand)">${c.active ? 'Hide' : 'Show'}</button></td></tr>`).join('')}</table>
+    <form id="addcomp" class="row"><input name="name" placeholder="Add a retailer (e.g. Lowe's)" maxlength="80" required><button class="btn ghost">Add</button></form>`;
+  }
   if (sub === 'codes') {
     const cs = (await sb.from('discount_codes').select('*').order('code')).data;
     return `<h1>Discount codes</h1><table><tr><th>Code</th><th>Off</th><th>Min order</th><th>Status</th><th></th></tr>${cs.map((c) => `<tr><td><b>${esc(c.code)}</b></td><td>${c.percent}%</td><td>${money(c.min_cents)}</td><td>${c.active ? 'Active' : 'Off'}</td><td><button class="btn ghost togcode" data-code="${esc(c.code)}" data-active="${c.active}">${c.active ? 'Disable' : 'Enable'}</button></td></tr>`).join('')}</table>
@@ -703,7 +749,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   const hr = new Date().getHours(), first = (profile?.name || '').split(' ')[0];
   const attn = [['🧾', pendRes.count || 0, 'pending orders', '#/admin/orders'], ['💬', unread.msg, 'unread messages', '#/messages'], ['📝', formRes.count || 0, 'new form responses', '#/admin/forms'], ['📦', (lowRes.data || []).length, 'low-stock products', '#/admin/inventory'], ['📋', quoteRes.count || 0, 'quote requests this week', '#/admin/quotes']];
   const links = [['🧾', 'Orders', '#/admin/orders'], ['🛍️', 'Products', '#/admin/products'], ['📦', 'Inventory', '#/admin/inventory'], ['📍', 'Locations', '#/admin/locations'], ['📈', 'Sales', '#/admin/sales'], ['🏪', 'Point of sale', '#/admin/pos'],
-    ['👥', 'Customers', '#/admin/customers'], ['💬', 'Messages', '#/messages'], ['📝', 'Forms', '#/admin/forms'], ['📄', 'Pages', '#/admin/pages'], ['🏷️', 'Discount codes', '#/admin/codes'], ['📋', 'Quotes', '#/admin/quotes']];
+    ['👥', 'Customers', '#/admin/customers'], ['💬', 'Messages', '#/messages'], ['📝', 'Forms', '#/admin/forms'], ['📄', 'Pages', '#/admin/pages'], ['💲', 'Price compare', '#/admin/compare'], ['🏷️', 'Discount codes', '#/admin/codes'], ['📋', 'Quotes', '#/admin/quotes']];
   return `<div class="dashhead"><div><h1 style="margin:0">Good ${hr < 12 ? 'morning' : hr < 18 ? 'afternoon' : 'evening'}${first ? ', ' + esc(first) : ''} 👋</h1><p class="muted" style="margin:2px 0 0">${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })} · ${money(todayRev)} sold today</p></div>
     <div class="row"><a class="btn" href="#/admin/pos">+ In-store sale</a><a class="btn ghost" href="#/admin/products/new">+ Product</a></div></div>
   <div class="attn">${attn.map(([i, n, l, h]) => `<a class="attnc ${n ? 'on' : ''}" href="${h}"><span>${i}</span><b>${n}</b><small>${l}</small></a>`).join('')}</div>
@@ -718,6 +764,35 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
 };
 pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   document.getElementById('ordloc')?.addEventListener('change', (e) => { location.hash = e.target.value ? `#/admin/orders?loc=${e.target.value}` : '#/admin/orders'; });
+  // competitor prices
+  document.getElementById('cmpsearch')?.addEventListener('input', (e) => { const t = e.target.value.toLowerCase(); document.querySelectorAll('#cmptable tr[data-name]').forEach((r) => (r.hidden = !r.dataset.name.includes(t))); });
+  document.querySelectorAll('.cmpq').forEach((el) => el.addEventListener('change', async () => {
+    const pid = Number(el.dataset.p), cid = Number(el.dataset.c);
+    if (el.value.trim() === '') { const { error } = await sb.from('competitor_prices').delete().eq('product_id', pid).eq('competitor_id', cid); return error ? fail(error) : (flash('Price removed.'), route()); }
+    const v = parseFloat(el.value); if (!(v >= 0)) return fail(new Error('Enter a valid price.'));
+    const { error } = await sb.from('competitor_prices').upsert({ product_id: pid, competitor_id: cid, price_cents: Math.round(v * 100), checked_at: new Date().toISOString() }, { onConflict: 'product_id,competitor_id' });
+    error ? fail(error) : (flash('Price saved.'), route());
+  }));
+  document.getElementById('cmpall')?.addEventListener('click', async () => {
+    if (!confirm('Mark every competitor price as checked today? Only do this if you have actually re-checked them.')) return;
+    const { error } = await sb.from('competitor_prices').update({ checked_at: new Date().toISOString() }).gte('product_id', 0); error ? fail(error) : (flash('All prices marked as checked.'), route());
+  });
+  document.querySelectorAll('.togcomp').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.from('competitors').update({ active: b.dataset.active !== 'true' }).eq('id', b.dataset.id); error ? fail(error) : route(); }));
+  document.getElementById('addcomp')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const name = new FormData(e.target).get('name').trim(); if (!name) return;
+    const { error } = await sb.from('competitors').insert({ name, sort: 100 }); error ? fail(error.code === '23505' ? new Error('That retailer already exists.') : error) : (flash('Retailer added.'), route());
+  });
+  document.getElementById('cmpform')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const now = new Date().toISOString();
+    for (const fs of e.target.querySelectorAll('.cmpset')) {
+      const cid = Number(fs.dataset.c), price = fs.querySelector('[name=price]').value.trim(), url = fs.querySelector('[name=url]').value.trim();
+      if (url && !/^https:\/\//i.test(url)) return fail(new Error('Links must start with https://'));
+      if (price === '') { await sb.from('competitor_prices').delete().eq('product_id', CMPP.id).eq('competitor_id', cid); continue; }
+      const { error } = await sb.from('competitor_prices').upsert({ product_id: CMPP.id, competitor_id: cid, price_cents: Math.round(parseFloat(price) * 100), url, note: fs.querySelector('[name=note]').value.trim(), in_stock: fs.querySelector('[name=in_stock]').checked, checked_at: now }, { onConflict: 'product_id,competitor_id' });
+      if (error) return fail(error);
+    }
+    flash('Competitor prices saved.'); location.hash = '#/admin/compare';
+  });
   // locations
   document.getElementById('lf')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = new FormData(e.target), g = (k) => (f.get(k) || '').toString().trim();
@@ -1141,7 +1216,7 @@ pages.page = async ([slug]) => {
 
 // ---- locations, inventory, sales, point of sale (admin) ----
 const KINDS = { warehouse: 'Warehouse', store: 'Store', showroom: 'Showroom', other: 'Other' };
-let LOC = null, POS = null, SALES_ROWS = [];
+let LOC = null, POS = null, SALES_ROWS = [], CMPP = null;
 const download = (name, rows) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map((r) => r.map(csvCell).join(',')).join('\n')], { type: 'text/csv' })); a.download = name; a.click(); };
 const isoDay = (d) => { const t = new Date(d); return new Date(t - t.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
 function bucketize(orders, days) {

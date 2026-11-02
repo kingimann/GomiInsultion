@@ -844,3 +844,22 @@ begin
 end $$;
 revoke all on function public.set_default_location(bigint), public.set_inventory(bigint, bigint, int, text), public.transfer_inventory(bigint, bigint, bigint, int, text), public.record_sale(bigint, jsonb, jsonb, text) from public, anon;
 grant execute on function public.set_default_location(bigint), public.set_inventory(bigint, bigint, int, text), public.transfer_inventory(bigint, bigint, bigint, int, text), public.record_sale(bigint, jsonb, jsonb, text) to authenticated;
+
+-- ===== Competitor price comparison (prices are entered and dated by admins) =====
+create table if not exists public.competitors (
+  id bigint generated always as identity primary key, name text not null unique check (length(name) between 1 and 80),
+  active boolean not null default true, sort int not null default 0);
+create table if not exists public.competitor_prices (
+  product_id bigint not null references public.products(id) on delete cascade, competitor_id bigint not null references public.competitors(id) on delete cascade,
+  price_cents int not null check (price_cents >= 0), url text not null default '' check (url = '' or url ~* '^https://'), note text not null default '' check (length(note) <= 200),
+  in_stock boolean not null default true, checked_at timestamptz not null default now(), primary key (product_id, competitor_id));
+alter table public.competitors enable row level security; alter table public.competitor_prices enable row level security;
+drop policy if exists "view competitors" on public.competitors;
+create policy "view competitors" on public.competitors for select using (active or public.is_admin());
+drop policy if exists "admin competitors" on public.competitors;
+create policy "admin competitors" on public.competitors for all using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "view competitor prices" on public.competitor_prices;
+create policy "view competitor prices" on public.competitor_prices for select using (exists (select 1 from public.competitors c where c.id = competitor_id and (c.active or public.is_admin())));
+drop policy if exists "admin competitor prices" on public.competitor_prices;
+create policy "admin competitor prices" on public.competitor_prices for all using (public.is_admin()) with check (public.is_admin());
+insert into public.competitors (name, sort) values ('Home Depot', 1), ('Réno-Dépôt', 2), ('Home Hardware', 3) on conflict (name) do nothing;

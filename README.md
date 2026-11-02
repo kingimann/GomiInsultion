@@ -98,3 +98,8 @@ Each response has a **status** (New / In progress / Done) and a **notes** box, w
 - **Admin → Point of sale:** record in-person sales at a location (stock is taken from that location). Orders show where they were fulfilled and whether they were online or in store.
 - **Admin → Sales:** revenue, orders, units and average order for 7/30/90 days, 12 months or all time, filterable by location and channel, with a chart, by-location and top-product tables and CSV export.
 - **Dashboard:** things needing attention, period-over-period KPIs, revenue chart, revenue by location, top products, recent orders, low stock and quick links.
+
+## Competitor price comparison
+**Admin → Price compare** is a grid of products × retailers (Home Depot, Réno-Dépôt and Home Hardware are pre-loaded; you can add or hide retailers). Type what a competitor charges for a comparable item; each product also has a details page for the link, the exact comparable item and stock status.
+Customers see a **Price comparison** table on product pages (your price vs theirs, how much they save, date checked, link) and a "Save X%" badge on product cards when you are cheaper than every compared retailer. Prices older than `COMPARE_MAX_DAYS` (30 by default, in `web/config.js`) are hidden automatically, and the table says retailers' prices may have changed.
+Prices are entered by hand on purpose: these retailers offer no public price feed, and scraping their sites breaks their terms of use and gets blocked. Where a competitor is cheaper the table says so — it only shows what you entered.

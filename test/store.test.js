@@ -69,3 +69,21 @@ test('bad login rejected; customer blocked from admin', async () => {
   await c('/login', { form: { email: 'sam@x.com', password: 'password1' } });
   assert.equal((await c('/admin')).status, 403);
 });
+
+test('stripe webhook marks order paid; rejects bad signature', async () => {
+  const { createHmac } = await import('node:crypto');
+  process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
+  const c = client();
+  await c('/cart/add', { form: { id: 2, qty: 1 } });
+  const r = await c('/checkout', { form: { name: 'P', email: 'p@x.com', address: 'a', city: 'c', postcode: '1' } });
+  const id = r.loc.match(/order\/(\d+)/)[1];
+  const raw = JSON.stringify({ type: 'checkout.session.completed', data: { object: { metadata: { order_id: id } } } });
+  const t = Math.floor(Date.now() / 1000);
+  const sig = createHmac('sha256', 'whsec_test').update(`${t}.${raw}`).digest('hex');
+  const hook = (s) => fetch(`${base}/stripe/webhook`, { method: 'POST', body: raw, headers: { 'stripe-signature': `t=${t},v1=${s}` } });
+  assert.equal((await hook('0'.repeat(64))).status, 400);
+  assert.equal((await hook(sig)).status, 200);
+  const admin = client();
+  await admin('/login', { form: { email: 'boss@x.com', password: 'adminpass123' } });
+  assert.match((await admin(`/admin/orders/${id}`)).text, /status paid/);
+});

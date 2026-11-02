@@ -5,6 +5,8 @@ import { join, extname, normalize } from 'node:path';
 import { openDb } from './db.js';
 import { hashPassword, verifyPassword, createSessionStore, SESSION_SECONDS } from './auth.js';
 import * as v from './views.js';
+import { createHmac } from 'node:crypto';
+import { stripeEnabled, createCheckoutSession, verifyWebhook } from './stripe.js';
 
 const PUBLIC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'public');
 const FREE_SHIP_CENTS = Number(process.env.FREE_SHIPPING_CENTS ?? 50000);
@@ -65,10 +67,12 @@ export function createApp(db = openDb()) {
 
     // body
     let form = {};
+    let rawBody = '';
     if (method === 'POST') {
       const chunks = []; let size = 0;
       for await (const c of req) { size += c.length; if (size > 100_000) { res.writeHead(413); return res.end(); } chunks.push(c); }
-      form = Object.fromEntries(new URLSearchParams(Buffer.concat(chunks).toString()));
+      rawBody = Buffer.concat(chunks).toString();
+      form = Object.fromEntries(new URLSearchParams(rawBody));
       const origin = req.headers.origin;
       if (origin && new URL(origin).host !== req.headers.host) { res.writeHead(403); return res.end('Bad origin'); }
     }
@@ -172,8 +176,31 @@ export function createApp(db = openDb()) {
           throw e;
         }
         sessions.setCart(token, {});
-        const guestKey = user ? '' : `?k=${orderKey(orderId)}`;
+        const guestKey = `?k=${orderKey(orderId)}`;
+        if (stripeEnabled()) {
+          try {
+            const origin = process.env.PUBLIC_URL || `http://${req.headers.host}`;
+            const sUrl = await createCheckoutSession({ orderId, lines, shipping: totals.shipping, email: form.email.trim(), successUrl: `${origin}/order/${orderId}${guestKey}&paid=1`, cancelUrl: `${origin}/order/${orderId}${guestKey}` });
+            return send(303, '', { Location: sUrl });
+          } catch (e) {
+            console.error('stripe', e);
+            return redirect(`/order/${orderId}${guestKey}`, { type: 'error', msg: 'We could not start the payment. Your order is saved; we will contact you to arrange payment.' });
+          }
+        }
         return redirect(`/order/${orderId}${guestKey}`, { type: 'ok', msg: `Thanks! Order #${orderId} received. We'll email you an invoice shortly.` });
+      }
+      if (method === 'POST' && path === '/stripe/webhook') {
+        const evt = verifyWebhook(rawBody, req.headers['stripe-signature']);
+        if (!evt) { res.writeHead(400); return res.end('bad signature'); }
+        const oid = evt.data?.object?.metadata?.order_id;
+        const o = oid && db.prepare('SELECT * FROM orders WHERE id = ?').get(oid);
+        if (o && evt.type === 'checkout.session.completed' && o.status === 'pending') {
+          db.prepare("UPDATE orders SET status = 'paid' WHERE id = ?").run(o.id);
+        } else if (o && evt.type === 'checkout.session.expired' && o.status === 'pending') {
+          for (const i of db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(o.id)) db.prepare('UPDATE products SET stock = stock + ? WHERE id = ?').run(i.qty, i.product_id);
+          db.prepare("UPDATE orders SET status = 'cancelled' WHERE id = ?").run(o.id);
+        }
+        res.writeHead(200); return res.end('ok');
       }
       if (method === 'GET' && (m = path.match(/^\/order\/(\d+)$/))) {
         const o = db.prepare('SELECT * FROM orders WHERE id = ?').get(m[1]);
@@ -289,7 +316,6 @@ export function createApp(db = openDb()) {
   return server;
 }
 
-import { createHmac } from 'node:crypto';
 function createHmacHex(secret, data) { return createHmac('sha256', secret).update(data).digest('hex').slice(0, 24); }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

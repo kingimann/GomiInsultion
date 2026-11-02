@@ -99,8 +99,8 @@ export function checkout(lines, totals, user, v = {}) {
     ${f('city', 'City', '', 'required')}
     ${f('postcode', 'Postal / ZIP code', '', 'required')}
     <label>Order notes<textarea name="notes">${v.notes ?? ''}</textarea></label>
-    <p class="muted">Payment: we'll email you an invoice and payment options once your order is confirmed.</p>
-    <button class="btn">Place order</button></form>
+    <p class="muted">${process.env.STRIPE_SECRET_KEY ? 'You will be taken to a secure Stripe page to pay by card.' : "Payment: we'll email you an invoice and payment options once your order is confirmed."}</p>
+    <button class="btn">${process.env.STRIPE_SECRET_KEY ? 'Continue to payment' : 'Place order'}</button></form>
   <aside><h3>Order summary</h3>
   <ul>${lines.map((l) => h`<li>${l.qty} × ${l.name} <span>${money(l.qty * l.price_cents)}</span></li>`)}</ul>
   ${totalsBlock(totals)}</aside></div>`;

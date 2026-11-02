@@ -1,0 +1,17 @@
+# Netlify settings: the storefront is plain static files in web/, so there is no build step.
+[build]
+  publish = "web"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+# Icons and the manifest rarely change; everything else revalidates so new deploys show up straight away.
+[[headers]]
+  for = "/icon*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400"

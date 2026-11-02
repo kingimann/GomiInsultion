@@ -317,40 +317,65 @@ pages.account = async () => {
   <label class="check"><input type="checkbox" name="is_default" ${addrs.length ? '' : 'checked'}> Make this my default</label><button class="btn">Save address</button></form>`;
 };
 
-const FIELD_TYPES = { text: 'Short text', textarea: 'Long text', email: 'Email', tel: 'Phone', number: 'Number', date: 'Date', select: 'Dropdown', checkbox: 'Checkbox', file: 'File upload' };
+const FIELD_TYPES = { text: 'Short text', textarea: 'Long text', email: 'Email', tel: 'Phone', url: 'Website link', number: 'Number', date: 'Date', time: 'Time', select: 'Dropdown', radio: 'Single choice (radio buttons)', multi: 'Multiple choice (checkboxes)', checkbox: 'Checkbox (yes/no)', rating: 'Rating (1–5 stars)', file: 'File upload', heading: 'Heading (display only)', paragraph: 'Text block (display only)', divider: 'Divider (display only)' };
+const DISPLAY_TYPES = ['heading', 'paragraph', 'divider'], CHOICE_TYPES = ['select', 'radio', 'multi'];
+const dataFields = (f) => (f.fields || []).filter((x) => !DISPLAY_TYPES.includes(x.type));
+const showVal = (x, v) => (v == null || v === '' ? '' : Array.isArray(v) ? v.join(', ') : x.type === 'checkbox' ? (v ? 'Yes' : 'No') : x.type === 'rating' ? '★'.repeat(Number(v)) + '☆'.repeat(5 - Number(v)) : String(v));
 const UPLOAD_ACCEPT = 'image/jpeg,image/png,image/webp,image/gif,application/pdf,.txt,.csv,.doc,.docx,.xls,.xlsx';
 const MAX_UPLOAD = 10 * 1024 * 1024;
 const csvCell = (v) => { v = String(v ?? ''); if (/^[=+\-@]/.test(v)) v = "'" + v; return `"${v.replace(/"/g, '""')}"`; };
-const fieldInput = (f) => {
-  const id = `ff_${esc(f.id)}`, req = f.required ? 'required' : '';
-  if (f.type === 'textarea') return `<textarea id="${id}" name="${esc(f.id)}" rows="5" maxlength="5000" ${req}></textarea>`;
-  if (f.type === 'select') return `<select id="${id}" name="${esc(f.id)}" ${req}><option value="">Choose…</option>${(f.options || []).map((o) => `<option>${esc(o)}</option>`).join('')}</select>`;
-  if (f.type === 'file') return `<input type="file" id="${id}" name="${esc(f.id)}" accept="${UPLOAD_ACCEPT}" ${req}><span class="muted" style="font-weight:400;font-size:.85rem">Images, PDF, Word, Excel, text or CSV — up to 10 MB</span>`;
-  if (f.type === 'checkbox') return `<input type="checkbox" id="${id}" name="${esc(f.id)}" ${req}>`;
-  const t = { email: 'email', tel: 'tel', number: 'number', date: 'date' }[f.type] || 'text';
-  return `<input type="${t}" id="${id}" name="${esc(f.id)}" ${t === 'number' ? 'step="any"' : 'maxlength="5000"'} ${req}>`;
+const fieldHtml = (f) => {
+  const id = `ff_${esc(f.id)}`, n = esc(f.id), req = f.required ? 'required' : '', star = f.required ? ' *' : '';
+  const ph = f.placeholder ? `placeholder="${esc(f.placeholder)}"` : '', help = f.help ? `<small class="muted">${esc(f.help)}</small>` : '';
+  const opts = (f.options || []);
+  switch (f.type) {
+    case 'heading': return `<h3 style="margin:10px 0 0">${esc(f.label)}</h3>`;
+    case 'paragraph': return `<p class="muted" style="white-space:pre-wrap;margin:0">${esc(f.label)}</p>`;
+    case 'divider': return '<hr style="border:0;border-top:1px solid var(--line);width:100%;margin:6px 0">';
+    case 'textarea': return `<label>${esc(f.label)}${star}<textarea id="${id}" name="${n}" rows="5" maxlength="${Number(f.maxlength) || 5000}" ${req} ${ph}></textarea>${help}</label>`;
+    case 'select': return `<label>${esc(f.label)}${star}<select id="${id}" name="${n}" ${req}><option value="">Choose…</option>${opts.map((o) => `<option>${esc(o)}</option>`).join('')}</select>${help}</label>`;
+    case 'radio': return `<fieldset class="choices"><legend>${esc(f.label)}${star}</legend>${opts.map((o, i) => `<label class="check"><input type="radio" name="${n}" value="${esc(o)}" ${i === 0 && f.required ? 'required' : ''}> ${esc(o)}</label>`).join('')}${help}</fieldset>`;
+    case 'multi': return `<fieldset class="choices"><legend>${esc(f.label)}${star}</legend>${opts.map((o) => `<label class="check"><input type="checkbox" name="${n}" value="${esc(o)}"> ${esc(o)}</label>`).join('')}${help}</fieldset>`;
+    case 'rating': return `<fieldset class="choices"><legend>${esc(f.label)}${star}</legend><div class="rate">${[5, 4, 3, 2, 1].map((v) => `<input type="radio" id="${id}_${v}" name="${n}" value="${v}" ${v === 5 && f.required ? 'required' : ''}><label for="${id}_${v}" title="${v} star${v > 1 ? 's' : ''}">★</label>`).join('')}</div>${help}</fieldset>`;
+    case 'checkbox': return `<label class="check"><input type="checkbox" id="${id}" name="${n}" ${req}> ${esc(f.label)}${star}</label>${help}`;
+    case 'file': return `<label>${esc(f.label)}${star}<input type="file" id="${id}" name="${n}" accept="${UPLOAD_ACCEPT}" ${req}><span class="muted" style="font-weight:400;font-size:.85rem">Images, PDF, Word, Excel, text or CSV — up to 10 MB</span>${help}</label>`;
+    default: {
+      const t = { email: 'email', tel: 'tel', number: 'number', date: 'date', time: 'time', url: 'url' }[f.type] || 'text';
+      const extra = t === 'number' ? `step="any" ${f.min !== undefined && f.min !== '' ? `min="${esc(f.min)}"` : ''} ${f.max !== undefined && f.max !== '' ? `max="${esc(f.max)}"` : ''}` : (['date', 'time'].includes(t) ? '' : `maxlength="${Number(f.maxlength) || 5000}"`);
+      return `<label>${esc(f.label)}${star}<input type="${t}" id="${id}" name="${n}" ${extra} ${req} ${ph}>${help}</label>`;
+    }
+  }
 };
+let CURFORM = null;
 pages.form = async ([slug]) => {
   const { data: f } = await sb.from('forms').select('*').eq('slug', slug).eq('active', true).maybeSingle();
   if (!f) return '<h1>Form not found</h1><p><a href="#/">Back home</a></p>';
-  return `<div class="narrow"><h1>${esc(f.title)}</h1>${f.description ? `<p class="muted" style="white-space:pre-wrap">${esc(f.description)}</p>` : ''}
-  <form id="cf2" class="stack" data-slug="${esc(f.slug)}" data-ok="${esc(f.success_message)}">${f.fields.map((x) => x.type === 'checkbox'
-    ? `<label class="check">${fieldInput(x)} ${esc(x.label)}${x.required ? ' *' : ''}</label>`
-    : `<label>${esc(x.label)}${x.required ? ' *' : ''}${fieldInput(x)}</label>`).join('')}<button class="btn">Submit</button></form></div>`;
+  const st = (await sb.rpc('form_status', { form_slug: slug })).data || { open: true };
+  const head = `<h1>${esc(f.title)}</h1>${f.description ? `<p class="muted" style="white-space:pre-wrap">${esc(f.description)}</p>` : ''}`;
+  if (!st.open) return `<div class="narrow">${head}<p class="flash error" style="margin-top:0">${st.reason === 'full' ? 'This form has reached its response limit.' : 'This form is closed and is no longer accepting responses.'}</p></div>`;
+  if (f.require_login && !session) return `<div class="narrow">${head}<p>Please <a href="#/login">log in</a> or <a href="#/register">create an account</a> to fill in this form.</p></div>`;
+  CURFORM = f;
+  return `<div class="narrow">${head}${f.closes_at ? `<p class="muted">Open until ${new Date(f.closes_at).toLocaleString()}</p>` : ''}<form id="cf2" class="stack" data-slug="${esc(f.slug)}" data-ok="${esc(f.success_message)}">${f.fields.map(fieldHtml).join('')}<button class="btn">${esc(f.submit_label || 'Submit')}</button></form></div>`;
 };
 pages.form.after = () => document.getElementById('cf2')?.addEventListener('submit', async (e) => {
-  e.preventDefault(); const form = e.target, answers = {};
-  const btn = form.querySelector('button'); btn.disabled = true;
-  for (const el of form.elements) {
-    if (!el.name) continue;
-    if (el.type === 'file') {
-      const file = el.files[0]; if (!file) { answers[el.name] = ''; continue; }
-      if (file.size > MAX_UPLOAD) { btn.disabled = false; return fail(new Error(`"${file.name}" is over 10 MB.`)); }
+  e.preventDefault(); const form = e.target, answers = {}; const btn = form.querySelector('button'); btn.disabled = true;
+  const stop = (msg) => { btn.disabled = false; fail(new Error(msg)); };
+  for (const fl of dataFields(CURFORM)) {
+    const q = `[name="${CSS.escape(fl.id)}"]`;
+    if (fl.type === 'file') {
+      const file = form.querySelector(q).files[0]; if (!file) { answers[fl.id] = ''; continue; }
+      if (file.size > MAX_UPLOAD) return stop(`"${file.name}" is over 10 MB.`);
       const path = `${form.dataset.slug}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-80)}`;
       const up = await sb.storage.from('form-uploads').upload(path, file, { contentType: file.type || 'application/octet-stream' });
       if (up.error) { btn.disabled = false; return fail(up.error); }
-      answers[el.name] = path;
-    } else answers[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+      answers[fl.id] = path;
+    } else if (fl.type === 'multi') {
+      const vals = [...form.querySelectorAll(`${q}:checked`)].map((x) => x.value);
+      if (fl.required && !vals.length) return stop(`"${fl.label}" is required.`);
+      answers[fl.id] = vals;
+    } else if (fl.type === 'radio' || fl.type === 'rating') answers[fl.id] = form.querySelector(`${q}:checked`)?.value || '';
+    else if (fl.type === 'checkbox') answers[fl.id] = form.querySelector(q).checked;
+    else answers[fl.id] = form.querySelector(q).value;
   }
   const { error } = await sb.rpc('submit_form', { form_slug: form.dataset.slug, answers });
   btn.disabled = false; if (error) return fail(error);
@@ -400,13 +425,21 @@ let FB = null; // form being edited in the builder
 const slugify = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 const formUrl = (slug) => `${location.origin}${location.pathname}#/form/${slug}`;
 function fieldRows() {
-  return FB.fields.map((f, i) => `<div class="fld" data-i="${i}"><div class="row"><input data-f="label" value="${esc(f.label)}" placeholder="Question" style="flex:1;min-width:160px">
+  const NUMERIC = ['text', 'textarea', 'email', 'tel', 'url', 'number'];
+  return FB.fields.map((f, i) => `<div class="fld" data-i="${i}"><div class="row">
+    ${f.type === 'paragraph' ? `<textarea data-f="label" rows="2" placeholder="Text to show" style="flex:1;min-width:160px">${esc(f.label)}</textarea>` : `<input data-f="label" value="${esc(f.label)}" placeholder="${f.type === 'heading' ? 'Heading text' : 'Question'}" style="flex:1;min-width:160px">`}
     <select data-f="type">${Object.entries(FIELD_TYPES).map(([k, l]) => `<option value="${k}" ${k === f.type ? 'selected' : ''}>${l}</option>`).join('')}</select>
-    <label class="check"><input type="checkbox" data-f="required" ${f.required ? 'checked' : ''}> Required</label>
+    ${DISPLAY_TYPES.includes(f.type) ? '' : `<label class="check"><input type="checkbox" data-f="required" ${f.required ? 'checked' : ''}> Required</label>`}
     <button type="button" class="btn ghost" data-act="up" aria-label="Move up">↑</button><button type="button" class="btn ghost" data-act="down" aria-label="Move down">↓</button>
     <button type="button" class="btn ghost" data-act="del" aria-label="Delete question" style="color:var(--err)">✕</button></div>
-    ${f.type === 'select' ? `<textarea data-f="options" rows="3" placeholder="One option per line" style="width:100%;margin-top:8px">${esc((f.options || []).join('\n'))}</textarea>` : ''}</div>`).join('') || '<p class="muted">No questions yet. Add one below.</p>';
+    ${CHOICE_TYPES.includes(f.type) ? `<textarea data-f="options" rows="3" placeholder="One option per line" style="width:100%;margin-top:8px">${esc((f.options || []).join('\n'))}</textarea>` : ''}
+    ${DISPLAY_TYPES.includes(f.type) ? '' : `<details class="more"><summary>More options</summary><div class="row" style="margin-top:8px">
+      <input data-f="help" value="${esc(f.help || '')}" placeholder="Help text (shown under the question)" style="flex:1;min-width:200px">
+      ${NUMERIC.includes(f.type) && f.type !== 'number' ? `<input data-f="placeholder" value="${esc(f.placeholder || '')}" placeholder="Placeholder">` : ''}
+      ${f.type === 'number' ? `<input data-f="min" type="number" step="any" value="${esc(f.min ?? '')}" placeholder="Min" style="width:100px"><input data-f="max" type="number" step="any" value="${esc(f.max ?? '')}" placeholder="Max" style="width:100px">` : ''}
+      ${['text', 'textarea', 'email', 'tel', 'url'].includes(f.type) ? `<input data-f="maxlength" type="number" min="1" max="5000" value="${esc(f.maxlength ?? '')}" placeholder="Max length" style="width:120px">` : ''}</div></details>`}</div>`).join('') || '<p class="muted">No questions yet. Add one below.</p>';
 }
+const toLocalInput = (d) => { const t = new Date(d); return new Date(t - t.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
 pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   if (!profile?.is_admin) return '<h1>Forbidden</h1>';
   if (sub === 'orders' && id) {
@@ -420,10 +453,10 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const cnt = (st) => all.filter((r) => r.status === st).length;
     return `<h1>${esc(f.title)} — responses</h1><p><a href="#/admin/forms">← All forms</a> · <button class="btn ghost" id="fcsv" data-id="${f.id}">⬇ Export CSV</button></p>
     <div class="chips"><a class="chip ${!filter ? 'on' : ''}" href="#/admin/forms/${f.id}/responses">All (${all.length})</a>${Object.entries(RESP_STATUS).map(([k, l]) => `<a class="chip ${filter === k ? 'on' : ''}" href="#/admin/forms/${f.id}/responses?status=${k}">${l} (${cnt(k)})</a>`).join('')}</div>
-    ${rows.length ? `<table><tr><th>Received</th>${f.fields.map((x) => `<th>${esc(x.label)}</th>`).join('')}<th>Status</th><th>Notes</th><th></th></tr>${rows.map((r) => `<tr><td>${dateOf(r.created_at)}</td>${f.fields.map((x) => x.type === 'file' ? `<td>${r.data[x.id] ? `<button class="link dlfile" data-path="${esc(r.data[x.id])}" style="color:var(--brand)">⬇ ${esc(r.data[x.id].split('/').pop().replace(/^[0-9a-f-]{36}-/, ''))}</button>` : ''}</td>` : `<td style="white-space:pre-wrap">${esc(typeof r.data[x.id] === 'boolean' ? (r.data[x.id] ? 'Yes' : 'No') : r.data[x.id])}</td>`).join('')}<td><select class="rstatus" data-id="${r.id}" aria-label="Status">${Object.entries(RESP_STATUS).map(([k, l]) => `<option value="${k}" ${k === r.status ? 'selected' : ''}>${l}</option>`).join('')}</select></td><td><textarea class="rnotes" data-id="${r.id}" rows="2" maxlength="5000" placeholder="Add a note…" aria-label="Notes">${esc(r.notes)}</textarea></td><td><button class="link delresp" data-id="${r.id}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No responses yet.</p>'}`;
+    ${rows.length ? `<table><tr><th>Received</th>${dataFields(f).map((x) => `<th>${esc(x.label)}</th>`).join('')}<th>Status</th><th>Notes</th><th></th></tr>${rows.map((r) => `<tr><td>${dateOf(r.created_at)}</td>${dataFields(f).map((x) => x.type === 'file' ? `<td>${r.data[x.id] ? `<button class="link dlfile" data-path="${esc(r.data[x.id])}" style="color:var(--brand)">⬇ ${esc(r.data[x.id].split('/').pop().replace(/^[0-9a-f-]{36}-/, ''))}</button>` : ''}</td>` : `<td style="white-space:pre-wrap">${esc(showVal(x, r.data[x.id]))}</td>`).join('')}<td><select class="rstatus" data-id="${r.id}" aria-label="Status">${Object.entries(RESP_STATUS).map(([k, l]) => `<option value="${k}" ${k === r.status ? 'selected' : ''}>${l}</option>`).join('')}</select></td><td><textarea class="rnotes" data-id="${r.id}" rows="2" maxlength="5000" placeholder="Add a note…" aria-label="Notes">${esc(r.notes)}</textarea></td><td><button class="link delresp" data-id="${r.id}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No responses yet.</p>'}`;
   }
   if (sub === 'forms' && id) {
-    const f = id === 'new' ? { title: '', slug: '', description: '', success_message: 'Thanks! We received your response.', active: true, notify: true, fields: [] } : (await sb.from('forms').select('*').eq('id', id).single()).data;
+    const f = id === 'new' ? { title: '', slug: '', description: '', success_message: 'Thanks! We received your response.', active: true, notify: true, submit_label: 'Submit', closes_at: null, max_responses: null, require_login: false, fields: [] } : (await sb.from('forms').select('*').eq('id', id).single()).data;
     FB = { ...f, fields: (f.fields || []).map((x) => ({ ...x })) };
     return `<h1>${f.id ? 'Edit form' : 'New form'}</h1><div class="narrow stack" id="fbuilder">
     <label>Title<input id="fb_title" value="${esc(f.title)}" maxlength="200"></label>
@@ -431,6 +464,10 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <label>Description (optional)<textarea id="fb_desc" rows="3" maxlength="2000">${esc(f.description)}</textarea></label>
     <label>Message shown after submitting<input id="fb_ok" value="${esc(f.success_message)}" maxlength="1000"></label>
     <label class="check"><input type="checkbox" id="fb_active" ${f.active ? 'checked' : ''}> Published (visible to visitors)</label>
+    <label>Submit button text<input id="fb_submit" value="${esc(f.submit_label || 'Submit')}" maxlength="60"></label>
+    <label>Closes on (optional)<input type="datetime-local" id="fb_closes" value="${f.closes_at ? toLocalInput(f.closes_at) : ''}"></label>
+    <label>Stop accepting after this many responses (optional)<input type="number" id="fb_max" min="1" value="${f.max_responses ?? ''}"></label>
+    <label class="check"><input type="checkbox" id="fb_login" ${f.require_login ? 'checked' : ''}> Require visitors to be logged in</label>
     <label class="check"><input type="checkbox" id="fb_notify" ${f.notify !== false ? 'checked' : ''}> Email me when someone submits this form</label>
     <h3 style="margin-bottom:0">Questions</h3><div id="fields">${fieldRows()}</div>
     <div class="row"><select id="fb_newtype">${Object.entries(FIELD_TYPES).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select><button type="button" class="btn alt" id="fb_add">+ Add question</button></div>
@@ -519,8 +556,8 @@ pages.admin.after = ([sub, id, extra]) => {
   document.getElementById('fcsv')?.addEventListener('click', async (e) => {
     const f = (await sb.from('forms').select('*').eq('id', e.target.dataset.id).single()).data;
     const rows = (await sb.from('form_submissions').select('*').eq('form_id', f.id).order('id')).data;
-    const head = ['Received', ...f.fields.map((x) => x.label), 'Status', 'Notes'].map(csvCell).join(',');
-    const body = rows.map((r) => [r.created_at, ...f.fields.map((x) => r.data[x.id] ?? ''), RESP_STATUS[r.status] || r.status, r.notes].map(csvCell).join(','));
+    const head = ['Received', ...dataFields(f).map((x) => x.label), 'Status', 'Notes'].map(csvCell).join(',');
+    const body = rows.map((r) => [r.created_at, ...dataFields(f).map((x) => showVal(x, r.data[x.id])), RESP_STATUS[r.status] || r.status, r.notes].map(csvCell).join(','));
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[head, ...body].join('\n')], { type: 'text/csv' })); a.download = `${f.slug}-responses.csv`; a.click();
   });
   const fields = document.getElementById('fields');
@@ -529,7 +566,7 @@ pages.admin.after = ([sub, id, extra]) => {
     fields.addEventListener('input', (e) => {
       const row = e.target.closest('.fld'); const f = FB.fields[Number(row?.dataset.i)]; const k = e.target.dataset.f; if (!f || !k) return;
       if (k === 'required') f.required = e.target.checked; else if (k === 'options') f.options = e.target.value.split('\n').map((x) => x.trim()).filter(Boolean); else f[k] = e.target.value;
-      if (k === 'type') { if (f.type === 'select' && !f.options) f.options = []; redraw(); }
+      if (k === 'type') { if (CHOICE_TYPES.includes(f.type) && !f.options) f.options = []; redraw(); }
     });
     fields.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act; if (!act) return; const i = Number(e.target.closest('.fld').dataset.i);
@@ -540,15 +577,16 @@ pages.admin.after = ([sub, id, extra]) => {
     document.getElementById('fb_add').addEventListener('click', () => {
       if (FB.fields.length >= 40) return fail(new Error('A form can have up to 40 questions.'));
       const type = document.getElementById('fb_newtype').value;
-      FB.fields.push({ id: 'q' + Math.random().toString(36).slice(2, 9), type, label: '', required: false, ...(type === 'select' ? { options: [] } : {}) }); redraw();
+      FB.fields.push({ id: 'q' + Math.random().toString(36).slice(2, 9), type, label: '', required: false, ...(CHOICE_TYPES.includes(type) ? { options: [] } : {}) }); redraw();
     });
     document.getElementById('fb_save').addEventListener('click', async () => {
       const title = document.getElementById('fb_title').value.trim(); if (!title) return fail(new Error('Give the form a title.'));
       if (!FB.fields.length) return fail(new Error('Add at least one question.'));
       if (FB.fields.some((x) => !x.label.trim())) return fail(new Error('Every question needs a label.'));
-      if (FB.fields.some((x) => x.type === 'select' && !(x.options || []).length)) return fail(new Error('Dropdown questions need at least one option.'));
+      if (FB.fields.some((x) => CHOICE_TYPES.includes(x.type) && !(x.options || []).length)) return fail(new Error('Dropdown, single-choice and multiple-choice questions need at least one option.'));
+      if (!FB.fields.some((x) => !DISPLAY_TYPES.includes(x.type))) return fail(new Error('Add at least one question people can answer.'));
       const row = { title, slug: slugify(document.getElementById('fb_slug').value || title) || 'form-' + Date.now(), description: document.getElementById('fb_desc').value,
-        success_message: document.getElementById('fb_ok').value.trim() || 'Thanks!', active: document.getElementById('fb_active').checked, notify: document.getElementById('fb_notify').checked,
+        success_message: document.getElementById('fb_ok').value.trim() || 'Thanks!', active: document.getElementById('fb_active').checked, notify: document.getElementById('fb_notify').checked, submit_label: document.getElementById('fb_submit').value.trim() || 'Submit', closes_at: document.getElementById('fb_closes').value ? new Date(document.getElementById('fb_closes').value).toISOString() : null, max_responses: document.getElementById('fb_max').value ? parseInt(document.getElementById('fb_max').value, 10) : null, require_login: document.getElementById('fb_login').checked,
         fields: FB.fields.map((x) => ({ ...x, label: x.label.trim() })) };
       const res = FB.id ? await sb.from('forms').update(row).eq('id', FB.id).select('id').single() : await sb.from('forms').insert(row).select('id').single();
       if (res.error) return fail(res.error.code === '23505' ? new Error('That link name is already used by another form.') : res.error);

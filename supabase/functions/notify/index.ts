@@ -47,9 +47,12 @@ Deno.serve(async (req) => {
     const { data: sub } = await admin.from('form_submissions').select('*, forms(*)').eq('id', body.submission_id).single();
     if (!sub) return new Response('no submission', { status: 404 });
     const fields = sub.forms.fields as any[];
-    const rows = fields.map((f) => {
-      let v = sub.data[f.id]; if (f.type === 'checkbox') v = v ? 'Yes' : 'No';
-      if (f.type === 'file' && v) v = `${String(v).split('/').pop()!.replace(/^[0-9a-f-]{36}-/, '')} (download from the admin page)`;
+    const rows = fields.filter((f) => !['heading', 'paragraph', 'divider'].includes(f.type)).map((f) => {
+      let v = sub.data[f.id];
+      if (Array.isArray(v)) v = v.join(', ');
+      else if (f.type === 'checkbox') v = v ? 'Yes' : 'No';
+      else if (f.type === 'rating' && v) v = '★'.repeat(Number(v)) + '☆'.repeat(5 - Number(v));
+      else if (f.type === 'file' && v) v = `${String(v).split('/').pop()!.replace(/^[0-9a-f-]{36}-/, '')} (download from the admin page)`;
       return `<tr><td valign="top"><b>${esc(f.label)}</b></td><td style="white-space:pre-wrap">${esc(v ?? '')}</td></tr>`;
     }).join('');
     const replyTo = fields.filter((f) => f.type === 'email').map((f) => sub.data[f.id]).find((v) => v);

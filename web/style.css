@@ -122,3 +122,9 @@ code{background:var(--brand-soft);padding:2px 6px;border-radius:6px;font-size:.8
 @media(max-width:760px){#notifpanel{left:0;right:0;top:auto;bottom:0;width:auto;border-radius:20px 20px 0 0;max-height:75vh;padding-bottom:calc(14px + env(safe-area-inset-bottom))}.bubble{max-width:92%}}
 @media(min-width:761px){.bar{gap:10px;flex-wrap:nowrap}.search{min-width:110px}nav{gap:2px;flex-wrap:nowrap}nav a,nav button.link{padding:6px 9px;white-space:nowrap}#cartlink{white-space:nowrap}}
 @media(min-width:761px) and (max-width:1060px){.bar{flex-wrap:wrap}}
+
+/* form fields */
+fieldset.choices{border:0;padding:0;margin:0;display:grid;gap:6px}fieldset.choices legend{font-weight:600;margin-bottom:4px;padding:0}.stack .check{font-weight:400}
+.rate{display:inline-flex;flex-direction:row-reverse;justify-content:flex-end;position:relative}.rate input{position:absolute;opacity:0;width:1px;height:1px}
+.rate label{font-size:2rem;line-height:1;color:var(--line);cursor:pointer;padding:0 2px}.rate input:checked~label,.rate label:hover,.rate label:hover~label{color:#f59e0b}.rate input:focus-visible+label{outline:2px solid var(--brand);border-radius:4px}
+details.more{margin-top:8px}details.more summary{cursor:pointer;color:var(--muted);font-size:.9rem}

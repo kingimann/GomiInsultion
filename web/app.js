@@ -315,12 +315,15 @@ pages.account = async () => {
   <label class="check"><input type="checkbox" name="is_default" ${addrs.length ? '' : 'checked'}> Make this my default</label><button class="btn">Save address</button></form>`;
 };
 
-const FIELD_TYPES = { text: 'Short text', textarea: 'Long text', email: 'Email', tel: 'Phone', number: 'Number', date: 'Date', select: 'Dropdown', checkbox: 'Checkbox' };
+const FIELD_TYPES = { text: 'Short text', textarea: 'Long text', email: 'Email', tel: 'Phone', number: 'Number', date: 'Date', select: 'Dropdown', checkbox: 'Checkbox', file: 'File upload' };
+const UPLOAD_ACCEPT = 'image/jpeg,image/png,image/webp,image/gif,application/pdf,.txt,.csv,.doc,.docx,.xls,.xlsx';
+const MAX_UPLOAD = 10 * 1024 * 1024;
 const csvCell = (v) => { v = String(v ?? ''); if (/^[=+\-@]/.test(v)) v = "'" + v; return `"${v.replace(/"/g, '""')}"`; };
 const fieldInput = (f) => {
   const id = `ff_${esc(f.id)}`, req = f.required ? 'required' : '';
   if (f.type === 'textarea') return `<textarea id="${id}" name="${esc(f.id)}" rows="5" maxlength="5000" ${req}></textarea>`;
   if (f.type === 'select') return `<select id="${id}" name="${esc(f.id)}" ${req}><option value="">Choose…</option>${(f.options || []).map((o) => `<option>${esc(o)}</option>`).join('')}</select>`;
+  if (f.type === 'file') return `<input type="file" id="${id}" name="${esc(f.id)}" accept="${UPLOAD_ACCEPT}" ${req}><span class="muted" style="font-weight:400;font-size:.85rem">Images, PDF, Word, Excel, text or CSV — up to 10 MB</span>`;
   if (f.type === 'checkbox') return `<input type="checkbox" id="${id}" name="${esc(f.id)}" ${req}>`;
   const t = { email: 'email', tel: 'tel', number: 'number', date: 'date' }[f.type] || 'text';
   return `<input type="${t}" id="${id}" name="${esc(f.id)}" ${t === 'number' ? 'step="any"' : 'maxlength="5000"'} ${req}>`;
@@ -335,8 +338,18 @@ pages.form = async ([slug]) => {
 };
 pages.form.after = () => document.getElementById('cf2')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const form = e.target, answers = {};
-  for (const el of form.elements) { if (!el.name) continue; answers[el.name] = el.type === 'checkbox' ? el.checked : el.value; }
   const btn = form.querySelector('button'); btn.disabled = true;
+  for (const el of form.elements) {
+    if (!el.name) continue;
+    if (el.type === 'file') {
+      const file = el.files[0]; if (!file) { answers[el.name] = ''; continue; }
+      if (file.size > MAX_UPLOAD) { btn.disabled = false; return fail(new Error(`"${file.name}" is over 10 MB.`)); }
+      const path = `${form.dataset.slug}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-80)}`;
+      const up = await sb.storage.from('form-uploads').upload(path, file, { contentType: file.type || 'application/octet-stream' });
+      if (up.error) { btn.disabled = false; return fail(up.error); }
+      answers[el.name] = path;
+    } else answers[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+  }
   const { error } = await sb.rpc('submit_form', { form_slug: form.dataset.slug, answers });
   btn.disabled = false; if (error) return fail(error);
   form.outerHTML = `<p class="flash ok" style="margin-top:0">${esc(form.dataset.ok)}</p>`;
@@ -401,7 +414,7 @@ pages.admin = async ([sub, id, extra]) => {
     const f = (await sb.from('forms').select('*').eq('id', id).single()).data;
     const rows = (await sb.from('form_submissions').select('*').eq('form_id', id).order('id', { ascending: false })).data;
     return `<h1>${esc(f.title)} — responses</h1><p><a href="#/admin/forms">← All forms</a> · <button class="btn ghost" id="fcsv" data-id="${f.id}">⬇ Export CSV</button></p>
-    ${rows.length ? `<table><tr><th>Received</th>${f.fields.map((x) => `<th>${esc(x.label)}</th>`).join('')}<th></th></tr>${rows.map((r) => `<tr><td>${dateOf(r.created_at)}</td>${f.fields.map((x) => `<td style="white-space:pre-wrap">${esc(typeof r.data[x.id] === 'boolean' ? (r.data[x.id] ? 'Yes' : 'No') : r.data[x.id])}</td>`).join('')}<td><button class="link delresp" data-id="${r.id}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No responses yet.</p>'}`;
+    ${rows.length ? `<table><tr><th>Received</th>${f.fields.map((x) => `<th>${esc(x.label)}</th>`).join('')}<th></th></tr>${rows.map((r) => `<tr><td>${dateOf(r.created_at)}</td>${f.fields.map((x) => x.type === 'file' ? `<td>${r.data[x.id] ? `<button class="link dlfile" data-path="${esc(r.data[x.id])}" style="color:var(--brand)">⬇ ${esc(r.data[x.id].split('/').pop().replace(/^[0-9a-f-]{36}-/, ''))}</button>` : ''}</td>` : `<td style="white-space:pre-wrap">${esc(typeof r.data[x.id] === 'boolean' ? (r.data[x.id] ? 'Yes' : 'No') : r.data[x.id])}</td>`).join('')}<td><button class="link delresp" data-id="${r.id}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No responses yet.</p>'}`;
   }
   if (sub === 'forms' && id) {
     const f = id === 'new' ? { title: '', slug: '', description: '', success_message: 'Thanks! We received your response.', active: true, fields: [] } : (await sb.from('forms').select('*').eq('id', id).single()).data;
@@ -467,12 +480,27 @@ pages.admin = async ([sub, id, extra]) => {
   <h2>Low stock</h2>${low.data.length ? `<ul>${low.data.map((p) => `<li><a href="#/admin/products/${p.id}">${esc(p.name)}</a> — ${p.stock} left</li>`).join('')}</ul>` : '<p>All good.</p>'}`;
 };
 pages.admin.after = ([sub, id, extra]) => {
+  document.querySelectorAll('.dlfile').forEach((b) => b.addEventListener('click', async () => {
+    const name = b.dataset.path.split('/').pop().replace(/^[0-9a-f-]{36}-/, '');
+    const { data, error } = await sb.storage.from('form-uploads').createSignedUrl(b.dataset.path, 60, { download: name });
+    if (error) return fail(error); const a = document.createElement('a'); a.href = data.signedUrl; a.download = name; a.click();
+  }));
   document.querySelectorAll('.delform').forEach((b) => b.addEventListener('click', async () => {
-    if (!confirm(`Delete "${b.dataset.title}" and all its responses?`)) return;
-    const { error } = await sb.from('forms').delete().eq('id', b.dataset.id); error ? fail(error) : route();
+    if (!confirm(`Delete "${b.dataset.title}" and all its responses (including uploaded files)?`)) return;
+    const f = (await sb.from('forms').select('fields').eq('id', b.dataset.id).single()).data;
+    const fileKeys = (f?.fields || []).filter((x) => x.type === 'file').map((x) => x.id);
+    const rows = fileKeys.length ? (await sb.from('form_submissions').select('data').eq('form_id', b.dataset.id)).data : [];
+    const paths = rows.flatMap((r) => fileKeys.map((k) => r.data[k])).filter(Boolean);
+    const { error } = await sb.from('forms').delete().eq('id', b.dataset.id); if (error) return fail(error);
+    if (paths.length) await sb.storage.from('form-uploads').remove(paths);
+    route();
   }));
   document.querySelectorAll('.delresp').forEach((b) => b.addEventListener('click', async () => {
-    if (!confirm('Delete this response?')) return; const { error } = await sb.from('form_submissions').delete().eq('id', b.dataset.id); error ? fail(error) : route();
+    if (!confirm('Delete this response (and any uploaded files)?')) return;
+    const paths = [...b.closest('tr').querySelectorAll('.dlfile')].map((x) => x.dataset.path);
+    const { error } = await sb.from('form_submissions').delete().eq('id', b.dataset.id); if (error) return fail(error);
+    if (paths.length) await sb.storage.from('form-uploads').remove(paths);
+    route();
   }));
   document.getElementById('fcsv')?.addEventListener('click', async (e) => {
     const f = (await sb.from('forms').select('*').eq('id', e.target.dataset.id).single()).data;

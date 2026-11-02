@@ -347,3 +347,42 @@ insert into public.forms (slug, title, description, success_message, fields) val
   '[{"id":"name","type":"text","label":"Your name","required":true},{"id":"email","type":"email","label":"Email","required":true},
     {"id":"topic","type":"select","label":"Topic","required":false,"options":["Product question","Order help","Delivery","Other"]},
     {"id":"message","type":"textarea","label":"Message","required":true}]') on conflict (slug) do nothing;
+
+-- File uploads on forms: private bucket. Visitors can upload only into the folder of an active form; only admins can read/delete.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types) values ('form-uploads', 'form-uploads', false, 10485760,
+  array['image/jpeg','image/png','image/webp','image/gif','application/pdf','text/plain','text/csv','application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'])
+on conflict (id) do update set file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types, public = false;
+drop policy if exists "upload form files" on storage.objects;
+create policy "upload form files" on storage.objects for insert to anon, authenticated
+  with check (bucket_id = 'form-uploads' and (storage.foldername(name))[1] in (select slug from public.forms where active));
+drop policy if exists "admin read form files" on storage.objects;
+create policy "admin read form files" on storage.objects for select using (bucket_id = 'form-uploads' and public.is_admin());
+drop policy if exists "admin delete form files" on storage.objects;
+create policy "admin delete form files" on storage.objects for delete using (bucket_id = 'form-uploads' and public.is_admin());
+
+create or replace function public.submit_form(form_slug text, answers jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare f public.forms; fld jsonb; v jsonb; txt text; k text; clean jsonb := '{}'; ftype text;
+begin
+  select * into f from forms where slug = form_slug and active;
+  if not found then raise exception 'This form is not available'; end if;
+  if (select count(*) from form_submissions where form_id = f.id and created_at > now() - interval '1 hour') >= 200 then
+    raise exception 'Too many submissions right now, please try again later'; end if;
+  for fld in select * from jsonb_array_elements(f.fields) loop
+    k := fld->>'id'; ftype := coalesce(fld->>'type', 'text'); v := answers->k;
+    txt := case jsonb_typeof(v) when 'string' then v #>> '{}' when 'boolean' then v::text when 'number' then v::text else null end;
+    if coalesce((fld->>'required')::boolean, false) and (txt is null or btrim(txt) = '' or txt = 'false') then
+      raise exception '"%" is required', fld->>'label'; end if;
+    if txt is null or btrim(txt) = '' then continue; end if;
+    if length(txt) > 5000 then raise exception '"%" is too long', fld->>'label'; end if;
+    if ftype = 'email' and txt !~ '^\S+@\S+\.\S+$' then raise exception '"%" must be a valid email', fld->>'label'; end if;
+    if ftype = 'number' and txt !~ '^-?[0-9]+(\.[0-9]+)?$' then raise exception '"%" must be a number', fld->>'label'; end if;
+    if ftype = 'select' and not (fld->'options') ? txt then raise exception '"%" has an invalid choice', fld->>'label'; end if;
+    if ftype = 'file' and (txt not like f.slug || '/%' or not exists (select 1 from storage.objects where bucket_id = 'form-uploads' and name = txt)) then
+      raise exception '"%" upload was not found, please try again', fld->>'label'; end if;
+    clean := clean || jsonb_build_object(k, case when ftype = 'checkbox' then to_jsonb(txt = 'true') else to_jsonb(txt) end);
+  end loop;
+  insert into form_submissions (form_id, data, user_id) values (f.id, clean, auth.uid());
+end $$;

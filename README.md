@@ -71,3 +71,8 @@ Until step 4 is done the triggers do nothing, so orders are never affected.
 ## Styling
 Admins see a **🎨 Style** button: pick a preset (Default, Ocean, Forest, Midnight, Workshop) or mix mode (auto/light/dark), colour, corner shape, font and density. The choice is saved in the database (`site_settings`) and applies to every visitor. Customers never see the button.
 `DEFAULT_THEME` in `web/config.js` is only the fallback before a theme has been saved.
+
+## Custom forms
+Admins build forms in **Admin → Forms**: title, description, a custom "thank you" message and questions (short/long text, email, phone, number, date, dropdown, checkbox; optional or required; reorder freely).
+Each form gets its own link (`#/form/<name>`) you can share. Responses are listed per form, deletable, and exportable as CSV. A "Contact us" form is included.
+Submissions go through the `submit_form` database function, which re-checks required fields, emails, numbers and dropdown choices on the server and caps a form at 200 submissions per hour.

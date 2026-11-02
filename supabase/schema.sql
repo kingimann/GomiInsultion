@@ -294,3 +294,56 @@ drop policy if exists "read settings" on public.site_settings;
 create policy "read settings" on public.site_settings for select using (true);
 drop policy if exists "admin settings" on public.site_settings;
 create policy "admin settings" on public.site_settings for all using (public.is_admin()) with check (public.is_admin());
+
+-- Custom forms (built by admins)
+create table if not exists public.forms (
+  id bigint generated always as identity primary key, slug text unique not null check (slug ~ '^[a-z0-9-]{1,60}$'),
+  title text not null check (length(title) between 1 and 200), description text not null default '' check (length(description) <= 2000),
+  success_message text not null default 'Thanks! We received your response.' check (length(success_message) <= 1000),
+  fields jsonb not null default '[]' check (jsonb_typeof(fields) = 'array' and jsonb_array_length(fields) <= 40),
+  active boolean not null default true, created_at timestamptz not null default now());
+create table if not exists public.form_submissions (
+  id bigint generated always as identity primary key, form_id bigint not null references public.forms(id) on delete cascade,
+  data jsonb not null, user_id uuid references auth.users(id) on delete set null, created_at timestamptz not null default now());
+alter table public.forms enable row level security;
+alter table public.form_submissions enable row level security;
+drop policy if exists "view active forms" on public.forms;
+create policy "view active forms" on public.forms for select using (active or public.is_admin());
+drop policy if exists "admin forms" on public.forms;
+create policy "admin forms" on public.forms for all using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "admin read responses" on public.form_submissions;
+create policy "admin read responses" on public.form_submissions for select using (public.is_admin());
+drop policy if exists "admin delete responses" on public.form_submissions;
+create policy "admin delete responses" on public.form_submissions for delete using (public.is_admin());
+
+-- Visitors submit through this function, which validates against the form definition.
+create or replace function public.submit_form(form_slug text, answers jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare f public.forms; fld jsonb; v jsonb; txt text; k text; clean jsonb := '{}'; ftype text;
+begin
+  select * into f from forms where slug = form_slug and active;
+  if not found then raise exception 'This form is not available'; end if;
+  if (select count(*) from form_submissions where form_id = f.id and created_at > now() - interval '1 hour') >= 200 then
+    raise exception 'Too many submissions right now, please try again later'; end if;
+  for fld in select * from jsonb_array_elements(f.fields) loop
+    k := fld->>'id'; ftype := coalesce(fld->>'type', 'text'); v := answers->k;
+    txt := case jsonb_typeof(v) when 'string' then v #>> '{}' when 'boolean' then v::text when 'number' then v::text else null end;
+    if coalesce((fld->>'required')::boolean, false) and (txt is null or btrim(txt) = '' or txt = 'false') then
+      raise exception '"%" is required', fld->>'label'; end if;
+    if txt is null or btrim(txt) = '' then continue; end if;
+    if length(txt) > 5000 then raise exception '"%" is too long', fld->>'label'; end if;
+    if ftype = 'email' and txt !~ '^\S+@\S+\.\S+$' then raise exception '"%" must be a valid email', fld->>'label'; end if;
+    if ftype = 'number' and txt !~ '^-?[0-9]+(\.[0-9]+)?$' then raise exception '"%" must be a number', fld->>'label'; end if;
+    if ftype = 'select' and not (fld->'options') ? txt then raise exception '"%" has an invalid choice', fld->>'label'; end if;
+    clean := clean || jsonb_build_object(k, case when ftype = 'checkbox' then to_jsonb(txt = 'true') else to_jsonb(txt) end);
+  end loop;
+  insert into form_submissions (form_id, data, user_id) values (f.id, clean, auth.uid());
+end $$;
+revoke all on function public.submit_form(text, jsonb) from public;
+grant execute on function public.submit_form(text, jsonb) to anon, authenticated;
+
+insert into public.forms (slug, title, description, success_message, fields) values (
+  'contact', 'Contact us', 'Questions about a product or an order? Send us a message.', 'Thanks! We will get back to you soon.',
+  '[{"id":"name","type":"text","label":"Your name","required":true},{"id":"email","type":"email","label":"Email","required":true},
+    {"id":"topic","type":"select","label":"Topic","required":false,"options":["Product question","Order help","Delivery","Other"]},
+    {"id":"message","type":"textarea","label":"Message","required":true}]') on conflict (slug) do nothing;

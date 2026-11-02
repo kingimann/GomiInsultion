@@ -315,6 +315,32 @@ pages.account = async () => {
   <label class="check"><input type="checkbox" name="is_default" ${addrs.length ? '' : 'checked'}> Make this my default</label><button class="btn">Save address</button></form>`;
 };
 
+const FIELD_TYPES = { text: 'Short text', textarea: 'Long text', email: 'Email', tel: 'Phone', number: 'Number', date: 'Date', select: 'Dropdown', checkbox: 'Checkbox' };
+const csvCell = (v) => { v = String(v ?? ''); if (/^[=+\-@]/.test(v)) v = "'" + v; return `"${v.replace(/"/g, '""')}"`; };
+const fieldInput = (f) => {
+  const id = `ff_${esc(f.id)}`, req = f.required ? 'required' : '';
+  if (f.type === 'textarea') return `<textarea id="${id}" name="${esc(f.id)}" rows="5" maxlength="5000" ${req}></textarea>`;
+  if (f.type === 'select') return `<select id="${id}" name="${esc(f.id)}" ${req}><option value="">Choose…</option>${(f.options || []).map((o) => `<option>${esc(o)}</option>`).join('')}</select>`;
+  if (f.type === 'checkbox') return `<input type="checkbox" id="${id}" name="${esc(f.id)}" ${req}>`;
+  const t = { email: 'email', tel: 'tel', number: 'number', date: 'date' }[f.type] || 'text';
+  return `<input type="${t}" id="${id}" name="${esc(f.id)}" ${t === 'number' ? 'step="any"' : 'maxlength="5000"'} ${req}>`;
+};
+pages.form = async ([slug]) => {
+  const { data: f } = await sb.from('forms').select('*').eq('slug', slug).eq('active', true).maybeSingle();
+  if (!f) return '<h1>Form not found</h1><p><a href="#/">Back home</a></p>';
+  return `<div class="narrow"><h1>${esc(f.title)}</h1>${f.description ? `<p class="muted" style="white-space:pre-wrap">${esc(f.description)}</p>` : ''}
+  <form id="cf2" class="stack" data-slug="${esc(f.slug)}" data-ok="${esc(f.success_message)}">${f.fields.map((x) => x.type === 'checkbox'
+    ? `<label class="check">${fieldInput(x)} ${esc(x.label)}${x.required ? ' *' : ''}</label>`
+    : `<label>${esc(x.label)}${x.required ? ' *' : ''}${fieldInput(x)}</label>`).join('')}<button class="btn">Submit</button></form></div>`;
+};
+pages.form.after = () => document.getElementById('cf2')?.addEventListener('submit', async (e) => {
+  e.preventDefault(); const form = e.target, answers = {};
+  for (const el of form.elements) { if (!el.name) continue; answers[el.name] = el.type === 'checkbox' ? el.checked : el.value; }
+  const btn = form.querySelector('button'); btn.disabled = true;
+  const { error } = await sb.rpc('submit_form', { form_slug: form.dataset.slug, answers });
+  btn.disabled = false; if (error) return fail(error);
+  form.outerHTML = `<p class="flash ok" style="margin-top:0">${esc(form.dataset.ok)}</p>`;
+});
 pages.wishlist = async () => {
   await loadRatings();
   const ids = getWish(); if (!ids.length) return '<h1>Wishlist</h1><p>Nothing saved yet. Tap the ♡ on a product.</p>';
@@ -354,11 +380,47 @@ const salesChart = (orders) => {
   return `<svg viewBox="0 0 700 200" role="img" aria-label="Sales per day" style="width:100%;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:8px">
   ${days.map((d, i) => { const h = d.v / max * 140; return `<g><title>${d.label}: ${money(d.v)}</title><rect x="${i * 49 + 12}" y="${160 - h}" width="34" height="${Math.max(h, 2)}" rx="5" fill="var(--brand)" opacity="${d.v ? 1 : .25}"/><text x="${i * 49 + 29}" y="182" font-size="10" text-anchor="middle" fill="var(--muted)">${d.label}</text></g>`; }).join('')}</svg>`;
 };
-pages.admin = async ([sub, id]) => {
+let FB = null; // form being edited in the builder
+const slugify = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+const formUrl = (slug) => `${location.origin}${location.pathname}#/form/${slug}`;
+function fieldRows() {
+  return FB.fields.map((f, i) => `<div class="fld" data-i="${i}"><div class="row"><input data-f="label" value="${esc(f.label)}" placeholder="Question" style="flex:1;min-width:160px">
+    <select data-f="type">${Object.entries(FIELD_TYPES).map(([k, l]) => `<option value="${k}" ${k === f.type ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <label class="check"><input type="checkbox" data-f="required" ${f.required ? 'checked' : ''}> Required</label>
+    <button type="button" class="btn ghost" data-act="up" aria-label="Move up">↑</button><button type="button" class="btn ghost" data-act="down" aria-label="Move down">↓</button>
+    <button type="button" class="btn ghost" data-act="del" aria-label="Delete question" style="color:var(--err)">✕</button></div>
+    ${f.type === 'select' ? `<textarea data-f="options" rows="3" placeholder="One option per line" style="width:100%;margin-top:8px">${esc((f.options || []).join('\n'))}</textarea>` : ''}</div>`).join('') || '<p class="muted">No questions yet. Add one below.</p>';
+}
+pages.admin = async ([sub, id, extra]) => {
   if (!profile?.is_admin) return '<h1>Forbidden</h1>';
   if (sub === 'orders' && id) {
     const o = (await sb.from('orders').select('*').eq('id', id).single()).data;
     return orderHtml(o, (await sb.from('order_items').select('*').eq('order_id', id)).data, true);
+  }
+  if (sub === 'forms' && id && extra === 'responses') {
+    const f = (await sb.from('forms').select('*').eq('id', id).single()).data;
+    const rows = (await sb.from('form_submissions').select('*').eq('form_id', id).order('id', { ascending: false })).data;
+    return `<h1>${esc(f.title)} — responses</h1><p><a href="#/admin/forms">← All forms</a> · <button class="btn ghost" id="fcsv" data-id="${f.id}">⬇ Export CSV</button></p>
+    ${rows.length ? `<table><tr><th>Received</th>${f.fields.map((x) => `<th>${esc(x.label)}</th>`).join('')}<th></th></tr>${rows.map((r) => `<tr><td>${dateOf(r.created_at)}</td>${f.fields.map((x) => `<td style="white-space:pre-wrap">${esc(typeof r.data[x.id] === 'boolean' ? (r.data[x.id] ? 'Yes' : 'No') : r.data[x.id])}</td>`).join('')}<td><button class="link delresp" data-id="${r.id}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No responses yet.</p>'}`;
+  }
+  if (sub === 'forms' && id) {
+    const f = id === 'new' ? { title: '', slug: '', description: '', success_message: 'Thanks! We received your response.', active: true, fields: [] } : (await sb.from('forms').select('*').eq('id', id).single()).data;
+    FB = { ...f, fields: (f.fields || []).map((x) => ({ ...x })) };
+    return `<h1>${f.id ? 'Edit form' : 'New form'}</h1><div class="narrow stack" id="fbuilder">
+    <label>Title<input id="fb_title" value="${esc(f.title)}" maxlength="200"></label>
+    <label>Link name<input id="fb_slug" value="${esc(f.slug)}" maxlength="60" placeholder="auto from title (letters, numbers, dashes)"></label>
+    <label>Description (optional)<textarea id="fb_desc" rows="3" maxlength="2000">${esc(f.description)}</textarea></label>
+    <label>Message shown after submitting<input id="fb_ok" value="${esc(f.success_message)}" maxlength="1000"></label>
+    <label class="check"><input type="checkbox" id="fb_active" ${f.active ? 'checked' : ''}> Published (visible to visitors)</label>
+    <h3 style="margin-bottom:0">Questions</h3><div id="fields">${fieldRows()}</div>
+    <div class="row"><select id="fb_newtype">${Object.entries(FIELD_TYPES).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select><button type="button" class="btn alt" id="fb_add">+ Add question</button></div>
+    <div class="row"><button type="button" class="btn" id="fb_save">Save form</button>${f.id ? `<a class="btn ghost" href="${esc(formUrl(f.slug))}" target="_blank" rel="noopener">View form ↗</a>` : ''}</div>
+    ${f.id ? `<p class="muted">Share this link: <code>${esc(formUrl(f.slug))}</code></p>` : ''}</div>`;
+  }
+  if (sub === 'forms') {
+    const fs = (await sb.from('forms').select('*').order('id', { ascending: false })).data;
+    const counts = {}; ((await sb.from('form_submissions').select('form_id')).data || []).forEach((r) => (counts[r.form_id] = (counts[r.form_id] || 0) + 1));
+    return `<h1>Forms</h1><p><a class="btn" href="#/admin/forms/new">+ New form</a></p>${fs.length ? `<table><tr><th>Form</th><th>Link</th><th>Status</th><th>Responses</th><th></th></tr>${fs.map((f) => `<tr><td><a href="#/admin/forms/${f.id}">${esc(f.title)}</a></td><td><code>#/form/${esc(f.slug)}</code></td><td>${f.active ? 'Published' : 'Draft'}</td><td><a href="#/admin/forms/${f.id}/responses">${counts[f.id] || 0}</a></td><td><button class="link delform" data-id="${f.id}" data-title="${esc(f.title)}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No forms yet.</p>'}`;
   }
   if (sub === 'codes') {
     const cs = (await sb.from('discount_codes').select('*').order('code')).data;
@@ -400,11 +462,57 @@ pages.admin = async ([sub, id]) => {
   const rev14 = await sb.from('orders').select('total_cents,created_at').neq('status', 'cancelled').gte('created_at', new Date(Date.now() - 14 * 864e5).toISOString());
   const revenue = rev.data.reduce((a, o) => a + o.total_cents, 0);
   return `<h1>Admin</h1><div class="stats"><div><b>${oc.count}</b>orders</div><div><b>${pc.count}</b>pending</div><div><b>${money(revenue)}</b>revenue</div><div><b>${cc.count}</b>customers</div></div>
-  <p><a class="btn" href="#/admin/orders">Orders</a> <a class="btn" href="#/admin/products">Products</a> <a class="btn" href="#/admin/customers">Customers</a> <a class="btn" href="#/admin/quotes">Quotes</a> <a class="btn" href="#/admin/codes">Discount codes</a></p>
+  <p><a class="btn" href="#/admin/orders">Orders</a> <a class="btn" href="#/admin/products">Products</a> <a class="btn" href="#/admin/customers">Customers</a> <a class="btn" href="#/admin/quotes">Quotes</a> <a class="btn" href="#/admin/codes">Discount codes</a> <a class="btn" href="#/admin/forms">Forms</a></p>
   <h2>Sales, last 14 days</h2>${salesChart(rev14.data)}
   <h2>Low stock</h2>${low.data.length ? `<ul>${low.data.map((p) => `<li><a href="#/admin/products/${p.id}">${esc(p.name)}</a> — ${p.stock} left</li>`).join('')}</ul>` : '<p>All good.</p>'}`;
 };
-pages.admin.after = ([sub, id]) => {
+pages.admin.after = ([sub, id, extra]) => {
+  document.querySelectorAll('.delform').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm(`Delete "${b.dataset.title}" and all its responses?`)) return;
+    const { error } = await sb.from('forms').delete().eq('id', b.dataset.id); error ? fail(error) : route();
+  }));
+  document.querySelectorAll('.delresp').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Delete this response?')) return; const { error } = await sb.from('form_submissions').delete().eq('id', b.dataset.id); error ? fail(error) : route();
+  }));
+  document.getElementById('fcsv')?.addEventListener('click', async (e) => {
+    const f = (await sb.from('forms').select('*').eq('id', e.target.dataset.id).single()).data;
+    const rows = (await sb.from('form_submissions').select('*').eq('form_id', f.id).order('id')).data;
+    const head = ['Received', ...f.fields.map((x) => x.label)].map(csvCell).join(',');
+    const body = rows.map((r) => [r.created_at, ...f.fields.map((x) => r.data[x.id] ?? '')].map(csvCell).join(','));
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([[head, ...body].join('\n')], { type: 'text/csv' })); a.download = `${f.slug}-responses.csv`; a.click();
+  });
+  const fields = document.getElementById('fields');
+  if (fields && FB) {
+    const redraw = () => (fields.innerHTML = fieldRows());
+    fields.addEventListener('input', (e) => {
+      const row = e.target.closest('.fld'); const f = FB.fields[Number(row?.dataset.i)]; const k = e.target.dataset.f; if (!f || !k) return;
+      if (k === 'required') f.required = e.target.checked; else if (k === 'options') f.options = e.target.value.split('\n').map((x) => x.trim()).filter(Boolean); else f[k] = e.target.value;
+      if (k === 'type') { if (f.type === 'select' && !f.options) f.options = []; redraw(); }
+    });
+    fields.addEventListener('click', (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act; if (!act) return; const i = Number(e.target.closest('.fld').dataset.i);
+      if (act === 'del') FB.fields.splice(i, 1);
+      else { const j = act === 'up' ? i - 1 : i + 1; if (j < 0 || j >= FB.fields.length) return; [FB.fields[i], FB.fields[j]] = [FB.fields[j], FB.fields[i]]; }
+      redraw();
+    });
+    document.getElementById('fb_add').addEventListener('click', () => {
+      if (FB.fields.length >= 40) return fail(new Error('A form can have up to 40 questions.'));
+      const type = document.getElementById('fb_newtype').value;
+      FB.fields.push({ id: 'q' + Math.random().toString(36).slice(2, 9), type, label: '', required: false, ...(type === 'select' ? { options: [] } : {}) }); redraw();
+    });
+    document.getElementById('fb_save').addEventListener('click', async () => {
+      const title = document.getElementById('fb_title').value.trim(); if (!title) return fail(new Error('Give the form a title.'));
+      if (!FB.fields.length) return fail(new Error('Add at least one question.'));
+      if (FB.fields.some((x) => !x.label.trim())) return fail(new Error('Every question needs a label.'));
+      if (FB.fields.some((x) => x.type === 'select' && !(x.options || []).length)) return fail(new Error('Dropdown questions need at least one option.'));
+      const row = { title, slug: slugify(document.getElementById('fb_slug').value || title) || 'form-' + Date.now(), description: document.getElementById('fb_desc').value,
+        success_message: document.getElementById('fb_ok').value.trim() || 'Thanks!', active: document.getElementById('fb_active').checked,
+        fields: FB.fields.map((x) => ({ ...x, label: x.label.trim() })) };
+      const res = FB.id ? await sb.from('forms').update(row).eq('id', FB.id).select('id').single() : await sb.from('forms').insert(row).select('id').single();
+      if (res.error) return fail(res.error.code === '23505' ? new Error('That link name is already used by another form.') : res.error);
+      flash('Form saved.'); location.hash = '#/admin/forms';
+    });
+  }
   document.getElementById('cf')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
     const { error } = await sb.from('discount_codes').insert({ code: f.code.trim().toUpperCase(), percent: Number(f.percent), min_cents: Math.round(Number(f.min || 0) * 100) });

@@ -266,17 +266,21 @@ pages.cart.after = () => {
 });
 };
 
-let SAVED = [];
+let SAVED = [], CHK = null;
 pages.checkout = async () => {
   const lines = await cartLines(); if (!lines.length) return '<h1>Checkout</h1><p>Your cart is empty.</p>';
   SAVED = session ? (await sb.from('addresses').select('*').order('is_default', { ascending: false }).order('id')).data || [] : [];
   const d = SAVED[0] || {};
   const t = totals(lines.reduce((a, l) => a + l.price_cents * l.qty, 0));
+  const pk = (await sb.rpc('pickup_locations', { items: lines.map((l) => ({ id: l.id, qty: l.qty })) })).data || [];
+  CHK = { lines, t, pk };
   const f = (n, l, v = '', x = '') => `<label>${l}<input name="${n}" value="${esc(v)}" ${x}></label>`;
   return `<h1>Checkout</h1><div class="two"><form id="co" class="stack">
   ${SAVED.length ? `<label>Use a saved address<select id="savedaddr">${SAVED.map((a, i) => `<option value="${i}">${esc(a.label)} — ${esc(a.address)}, ${esc(a.city)}</option>`).join('')}<option value="">Enter a new address</option></select></label>` : ''}
   ${f('name', 'Full name', d.name || profile?.name, 'required')}${f('email', 'Email', session?.user.email, 'type="email" required')}${f('phone', 'Phone', d.phone)}
-  ${f('address', 'Delivery address', d.address, 'required')}${f('city', 'City', d.city, 'required')}${f('postcode', 'Postal / ZIP code', d.postcode, 'required')}
+  ${pk.length ? `<fieldset class="choices"><legend>How would you like to get your order?</legend><label class="check"><input type="radio" name="fulfillment" value="delivery" checked> Delivery</label><label class="check"><input type="radio" name="fulfillment" value="pickup"> Pickup (free)</label></fieldset>
+  <div id="pickbox" hidden class="stack">${pk.map((l, i) => `<label class="check pk ${l.available ? '' : 'na'}"><input type="radio" name="location_id" value="${l.id}" ${l.available ? '' : 'disabled'} ${l.available && !pk.slice(0, i).some((x) => x.available) ? 'checked' : ''}> <span><b>${esc(l.name)}</b>${l.available ? '' : ' — not enough stock here'}<br><small class="muted">${esc([l.address, l.city].filter(Boolean).join(', '))}${l.hours ? ' · ' + esc(l.hours) : ''}${l.phone ? ' · ' + esc(l.phone) : ''}</small></span></label>`).join('')}</div>` : ''}
+  <div id="addrbox" class="stack">${f('address', 'Delivery address', d.address, 'required')}${f('city', 'City', d.city, 'required')}${f('postcode', 'Postal / ZIP code', d.postcode, 'required')}</div>
   <label>Order notes<textarea name="notes"></textarea></label>
   <p class="muted">${C.PAYMENTS ? 'You will be taken to a secure Stripe page to pay by card.' : "Payment: we'll email you an invoice and payment options once your order is confirmed."}</p><button class="btn">${C.PAYMENTS ? 'Continue to payment' : 'Place order'}</button></form>
   <aside><h3>Order summary</h3><ul>${lines.map((l) => `<li>${l.qty} × ${esc(l.name)} <span>${money(l.qty * l.price_cents)}</span></li>`).join('')}</ul>${totalsHtml(t)}</aside></div>`;
@@ -286,9 +290,17 @@ pages.checkout.after = () => {
     const a = SAVED[e.target.value] || { name: '', phone: '', address: '', city: '', postcode: '' };
     for (const k of ['name', 'phone', 'address', 'city', 'postcode']) document.querySelector(`#co [name=${k}]`).value = a[k] || '';
   });
+  const setFulfil = () => {
+    const pick = document.querySelector('#co input[name=fulfillment]:checked')?.value === 'pickup';
+    const ab = document.getElementById('addrbox'), pb = document.getElementById('pickbox'); if (!ab) return;
+    ab.hidden = pick; if (pb) pb.hidden = !pick; ab.querySelectorAll('input').forEach((i) => (i.required = !pick));
+    document.querySelector('aside .totals')?.replaceWith(Object.assign(document.createElement('div'), { innerHTML: totalsHtml(pick ? { ...CHK.t, ship: 0, total: CHK.t.sub - CHK.t.disc } : CHK.t) }).firstElementChild);
+  };
+  document.querySelectorAll('#co input[name=fulfillment]').forEach((r) => r.addEventListener('change', setFulfil));
   document.getElementById('co')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const btn = e.target.querySelector('button'); btn.disabled = true;
   const customer = { ...Object.fromEntries(new FormData(e.target)), code: getPromo()?.code || '' };
+  if (customer.fulfillment === 'pickup' && !customer.location_id) { btn.disabled = false; return fail(new Error('Choose a pickup location.')); }
   const items = Object.entries(getCart()).map(([id, qty]) => ({ id: Number(id), qty }));
   const { data, error } = await sb.rpc('place_order', { items, customer });
   btn.disabled = false; if (error) return fail(error);
@@ -306,7 +318,7 @@ const orderHtml = (o, items, admin) => `<h1>Order #${o.id}</h1><p><span class="s
   ${o.status === 'cancelled' ? '' : `<div class="steps">${['pending', 'paid', 'shipped', 'delivered'].map((st, i) => `<span class="${i <= ['pending', 'paid', 'shipped', 'delivered'].indexOf(o.status) ? 'done' : ''}">${st}</span>`).join('')}</div>`}
   <table><tr><th>Item</th><th>Price</th><th>Qty</th><th>Total</th></tr>${items.map((i) => `<tr><td>${esc(i.name)}</td><td>${money(i.price_cents)}</td><td>${i.qty}</td><td>${money(i.price_cents * i.qty)}</td></tr>`).join('')}</table>
   ${totalsHtml({ sub: o.subtotal_cents, disc: o.discount_cents, code: o.promo_code, ship: o.shipping_cents, total: o.total_cents })}
-  <h3>Delivery</h3><p>${esc(o.name)}<br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br>${esc(o.email)} ${esc(o.phone)}</p>${o.notes ? `<p><em>${esc(o.notes)}</em></p>` : ''}
+  <h3>${o.source === 'in_store' ? 'In-store sale' : o.fulfillment === 'pickup' ? 'Pickup' : 'Delivery'}</h3>${o.payment_method ? `<p class="muted">Paid by ${esc(o.payment_method)}</p>` : ''}<p>${esc(o.name)}<br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br>${esc(o.email)} ${esc(o.phone)}</p>${o.notes ? `<p><em>${esc(o.notes)}</em></p>` : ''}
   ${admin ? `<form class="row" id="status"><select name="status">${STATUSES.map((s) => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select><button class="btn alt">Update status</button></form>` : ''}`;
 pages.order = async ([id], q) => {
   if (q.get('paid')) flash('Payment received. Thank you! Your order will update to "paid" in a moment.');
@@ -349,7 +361,7 @@ const authAfter = (reg) => () => document.getElementById('auth')?.addEventListen
 });
 pages.login.after = authAfter(false); pages.register.after = authAfter(true);
 
-const ordersTable = (os, base) => os.length ? `<table><tr><th>Order</th><th>Date</th><th>Status</th><th>Total</th></tr>${os.map((o) => `<tr><td><a href="${base}/${o.id}">#${o.id}</a>${base.includes('admin') ? ' · ' + esc(o.name) : ''}</td><td>${dateOf(o.created_at)}</td><td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}</td></tr>`).join('')}</table>` : '<p>No orders yet.</p>';
+const ordersTable = (os, base, locNames) => os.length ? `<table><tr><th>Order</th><th>Date</th>${locNames ? '<th>Location</th>' : ''}<th>Status</th><th>Total</th></tr>${os.map((o) => `<tr><td><a href="${base}/${o.id}">#${o.id}</a>${base.includes('admin') ? ' · ' + esc(o.name) : ''}</td><td>${dateOf(o.created_at)}</td>${locNames ? `<td>${esc(locNames[o.location_id] || '')}${o.source === 'in_store' ? ' · in store' : o.fulfillment === 'pickup' ? ' · pickup' : ''}</td>` : ''}<td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}</td></tr>`).join('')}</table>` : '<p>No orders yet.</p>';
 const setDefault = async (id) => { await sb.from('addresses').update({ is_default: false }).neq('id', id); await sb.from('addresses').update({ is_default: true }).eq('id', id); };
 pages.account = async () => {
   if (!session) { location.hash = '#/login'; return ''; }
@@ -469,6 +481,7 @@ const salesChart = (orders) => {
 };
 const RESP_STATUS = { new: 'New', in_progress: 'In progress', done: 'Done' };
 let FB = null, PG = null; // form being edited in the builder
+const form_inv = (f) => [...f.querySelectorAll('input[name^="inv_"]')];
 const slugify = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 const formUrl = (slug) => `${location.origin}${location.pathname}#/form/${slug}`;
 function fieldRows() {
@@ -553,6 +566,79 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const ps = (await sb.from('pages').select('*').order('sort').order('title')).data;
     return `<h1>Pages</h1><p><a class="btn" href="#/admin/pages/new">+ New page</a></p>${ps.length ? `<table><tr><th>Page</th><th>Link</th><th>Status</th><th>Menu</th><th>Footer</th><th></th></tr>${ps.map((x) => `<tr><td><a href="#/admin/pages/${x.id}">${esc(x.title)}</a></td><td><code>#/page/${esc(x.slug)}</code></td><td>${x.published ? 'Published' : 'Draft'}</td><td>${x.show_in_nav ? '✓' : ''}</td><td>${x.show_in_footer ? '✓' : ''}</td><td><a href="#/page/${esc(x.slug)}">View</a> · <button class="link delpage" data-id="${x.id}" data-title="${esc(x.title)}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No pages yet.</p>'}`;
   }
+  if (sub === 'locations' && id) {
+    const l = id === 'new' ? { name: '', kind: 'store', address: '', city: '', postcode: '', phone: '', email: '', hours: '', active: true, pickup_enabled: true, is_default: false } : (await sb.from('locations').select('*').eq('id', id).single()).data;
+    LOC = { ...l };
+    const t = (n, lab, x = '') => `<label>${lab}<input name="${n}" value="${esc(l[n] ?? '')}" ${x}></label>`;
+    return `<h1>${l.id ? 'Edit location' : 'New location'}</h1><p><a href="#/admin/locations">← All locations</a></p><form id="lf" class="stack narrow">${t('name', 'Name', 'required maxlength="100"')}
+    <label>Type<select name="kind">${Object.entries(KINDS).map(([k, v]) => `<option value="${k}" ${k === l.kind ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+    ${t('address', 'Street address')}${t('city', 'City')}${t('postcode', 'Postal / ZIP code')}${t('phone', 'Phone')}${t('email', 'Email', 'type="email"')}
+    <label>Opening hours<textarea name="hours" rows="3" placeholder="Mon–Fri 8–5, Sat 9–1">${esc(l.hours)}</textarea></label>
+    <label class="check"><input type="checkbox" name="active" ${l.active ? 'checked' : ''}> Active</label>
+    <label class="check"><input type="checkbox" name="pickup_enabled" ${l.pickup_enabled ? 'checked' : ''}> Customers can pick up orders here (shown at checkout, address becomes public)</label>
+    ${l.is_default ? '<p class="muted">This is the default location: online delivery orders are fulfilled from here first.</p>' : '<label class="check"><input type="checkbox" name="make_default"> Make this the default location (online delivery orders are fulfilled from here first)</label>'}
+    <div class="row"><button class="btn">Save location</button>${l.id && !l.is_default ? '<button type="button" class="btn ghost" id="delloc" style="color:var(--err)">Delete</button>' : ''}</div></form>`;
+  }
+  if (sub === 'locations') {
+    const ls = (await sb.from('locations').select('*').order('is_default', { ascending: false }).order('name')).data;
+    const units = {}; ((await sb.from('inventory').select('location_id,qty')).data || []).forEach((r) => (units[r.location_id] = (units[r.location_id] || 0) + r.qty));
+    return `<h1>Locations</h1><p><a class="btn" href="#/admin/locations/new">+ New location</a> <a class="btn ghost" href="#/admin/inventory">Inventory</a></p>
+    <table><tr><th>Name</th><th>Type</th><th>Address</th><th>Units in stock</th><th>Pickup</th><th>Status</th></tr>${ls.map((l) => `<tr><td><a href="#/admin/locations/${l.id}">${esc(l.name)}</a>${l.is_default ? ' <span class="status paid">default</span>' : ''}</td><td>${KINDS[l.kind] || ''}</td><td>${esc([l.address, l.city, l.postcode].filter(Boolean).join(', '))}</td><td>${units[l.id] || 0}</td><td>${l.pickup_enabled ? '✓' : ''}</td><td>${l.active ? 'Active' : 'Inactive'}</td></tr>`).join('')}</table>`;
+  }
+  if (sub === 'inventory') {
+    const [prods, locs, inv, log] = await Promise.all([sb.from('products').select('id,name,category,active').order('name'), sb.from('locations').select('*').order('is_default', { ascending: false }).order('name'),
+      sb.from('inventory').select('*'), sb.from('inventory_log').select('*').order('id', { ascending: false }).limit(40)]);
+    const P = prods.data, L = locs.data, qty = {}; inv.data.forEach((r) => (qty[`${r.product_id}:${r.location_id}`] = r.qty));
+    const pname = Object.fromEntries(P.map((x) => [x.id, x.name])), lname = Object.fromEntries(L.map((x) => [x.id, x.name]));
+    const KIND_L = { adjust: 'Adjusted', sale: 'Sale', restock: 'Restocked', transfer_in: 'Transfer in', transfer_out: 'Transfer out' };
+    return `<h1>Inventory</h1><p><a class="btn ghost" href="#/admin/locations">Manage locations</a> <button class="btn ghost" id="invcsv">⬇ Export CSV</button></p>
+    <div class="row" style="margin-bottom:8px"><input id="invsearch" placeholder="Filter products…" aria-label="Filter products" style="flex:1;max-width:320px"></div>
+    <table id="invtable"><tr><th>Product</th>${L.map((l) => `<th>${esc(l.name)}${l.active ? '' : ' (inactive)'}</th>`).join('')}<th>Total</th></tr>
+    ${P.map((x) => { const tot = L.reduce((a, l) => a + (qty[`${x.id}:${l.id}`] || 0), 0); return `<tr data-name="${esc(x.name.toLowerCase())}"><td><b>${esc(x.name)}</b>${x.active ? '' : ' <span class="muted">(hidden)</span>'}<br><small class="muted">${esc(x.category)}</small></td>${L.map((l) => `<td><input type="number" min="0" class="invq" data-p="${x.id}" data-l="${l.id}" value="${qty[`${x.id}:${l.id}`] || 0}" aria-label="${esc(x.name)} at ${esc(l.name)}"></td>`).join('')}<td class="invtot ${tot <= 10 ? 'lowtot' : ''}">${tot}</td></tr>`; }).join('')}</table>
+    <h2>Transfer stock between locations</h2>${L.length < 2 ? '<p class="muted">Add a second location to transfer stock.</p>' : `<form id="tf" class="row"><select name="pid" required><option value="">Product…</option>${P.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>
+    <select name="from" required><option value="">From…</option>${L.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select><select name="to" required><option value="">To…</option>${L.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select>
+    <input name="amount" type="number" min="1" placeholder="Qty" required style="width:90px"><input name="note" placeholder="Note (optional)" style="flex:1;min-width:160px"><button class="btn">Transfer</button></form>`}
+    <h2>Recent activity</h2>${log.data.length ? `<table><tr><th>When</th><th>Product</th><th>Location</th><th>Change</th><th>Type</th><th>Note</th></tr>${log.data.map((e) => `<tr><td>${dateOf(e.created_at)}</td><td>${esc(pname[e.product_id] || '')}</td><td>${esc(lname[e.location_id] || '')}</td><td><b style="color:${e.delta < 0 ? 'var(--err)' : 'var(--ok)'}">${e.delta > 0 ? '+' : ''}${e.delta}</b> → ${e.qty_after}</td><td>${KIND_L[e.kind] || esc(e.kind)}${e.order_id ? ` <a href="#/admin/orders/${e.order_id}">#${e.order_id}</a>` : ''}</td><td>${esc(e.note)}</td></tr>`).join('')}</table>` : '<p class="muted">No activity yet.</p>'}`;
+  }
+  if (sub === 'sales') {
+    const days = q.get('days') || '30', locF = q.get('loc') || '', srcF = q.get('source') || '';
+    const since = days === 'all' ? null : new Date(Date.now() - Number(days) * 864e5).toISOString();
+    const locs = (await sb.from('locations').select('id,name').order('name')).data || [], lname = Object.fromEntries(locs.map((l) => [l.id, l.name]));
+    let oq = sb.from('orders').select('id,created_at,status,total_cents,location_id,source,name').neq('status', 'cancelled').order('created_at');
+    let iq = sb.from('order_items').select('name,qty,price_cents,orders!inner(created_at,status,location_id,source)').neq('orders.status', 'cancelled');
+    if (since) { oq = oq.gte('created_at', since); iq = iq.gte('orders.created_at', since); }
+    if (locF) { oq = oq.eq('location_id', locF); iq = iq.eq('orders.location_id', locF); }
+    if (srcF) { oq = oq.eq('source', srcF); iq = iq.eq('orders.source', srcF); }
+    const [orders, items] = [(await oq).data || [], (await iq).data || []];
+    const revenue = orders.reduce((a, o) => a + o.total_cents, 0), units = items.reduce((a, i) => a + i.qty, 0);
+    const byLoc = {}; orders.forEach((o) => { const k = o.location_id || 0; (byLoc[k] = byLoc[k] || { n: 0, rev: 0, units: 0 }); byLoc[k].n++; byLoc[k].rev += o.total_cents; });
+    items.forEach((i) => { const k = i.orders.location_id || 0; (byLoc[k] = byLoc[k] || { n: 0, rev: 0, units: 0 }); byLoc[k].units += i.qty; });
+    const bySrc = { online: 0, in_store: 0 }; orders.forEach((o) => (bySrc[o.source] = (bySrc[o.source] || 0) + o.total_cents));
+    const top = {}; items.forEach((i) => { const t = (top[i.name] = top[i.name] || { units: 0, rev: 0 }); t.units += i.qty; t.rev += i.qty * i.price_cents; });
+    const topRows = Object.entries(top).sort((a, b) => b[1].rev - a[1].rev).slice(0, 10);
+    const mk = (extra) => { const n = new URLSearchParams(q); Object.entries(extra).forEach(([k, v]) => (v ? n.set(k, v) : n.delete(k))); return `#/admin/sales?${n}`; };
+    SALES_ROWS = orders.map((o) => [o.id, o.created_at, lname[o.location_id] || '', o.source, o.status, o.name, (o.total_cents / 100).toFixed(2)]);
+    return `<h1>Sales</h1>${rangeChips('#/admin/sales', q)}
+    <div class="row" style="margin-bottom:14px"><select id="salesloc" aria-label="Location"><option value="">All locations</option>${locs.map((l) => `<option value="${l.id}" ${String(l.id) === locF ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
+    <select id="salessrc" aria-label="Channel"><option value="">All channels</option><option value="online" ${srcF === 'online' ? 'selected' : ''}>Online</option><option value="in_store" ${srcF === 'in_store' ? 'selected' : ''}>In store</option></select>
+    <button class="btn ghost" id="salescsv">⬇ Export orders CSV</button></div>
+    <div class="stats"><div><b>${money(revenue)}</b>revenue</div><div><b>${orders.length}</b>orders</div><div><b>${units}</b>units sold</div><div><b>${money(orders.length ? Math.round(revenue / orders.length) : 0)}</b>average order</div></div>
+    <h2>Revenue over time</h2>${barChart(bucketize(orders, days))}
+    <div class="two" style="margin-top:8px"><div><h2>By location</h2>${Object.keys(byLoc).length ? `<table><tr><th>Location</th><th>Orders</th><th>Units</th><th>Revenue</th></tr>${Object.entries(byLoc).sort((a, b) => b[1].rev - a[1].rev).map(([k, v]) => `<tr><td>${esc(lname[k] || 'Unassigned')}</td><td>${v.n}</td><td>${v.units}</td><td>${money(v.rev)}</td></tr>`).join('')}</table>` : '<p class="muted">No sales in this period.</p>'}
+    <h2>By channel</h2><table><tr><th>Channel</th><th>Revenue</th></tr><tr><td>Online</td><td>${money(bySrc.online || 0)}</td></tr><tr><td>In store</td><td>${money(bySrc.in_store || 0)}</td></tr></table></div>
+    <div><h2>Top products</h2>${topRows.length ? `<table><tr><th>Product</th><th>Units</th><th>Revenue</th></tr>${topRows.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.units}</td><td>${money(v.rev)}</td></tr>`).join('')}</table>` : '<p class="muted">No sales in this period.</p>'}</div></div>
+`;
+  }
+  if (sub === 'pos') {
+    const [locs, prods, inv] = await Promise.all([sb.from('locations').select('*').eq('active', true).order('is_default', { ascending: false }).order('name'), sb.from('products').select('id,name,price_cents,unit,category').eq('active', true).order('name'), sb.from('inventory').select('*')]);
+    if (!locs.data.length) return '<h1>Point of sale</h1><p>Add a location first.</p>';
+    POS = { locs: locs.data, prods: prods.data, inv: inv.data, loc: POS?.loc && locs.data.some((l) => l.id === POS.loc) ? POS.loc : locs.data[0].id, cart: {} };
+    return `<h1>Point of sale</h1><p class="muted">Record a sale made in person. Stock is taken from the location you pick.</p>
+    <div class="pos"><div><div class="row" style="margin-bottom:10px"><select id="posloc" aria-label="Location">${POS.locs.map((l) => `<option value="${l.id}" ${l.id === POS.loc ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select><input id="possearch" placeholder="Search products…" style="flex:1;min-width:160px"></div><div id="posgrid" class="posgrid"></div></div>
+    <aside><h3 style="margin-top:0">Current sale</h3><div id="poscart"></div>
+    <div class="stack" style="margin-top:12px"><input id="pos_name" placeholder="Customer name (optional)"><input id="pos_email" type="email" placeholder="Email for receipt (optional)"><input id="pos_phone" placeholder="Phone (optional)">
+    <select id="pos_pay"><option>Cash</option><option>Card</option><option>Cheque</option><option>Other</option></select><button class="btn" id="pos_done">Complete sale</button></div></aside></div>`;
+  }
   if (sub === 'codes') {
     const cs = (await sb.from('discount_codes').select('*').order('code')).data;
     return `<h1>Discount codes</h1><table><tr><th>Code</th><th>Off</th><th>Min order</th><th>Status</th><th></th></tr>${cs.map((c) => `<tr><td><b>${esc(c.code)}</b></td><td>${c.percent}%</td><td>${money(c.min_cents)}</td><td>${c.active ? 'Active' : 'Off'}</td><td><button class="btn ghost togcode" data-code="${esc(c.code)}" data-active="${c.active}">${c.active ? 'Disable' : 'Enable'}</button></td></tr>`).join('')}</table>
@@ -562,7 +648,11 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const qs = (await sb.from('quotes').select('*').order('id', { ascending: false })).data;
     return `<h1>Quote requests</h1>${qs.length ? qs.map((x) => `<aside style="margin:10px 0"><b>${esc(x.name)}</b> · <a href="mailto:${esc(x.email)}">${esc(x.email)}</a> ${esc(x.phone)} · <span class="muted">${dateOf(x.created_at)}</span><p style="white-space:pre-wrap">${esc(x.message)}</p></aside>`).join('') : '<p>No requests yet.</p>'}`;
   }
-  if (sub === 'orders') return `<h1>Orders</h1><p><button class="btn ghost" id="csv">⬇ Export CSV</button></p>${ordersTable((await sb.from('orders').select('*').order('id', { ascending: false })).data, '#/admin/orders')}`;
+  if (sub === 'orders') {
+    const locs = (await sb.from('locations').select('id,name').order('name')).data || [], locF = q.get('loc') || '';
+    let oq = sb.from('orders').select('*').order('id', { ascending: false }); if (locF) oq = oq.eq('location_id', locF);
+    return `<h1>Orders</h1><div class="row" style="margin-bottom:10px"><button class="btn ghost" id="csv">⬇ Export CSV</button><select id="ordloc" aria-label="Filter by location"><option value="">All locations</option>${locs.map((l) => `<option value="${l.id}" ${String(l.id) === locF ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select><a class="btn" href="#/admin/pos">+ In-store sale</a></div>${ordersTable((await oq).data, '#/admin/orders', Object.fromEntries(locs.map((l) => [l.id, l.name])))}`;
+  }
   if (sub === 'customers') {
     const us = (await sb.from('profiles').select('*').order('created_at', { ascending: false })).data;
     return `<h1>Customers</h1><table><tr><th>Name</th><th>Email</th><th>Joined</th><th></th></tr>${us.map((u) => `<tr><td>${esc(u.name)}${u.is_admin ? ' (admin)' : ''}</td><td>${esc(u.email)}</td><td>${dateOf(u.created_at)}</td><td>${u.is_admin ? '' : `<a href="#/messages/new?to=${u.id}">💬 Message</a>`}</td></tr>`).join('')}</table>`;
@@ -570,11 +660,14 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   if (sub === 'products' && (id === 'new' || id)) {
     const p = id === 'new' ? {} : (await sb.from('products').select('*').eq('id', id).single()).data;
     const extras = id === 'new' ? [] : (await sb.from('product_images').select('*').eq('product_id', id).order('position')).data;
+    const locsAll = (await sb.from('locations').select('id,name,active').order('is_default', { ascending: false }).order('name')).data || [];
+    const invRows = id === 'new' ? [] : (await sb.from('inventory').select('*').eq('product_id', id)).data || [];
+    const stockFields = `<fieldset class="choices"><legend>Stock by location</legend>${locsAll.map((l) => { const q0 = invRows.find((r) => r.location_id === l.id)?.qty ?? 0; return `<label>${esc(l.name)}${l.active ? '' : ' (inactive)'}<input type="number" min="0" name="inv_${l.id}" data-orig="${q0}" value="${q0}"></label>`; }).join('')}<small class="muted">Total stock is the sum across locations. Move stock between locations on the <a href="#/admin/inventory">Inventory</a> page.</small></fieldset>`;
     const t = (n, l, x = '') => `<label>${l}<input name="${n}" value="${esc(p[n] ?? '')}" ${x}></label>`;
     return `<h1>${p.id ? 'Edit product' : 'New product'}</h1><form id="pf" class="stack narrow" data-id="${p.id || ''}">${t('name', 'Name', 'required')}${t('category', 'Category', 'required')}
     <label>Description<textarea name="description" rows="5">${esc(p.description)}</textarea></label>
     <label>Price<input name="price" type="number" step="0.01" min="0" required value="${p.price_cents != null ? (p.price_cents / 100).toFixed(2) : ''}"></label>
-    ${t('unit', 'Unit (e.g. bundle, roll)', 'required')}${t('r_value', 'R-value')}<label>Stock<input name="stock" type="number" min="0" required value="${p.stock ?? 0}"></label>
+    ${t('unit', 'Unit (e.g. bundle, roll)', 'required')}${t('r_value', 'R-value')}${stockFields}
     ${p.image_url ? `<img src="${esc(safeUrl(p.image_url))}" alt="" style="max-width:160px;border-radius:10px">` : ''}
     <label>Photo (JPG, PNG, WebP, up to 5 MB)<input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif"></label>
     <input type="hidden" name="image_url" value="${esc(p.image_url || '')}">
@@ -586,18 +679,109 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     return `<h1>Products</h1><p><a class="btn" href="#/admin/products/new">+ New product</a></p><table><tr><th>Name</th><th>Category</th><th>Price</th><th>Stock</th><th>Status</th></tr>
     ${ps.map((p) => `<tr><td><a href="#/admin/products/${p.id}">${esc(p.name)}</a></td><td>${esc(p.category)}</td><td>${money(p.price_cents)}</td><td>${p.stock}</td><td>${p.active ? 'Live' : 'Hidden'}</td></tr>`).join('')}</table>`;
   }
-  const [oc, pc, rev, cc, low] = await Promise.all([
-    sb.from('orders').select('*', { count: 'exact', head: true }), sb.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-    sb.from('orders').select('total_cents').neq('status', 'cancelled'), sb.from('profiles').select('*', { count: 'exact', head: true }).eq('is_admin', false),
-    sb.from('products').select('*').lte('stock', 10).order('stock').limit(10)]);
-  const rev14 = await sb.from('orders').select('total_cents,created_at').neq('status', 'cancelled').gte('created_at', new Date(Date.now() - 14 * 864e5).toISOString());
-  const revenue = rev.data.reduce((a, o) => a + o.total_cents, 0);
-  return `<h1>Admin</h1><div class="stats"><div><b>${oc.count}</b>orders</div><div><b>${pc.count}</b>pending</div><div><b>${money(revenue)}</b>revenue</div><div><b>${cc.count}</b>customers</div></div>
-  <p><a class="btn" href="#/admin/orders">Orders</a> <a class="btn" href="#/admin/products">Products</a> <a class="btn" href="#/admin/customers">Customers</a> <a class="btn" href="#/admin/quotes">Quotes</a> <a class="btn" href="#/admin/codes">Discount codes</a> <a class="btn" href="#/admin/forms">Forms</a> <a class="btn" href="#/admin/pages">Pages</a></p>
-  <h2>Sales, last 14 days</h2>${salesChart(rev14.data)}
-  <h2>Low stock</h2>${low.data.length ? `<ul>${low.data.map((p) => `<li><a href="#/admin/products/${p.id}">${esc(p.name)}</a> — ${p.stock} left</li>`).join('')}</ul>` : '<p>All good.</p>'}`;
+  // ---- dashboard ----
+  const days = [7, 30, 90].includes(Number(q.get('days'))) ? Number(q.get('days')) : 30, now = Date.now(), cutCur = now - days * 864e5;
+  const [ordRes, itemRes, locRes, custRes, pendRes, formRes, lowRes, recentRes, quoteRes] = await Promise.all([
+    sb.from('orders').select('id,created_at,status,total_cents,location_id,source').neq('status', 'cancelled').gte('created_at', new Date(now - 2 * days * 864e5).toISOString()),
+    sb.from('order_items').select('name,qty,price_cents,orders!inner(created_at,status)').neq('orders.status', 'cancelled').gte('orders.created_at', new Date(cutCur).toISOString()),
+    sb.from('locations').select('id,name'), sb.from('profiles').select('created_at').eq('is_admin', false).gte('created_at', new Date(now - 2 * days * 864e5).toISOString()),
+    sb.from('orders').select('id', { count: 'exact', head: true }).eq('status', 'pending'), sb.from('form_submissions').select('id', { count: 'exact', head: true }).eq('status', 'new'),
+    sb.from('products').select('id,name,stock').lte('stock', 10).eq('active', true).order('stock').limit(8),
+    sb.from('orders').select('id,name,created_at,status,total_cents,source').order('id', { ascending: false }).limit(8),
+    sb.from('quotes').select('id', { count: 'exact', head: true }).gte('created_at', new Date(now - 7 * 864e5).toISOString())]);
+  const all = ordRes.data || [], cur = all.filter((o) => new Date(o.created_at) >= cutCur), prev = all.filter((o) => new Date(o.created_at) < cutCur);
+  const sum = (a) => a.reduce((x, o) => x + o.total_cents, 0), revCur = sum(cur), revPrev = sum(prev);
+  const custCur = (custRes.data || []).filter((u) => new Date(u.created_at) >= cutCur).length, custPrev = (custRes.data || []).length - custCur;
+  const todayRev = sum(all.filter((o) => sameDay(o.created_at, now)));
+  const delta = (c, p) => (p ? `<small class="${c >= p ? 'up' : 'down'}">${c >= p ? '▲' : '▼'} ${Math.abs(Math.round((c - p) / p * 100))}% vs previous ${days} days</small>` : `<small class="muted">${c ? 'New activity' : 'No data yet'}</small>`);
+  const kpi = (label, value, d) => `<div class="kpi"><span class="lbl">${label}</span><b>${value}</b>${d}</div>`;
+  const lname = Object.fromEntries((locRes.data || []).map((l) => [l.id, l.name]));
+  const byLoc = {}; cur.forEach((o) => { const k = o.location_id || 0; byLoc[k] = (byLoc[k] || 0) + o.total_cents; });
+  const locRows = Object.entries(byLoc).sort((a, b) => b[1] - a[1]), maxLoc = Math.max(...locRows.map((r) => r[1]), 1);
+  const top = {}; (itemRes.data || []).forEach((i) => { const t = (top[i.name] = top[i.name] || { u: 0, r: 0 }); t.u += i.qty; t.r += i.qty * i.price_cents; });
+  const topRows = Object.entries(top).sort((a, b) => b[1].r - a[1].r).slice(0, 5);
+  const hr = new Date().getHours(), first = (profile?.name || '').split(' ')[0];
+  const attn = [['🧾', pendRes.count || 0, 'pending orders', '#/admin/orders'], ['💬', unread.msg, 'unread messages', '#/messages'], ['📝', formRes.count || 0, 'new form responses', '#/admin/forms'], ['📦', (lowRes.data || []).length, 'low-stock products', '#/admin/inventory'], ['📋', quoteRes.count || 0, 'quote requests this week', '#/admin/quotes']];
+  const links = [['🧾', 'Orders', '#/admin/orders'], ['🛍️', 'Products', '#/admin/products'], ['📦', 'Inventory', '#/admin/inventory'], ['📍', 'Locations', '#/admin/locations'], ['📈', 'Sales', '#/admin/sales'], ['🏪', 'Point of sale', '#/admin/pos'],
+    ['👥', 'Customers', '#/admin/customers'], ['💬', 'Messages', '#/messages'], ['📝', 'Forms', '#/admin/forms'], ['📄', 'Pages', '#/admin/pages'], ['🏷️', 'Discount codes', '#/admin/codes'], ['📋', 'Quotes', '#/admin/quotes']];
+  return `<div class="dashhead"><div><h1 style="margin:0">Good ${hr < 12 ? 'morning' : hr < 18 ? 'afternoon' : 'evening'}${first ? ', ' + esc(first) : ''} 👋</h1><p class="muted" style="margin:2px 0 0">${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })} · ${money(todayRev)} sold today</p></div>
+    <div class="row"><a class="btn" href="#/admin/pos">+ In-store sale</a><a class="btn ghost" href="#/admin/products/new">+ Product</a></div></div>
+  <div class="attn">${attn.map(([i, n, l, h]) => `<a class="attnc ${n ? 'on' : ''}" href="${h}"><span>${i}</span><b>${n}</b><small>${l}</small></a>`).join('')}</div>
+  <div class="chips">${[7, 30, 90].map((d) => `<a class="chip ${d === days ? 'on' : ''}" href="#/admin?days=${d}">Last ${d} days</a>`).join('')}</div>
+  <div class="kpis">${kpi('Revenue', money(revCur), delta(revCur, revPrev))}${kpi('Orders', cur.length, delta(cur.length, prev.length))}${kpi('Average order', money(cur.length ? Math.round(revCur / cur.length) : 0), delta(cur.length ? revCur / cur.length : 0, prev.length ? revPrev / prev.length : 0))}${kpi('New customers', custCur, delta(custCur, custPrev))}</div>
+  <h2>Revenue</h2>${barChart(bucketize(cur, days))}
+  <div class="two" style="margin-top:6px"><div><h2>By location</h2>${locRows.length ? locRows.map(([k, v]) => `<div class="locbar"><span>${esc(lname[k] || 'Unassigned')}</span><div class="progress"><i style="width:${v / maxLoc * 100}%"></i></div><b>${money(v)}</b></div>`).join('') : '<p class="muted">No sales in this period.</p>'}
+    <h2>Top products</h2>${topRows.length ? `<table><tr><th>Product</th><th>Units</th><th>Revenue</th></tr>${topRows.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.u}</td><td>${money(v.r)}</td></tr>`).join('')}</table>` : '<p class="muted">No sales in this period.</p>'}</div>
+  <div><h2>Recent orders</h2>${(recentRes.data || []).length ? `<table><tr><th>Order</th><th>Status</th><th>Total</th></tr>${recentRes.data.map((o) => `<tr><td><a href="#/admin/orders/${o.id}">#${o.id}</a> · ${esc(o.name)}${o.source === 'in_store' ? ' 🏪' : ''}<br><small class="muted">${ago(o.created_at)}</small></td><td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}</td></tr>`).join('')}</table>` : '<p class="muted">No orders yet.</p>'}
+    <h2>Low stock</h2>${(lowRes.data || []).length ? `<ul class="plain">${lowRes.data.map((x) => `<li><a href="#/admin/products/${x.id}">${esc(x.name)}</a> <b class="${x.stock === 0 ? 'down' : ''}">${x.stock === 0 ? 'out of stock' : x.stock + ' left'}</b></li>`).join('')}</ul>` : '<p class="muted">Everything is well stocked. ✅</p>'}</div></div>
+  <h2>Manage</h2><div class="qlinks">${links.map(([i, l, h]) => `<a href="${h}"><span>${i}</span>${l}</a>`).join('')}</div>`;
 };
-pages.admin.after = ([sub, id, extra]) => {
+pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
+  document.getElementById('ordloc')?.addEventListener('change', (e) => { location.hash = e.target.value ? `#/admin/orders?loc=${e.target.value}` : '#/admin/orders'; });
+  // locations
+  document.getElementById('lf')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = new FormData(e.target), g = (k) => (f.get(k) || '').toString().trim();
+    const row = { name: g('name'), kind: g('kind'), address: g('address'), city: g('city'), postcode: g('postcode'), phone: g('phone'), email: g('email'), hours: g('hours'), active: f.has('active'), pickup_enabled: f.has('pickup_enabled') };
+    if (!row.name) return fail(new Error('Give the location a name.'));
+    const res = LOC.id ? await sb.from('locations').update(row).eq('id', LOC.id).select('id').single() : await sb.from('locations').insert(row).select('id').single();
+    if (res.error) return fail(res.error);
+    if (f.has('make_default')) { const d = await sb.rpc('set_default_location', { lid: res.data.id }); if (d.error) return fail(d.error); }
+    flash('Location saved.'); location.hash = '#/admin/locations';
+  });
+  document.getElementById('delloc')?.addEventListener('click', async () => {
+    const n = (await sb.from('orders').select('id', { count: 'exact', head: true }).eq('location_id', LOC.id)).count;
+    if (n) return fail(new Error(`This location has ${n} order${n === 1 ? '' : 's'} — mark it inactive instead of deleting.`));
+    if (!confirm(`Delete "${LOC.name}" and its stock records?`)) return;
+    const { error } = await sb.from('locations').delete().eq('id', LOC.id); error ? fail(error) : (flash('Location deleted.'), (location.hash = '#/admin/locations'));
+  });
+  // inventory
+  document.getElementById('invsearch')?.addEventListener('input', (e) => { const t = e.target.value.toLowerCase(); document.querySelectorAll('#invtable tr[data-name]').forEach((r) => (r.hidden = !r.dataset.name.includes(t))); });
+  document.querySelectorAll('.invq').forEach((el) => el.addEventListener('change', async () => {
+    const v = parseInt(el.value, 10); if (!(v >= 0)) { el.value = 0; return fail(new Error('Quantity must be 0 or more.')); }
+    const { error } = await sb.rpc('set_inventory', { pid: Number(el.dataset.p), lid: Number(el.dataset.l), new_qty: v, note: 'Manual adjustment' }); if (error) return fail(error);
+    const row = el.closest('tr'), tot = [...row.querySelectorAll('.invq')].reduce((a, x) => a + (parseInt(x.value, 10) || 0), 0), cell = row.querySelector('.invtot'); cell.textContent = tot; cell.classList.toggle('lowtot', tot <= 10); flash('Stock updated.');
+  }));
+  document.getElementById('tf')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+    const { error } = await sb.rpc('transfer_inventory', { pid: Number(f.pid), from_loc: Number(f.from), to_loc: Number(f.to), amount: parseInt(f.amount, 10), note: f.note || '' });
+    error ? fail(error) : (flash('Stock transferred.'), route());
+  });
+  document.getElementById('invcsv')?.addEventListener('click', () => {
+    const heads = [...document.querySelectorAll('#invtable tr:first-child th')].map((x) => x.textContent);
+    const rows = [...document.querySelectorAll('#invtable tr[data-name]')].map((r) => [r.querySelector('b').textContent, ...[...r.querySelectorAll('.invq')].map((i) => i.value), r.querySelector('.invtot').textContent]);
+    download('inventory.csv', [heads, ...rows]);
+  });
+  // sales
+  const nav = (extra) => { const n = new URLSearchParams(q); Object.entries(extra).forEach(([k, v]) => (v ? n.set(k, v) : n.delete(k))); location.hash = `#/admin/sales?${n}`; };
+  document.getElementById('salesloc')?.addEventListener('change', (e) => nav({ loc: e.target.value }));
+  document.getElementById('salessrc')?.addEventListener('change', (e) => nav({ source: e.target.value }));
+  document.getElementById('salescsv')?.addEventListener('click', () => download('orders.csv', [['Order', 'Date', 'Location', 'Channel', 'Status', 'Customer', 'Total'], ...SALES_ROWS]));
+  // point of sale
+  if (document.getElementById('posgrid')) {
+    const stockAt = (pid) => POS.inv.find((r) => r.product_id === pid && r.location_id === POS.loc)?.qty || 0;
+    const drawGrid = () => {
+      const term = (document.getElementById('possearch').value || '').toLowerCase();
+      document.getElementById('posgrid').innerHTML = POS.prods.filter((x) => !term || x.name.toLowerCase().includes(term)).map((x) => { const st = stockAt(x.id); return `<button type="button" class="posbtn" data-id="${x.id}" ${st < 1 ? 'disabled' : ''}><b>${esc(x.name)}</b><span>${money(x.price_cents)} / ${esc(x.unit)}</span><small class="muted">${st} here</small></button>`; }).join('') || '<p class="muted">No products.</p>';
+    };
+    const drawCart = () => {
+      const lines = Object.entries(POS.cart).map(([id, qty]) => ({ p: POS.prods.find((x) => x.id === Number(id)), qty })).filter((l) => l.p);
+      const total = lines.reduce((a, l) => a + l.p.price_cents * l.qty, 0);
+      document.getElementById('poscart').innerHTML = lines.length ? `${lines.map((l) => `<div class="posline"><span>${esc(l.p.name)}</span><span class="row" style="flex-wrap:nowrap"><button type="button" class="btn ghost" data-q="-1" data-id="${l.p.id}" aria-label="Less">−</button><b>${l.qty}</b><button type="button" class="btn ghost" data-q="1" data-id="${l.p.id}" aria-label="More">+</button></span><span>${money(l.p.price_cents * l.qty)}</span></div>`).join('')}<div class="posline" style="font-size:1.2rem"><b>Total</b><span></span><b>${money(total)}</b></div>` : '<p class="muted">Tap a product to add it.</p>';
+    };
+    drawGrid(); drawCart();
+    document.getElementById('posloc').addEventListener('change', (e) => { POS.loc = Number(e.target.value); POS.cart = {}; drawGrid(); drawCart(); });
+    document.getElementById('possearch').addEventListener('input', drawGrid);
+    document.getElementById('posgrid').addEventListener('click', (e) => { const b = e.target.closest('.posbtn'); if (!b) return; const id = Number(b.dataset.id); POS.cart[id] = Math.min((POS.cart[id] || 0) + 1, stockAt(id)); drawCart(); });
+    document.getElementById('poscart').addEventListener('click', (e) => { const b = e.target.closest('[data-q]'); if (!b) return; const id = Number(b.dataset.id); const n = (POS.cart[id] || 0) + Number(b.dataset.q); if (n <= 0) delete POS.cart[id]; else POS.cart[id] = Math.min(n, stockAt(id)); drawCart(); });
+    document.getElementById('pos_done').addEventListener('click', async (e) => {
+      const items = Object.entries(POS.cart).map(([id, qty]) => ({ id: Number(id), qty })); if (!items.length) return fail(new Error('Add at least one product.'));
+      e.target.disabled = true;
+      const customer = { name: document.getElementById('pos_name').value.trim(), email: document.getElementById('pos_email').value.trim(), phone: document.getElementById('pos_phone').value.trim() };
+      const { data, error } = await sb.rpc('record_sale', { loc_id: POS.loc, items, customer, payment: document.getElementById('pos_pay').value });
+      e.target.disabled = false; if (error) return fail(error);
+      flash(`Sale #${data} recorded.`); location.hash = `#/admin/orders/${data}`;
+    });
+  }
   document.querySelectorAll('.delpage').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm(`Delete the page "${b.dataset.title}"?`)) return; const { error } = await sb.from('pages').delete().eq('id', b.dataset.id); error ? fail(error) : (loadPages(), route());
   }));
@@ -727,10 +911,14 @@ pages.admin.after = ([sub, id, extra]) => {
       f.image_url = sb.storage.from('product-images').getPublicUrl(path).data.publicUrl;
     }
     const row = { name: f.name.trim(), category: f.category.trim(), description: f.description, price_cents: Math.round(parseFloat(f.price) * 100), unit: f.unit.trim(),
-      r_value: f.r_value.trim(), stock: parseInt(f.stock, 10), image_url: safeUrl(f.image_url.trim()), active: !!f.active };
+      r_value: f.r_value.trim(), image_url: safeUrl(f.image_url.trim()), active: !!f.active };
     if (!pid) row.slug = (row.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'product') + '-' + Math.floor(Math.random() * 1000);
     const res = pid ? await sb.from('products').update(row).eq('id', pid).select('id').single() : await sb.from('products').insert(row).select('id').single();
     if (res.error) return fail(res.error);
+    for (const el of form_inv(e.target)) { // stock per location
+      if (el.value === el.dataset.orig && pid) continue; const v = parseInt(el.value, 10); if (!(v >= 0) || (!pid && v === 0)) continue;
+      const r = await sb.rpc('set_inventory', { pid: res.data.id, lid: Number(el.name.slice(4)), new_qty: v, note: pid ? 'Set from product editor' : 'Initial stock' }); if (r.error) return fail(r.error);
+    }
     for (const [n, xf] of extraFiles.entries()) {
       if (xf.size > 5 * 1024 * 1024) { flash('A gallery photo was over 5 MB and was skipped.', 'error'); continue; }
       const path = `${Date.now()}-${n}-${xf.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-60)}`;
@@ -950,6 +1138,29 @@ pages.page = async ([slug]) => {
   document.title = `${pg.title} · ${(theme.name || 'Gomi Insulation')}`;
   return `<article class="prose">${!pg.published ? '<p class="flash error" style="margin-top:0">Draft — only admins can see this page.</p>' : ''}${profile?.is_admin ? `<p style="text-align:right"><a class="btn ghost" href="#/admin/pages/${pg.id}">✎ Edit page</a></p>` : ''}${md(pg.body)}</article>`;
 };
+
+// ---- locations, inventory, sales, point of sale (admin) ----
+const KINDS = { warehouse: 'Warehouse', store: 'Store', showroom: 'Showroom', other: 'Other' };
+let LOC = null, POS = null, SALES_ROWS = [];
+const download = (name, rows) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map((r) => r.map(csvCell).join(',')).join('\n')], { type: 'text/csv' })); a.download = name; a.click(); };
+const isoDay = (d) => { const t = new Date(d); return new Date(t - t.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
+function bucketize(orders, days) {
+  const mode = days === 'all' ? 'month' : Number(days) <= 31 ? 'day' : Number(days) <= 120 ? 'week' : 'month';
+  const n = mode === 'day' ? Number(days) : mode === 'week' ? 13 : (days === 'all' ? 24 : 12), now = new Date(), bs = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(now); if (mode === 'day') d.setDate(d.getDate() - i); else if (mode === 'week') d.setDate(d.getDate() - i * 7); else d.setMonth(d.getMonth() - i, 1);
+    bs.push({ d, v: 0, label: mode === 'month' ? d.toLocaleDateString(undefined, { month: 'short' }) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) });
+  }
+  const keyOf = (d) => { const t = new Date(d); if (mode === 'day') return isoDay(t); if (mode === 'month') return t.getFullYear() * 12 + t.getMonth(); return Math.floor((t - bs[0].d) / (7 * 864e5)); };
+  orders.forEach((o) => { const k = keyOf(o.created_at); const idx = mode === 'week' ? Math.min(Math.max(k, 0), n - 1) : bs.findIndex((b) => keyOf(b.d) === k); if (idx >= 0) bs[idx].v += o.total_cents; });
+  return bs;
+}
+function barChart(bs) {
+  const max = Math.max(...bs.map((b) => b.v), 1), w = 940 / bs.length, step = Math.ceil(bs.length / 14);
+  return `<svg viewBox="0 0 1000 220" role="img" aria-label="Sales chart" style="width:100%;height:auto;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:8px">${bs.map((b, i) => { const h = b.v / max * 150; const x = 30 + i * w;
+    return `<g><title>${b.label}: ${money(b.v)}</title><rect x="${x + 2}" y="${175 - h}" width="${Math.max(w - 4, 2)}" height="${Math.max(h, 2)}" rx="3" fill="var(--brand)" opacity="${b.v ? 1 : .25}"/>${i % step === 0 ? `<text x="${x + w / 2}" y="200" font-size="12" text-anchor="middle" fill="var(--muted)">${b.label}</text>` : ''}</g>`; }).join('')}</svg>`;
+}
+const rangeChips = (base, q) => `<div class="chips">${[['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', '12 months'], ['all', 'All time']].map(([v, l]) => { const n = new URLSearchParams(q); n.set('days', v); return `<a class="chip ${(q.get('days') || '30') === v ? 'on' : ''}" href="${base}?${n}">${l}</a>`; }).join('')}</div>`;
 
 // ---- router ----
 async function route() {

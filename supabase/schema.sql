@@ -619,3 +619,228 @@ insert into public.pages (slug, title, body, published, show_in_footer, sort) va
  ('about', 'About us', E'# About us\n\nWe supply **quality insulation** to homeowners and contractors. Batts, spray foam, rigid board and everything you need to seal and insulate a build.\n\n## Why customers choose us\n\n- Honest advice on the right R-value for your project\n- Fast delivery or easy pickup\n- Trade and bulk pricing on request\n\n{{button: Request a quote | #/quote}}', true, true, 1),
  ('shipping-returns', 'Shipping & returns', E'# Shipping & returns\n\n## Delivery\n\nOrders over **$500** ship free. Smaller orders have a flat delivery fee shown at checkout.\n\n## Pickup\n\nChoose a pickup location at checkout and we will message you when your order is ready.\n\n## Returns\n\nUnopened products can be returned within 30 days. Contact us and we will sort it out.\n\n[Contact us](#/form/contact)', true, true, 2)
 on conflict (slug) do nothing;
+
+-- ===== Locations, per-location inventory, in-store sales =====
+create table if not exists public.locations (
+  id bigint generated always as identity primary key, name text not null check (length(name) between 1 and 100),
+  kind text not null default 'warehouse' check (kind in ('warehouse','store','showroom','other')),
+  address text not null default '', city text not null default '', postcode text not null default '', phone text not null default '',
+  email text not null default '', hours text not null default '', active boolean not null default true,
+  is_default boolean not null default false, pickup_enabled boolean not null default false, created_at timestamptz not null default now());
+create unique index if not exists one_default_location on public.locations ((true)) where is_default;
+create table if not exists public.inventory (
+  product_id bigint not null references public.products(id) on delete cascade, location_id bigint not null references public.locations(id) on delete cascade,
+  qty int not null default 0 check (qty >= 0), primary key (product_id, location_id));
+create table if not exists public.inventory_log (
+  id bigint generated always as identity primary key, product_id bigint references public.products(id) on delete cascade,
+  location_id bigint references public.locations(id) on delete set null, delta int not null, qty_after int not null,
+  kind text not null, note text not null default '', order_id bigint, user_id uuid default auth.uid(), created_at timestamptz not null default now());
+create index if not exists inventory_log_idx on public.inventory_log (created_at desc);
+create table if not exists public.order_item_allocations (
+  order_item_id bigint not null references public.order_items(id) on delete cascade, location_id bigint not null references public.locations(id) on delete cascade,
+  qty int not null check (qty > 0));
+alter table public.orders add column if not exists location_id bigint references public.locations(id) on delete set null;
+alter table public.orders add column if not exists fulfillment text not null default 'delivery' check (fulfillment in ('delivery','pickup'));
+alter table public.orders add column if not exists source text not null default 'online' check (source in ('online','in_store'));
+alter table public.orders add column if not exists payment_method text not null default '';
+
+alter table public.locations enable row level security; alter table public.inventory enable row level security;
+alter table public.inventory_log enable row level security; alter table public.order_item_allocations enable row level security;
+drop policy if exists "view locations" on public.locations;
+create policy "view locations" on public.locations for select using ((active and pickup_enabled) or public.is_admin());
+drop policy if exists "admin locations" on public.locations;
+create policy "admin locations" on public.locations for all using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "admin inventory" on public.inventory;
+create policy "admin inventory" on public.inventory for all using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "admin inventory log" on public.inventory_log;
+create policy "admin inventory log" on public.inventory_log for select using (public.is_admin());
+drop policy if exists "admin allocations" on public.order_item_allocations;
+create policy "admin allocations" on public.order_item_allocations for select using (public.is_admin());
+
+-- first run: create the main location and move the existing stock into it
+insert into public.locations (name, kind, is_default, active) select 'Main warehouse', 'warehouse', true, true where not exists (select 1 from public.locations);
+insert into public.inventory (product_id, location_id, qty)
+  select p.id, (select id from public.locations where is_default), p.stock from public.products p
+  where not exists (select 1 from public.inventory i where i.product_id = p.id);
+
+-- products.stock always equals the total across locations
+create or replace function public.sync_product_stock() returns trigger language plpgsql security definer set search_path = public as $$
+declare pid bigint := coalesce(new.product_id, old.product_id);
+begin
+  update products set stock = coalesce((select sum(qty) from inventory where product_id = pid), 0) where id = pid;
+  return null;
+end $$;
+drop trigger if exists inventory_sync on public.inventory;
+create trigger inventory_sync after insert or update or delete on public.inventory for each row execute function public.sync_product_stock();
+
+create or replace function public.set_default_location(lid bigint) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  update locations set is_default = false where is_default;
+  update locations set is_default = true, active = true where id = lid;
+end $$;
+
+create or replace function public.set_inventory(pid bigint, lid bigint, new_qty int, note text default 'Manual adjustment') returns void
+language plpgsql security definer set search_path = public as $$
+declare old_qty int;
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  if new_qty < 0 then raise exception 'Quantity cannot be negative'; end if;
+  select qty into old_qty from inventory where product_id = pid and location_id = lid for update;
+  insert into inventory (product_id, location_id, qty) values (pid, lid, new_qty)
+    on conflict (product_id, location_id) do update set qty = excluded.qty;
+  if new_qty <> coalesce(old_qty, 0) then
+    insert into inventory_log (product_id, location_id, delta, qty_after, kind, note) values (pid, lid, new_qty - coalesce(old_qty, 0), new_qty, 'adjust', left(coalesce(note, ''), 300));
+  end if;
+end $$;
+
+create or replace function public.transfer_inventory(pid bigint, from_loc bigint, to_loc bigint, amount int, note text default '') returns void
+language plpgsql security definer set search_path = public as $$
+declare have int; a int; b int;
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  if from_loc = to_loc then raise exception 'Choose two different locations'; end if;
+  if amount < 1 then raise exception 'Amount must be at least 1'; end if;
+  select qty into have from inventory where product_id = pid and location_id = from_loc for update;
+  if coalesce(have, 0) < amount then raise exception 'Only % in stock at the source location', coalesce(have, 0); end if;
+  update inventory set qty = qty - amount where product_id = pid and location_id = from_loc returning qty into a;
+  insert into inventory (product_id, location_id, qty) values (pid, to_loc, amount) on conflict (product_id, location_id) do update set qty = inventory.qty + amount returning qty into b;
+  insert into inventory_log (product_id, location_id, delta, qty_after, kind, note) values (pid, from_loc, -amount, a, 'transfer_out', left(note, 300)), (pid, to_loc, amount, b, 'transfer_in', left(note, 300));
+end $$;
+
+-- take stock for an order item; strict = only from the given location
+create or replace function public.allocate_stock(item_id bigint, pid bigint, need int, pref bigint, strict boolean, oid bigint) returns void
+language plpgsql security definer set search_path = public as $$
+declare r record; take int; left_to int := need;
+begin
+  for r in select i.location_id, i.qty from inventory i join locations l on l.id = i.location_id
+           where i.product_id = pid and i.qty > 0 and (l.active or l.id = pref) and (not strict or i.location_id = pref)
+           order by (i.location_id = pref) desc, l.is_default desc, i.location_id for update of i loop
+    exit when left_to <= 0;
+    take := least(r.qty, left_to);
+    update inventory set qty = qty - take where product_id = pid and location_id = r.location_id;
+    insert into order_item_allocations (order_item_id, location_id, qty) values (item_id, r.location_id, take);
+    insert into inventory_log (product_id, location_id, delta, qty_after, kind, order_id) values (pid, r.location_id, -take, r.qty - take, 'sale', oid);
+    left_to := left_to - take;
+  end loop;
+  if left_to > 0 then raise exception 'Not enough stock'; end if;
+end $$;
+create or replace function public.restock_order(oid bigint) returns void language plpgsql security definer set search_path = public as $$
+declare a record; n int;
+begin
+  for a in select al.location_id, al.qty, oi.product_id from order_item_allocations al join order_items oi on oi.id = al.order_item_id where oi.order_id = oid loop
+    insert into inventory (product_id, location_id, qty) values (a.product_id, a.location_id, a.qty)
+      on conflict (product_id, location_id) do update set qty = inventory.qty + a.qty returning qty into n;
+    insert into inventory_log (product_id, location_id, delta, qty_after, kind, order_id, note) values (a.product_id, a.location_id, a.qty, n, 'restock', oid, 'Order cancelled');
+  end loop;
+end $$;
+create or replace function public.unstock_order(oid bigint) returns void language plpgsql security definer set search_path = public as $$
+declare a record; n int;
+begin
+  for a in select al.location_id, al.qty, oi.product_id from order_item_allocations al join order_items oi on oi.id = al.order_item_id where oi.order_id = oid loop
+    update inventory set qty = greatest(0, qty - a.qty) where product_id = a.product_id and location_id = a.location_id returning qty into n;
+    insert into inventory_log (product_id, location_id, delta, qty_after, kind, order_id, note) values (a.product_id, a.location_id, -a.qty, coalesce(n, 0), 'sale', oid, 'Order reinstated');
+  end loop;
+end $$;
+revoke all on function public.allocate_stock(bigint, bigint, int, bigint, boolean, bigint), public.restock_order(bigint), public.unstock_order(bigint), public.sync_product_stock() from public, anon, authenticated;
+
+create or replace function public.set_order_status(oid bigint, new_status text) returns void language plpgsql security definer set search_path = public as $$
+declare old text;
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  select status into old from orders where id = oid for update;
+  if old is null then raise exception 'No such order'; end if;
+  if new_status = 'cancelled' and old <> 'cancelled' then perform public.restock_order(oid);
+  elsif old = 'cancelled' and new_status <> 'cancelled' then perform public.unstock_order(oid); end if;
+  update orders set status = new_status where id = oid;
+end $$;
+create or replace function public.cancel_unpaid_order(oid bigint) returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform 1 from orders where id = oid and status = 'pending' for update;
+  if not found then return; end if;
+  perform public.restock_order(oid);
+  update orders set status = 'cancelled' where id = oid;
+end $$;
+revoke all on function public.cancel_unpaid_order(bigint) from public, anon, authenticated;
+grant execute on function public.cancel_unpaid_order(bigint) to service_role;
+
+-- Which pickup locations can supply this cart right now?
+create or replace function public.pickup_locations(items jsonb) returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'name', l.name, 'address', l.address, 'city', l.city, 'phone', l.phone, 'hours', l.hours,
+    'available', not exists (select 1 from jsonb_array_elements(items) it where coalesce((select qty from inventory i where i.product_id = (it->>'id')::bigint and i.location_id = l.id), 0) < (it->>'qty')::int)) order by l.name), '[]')
+  from locations l where l.active and l.pickup_enabled $$;
+grant execute on function public.pickup_locations(jsonb) to anon, authenticated;
+
+create or replace function public.place_order(items jsonb, customer jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare it jsonb; p public.products; q int; sub int := 0; ship int; oid bigint; gk uuid; item_id bigint;
+  disc int := 0; pct int; code text := nullif(upper(trim(coalesce(customer->>'code',''))), '');
+  free_over int := 50000; flat int := 1500;
+  pickup boolean := coalesce(customer->>'fulfillment', 'delivery') = 'pickup'; loc public.locations; pref bigint;
+  addr text; city text; pc text; avail int;
+begin
+  if jsonb_array_length(items) = 0 then raise exception 'Cart is empty'; end if;
+  if pickup then
+    select * into loc from locations where id = nullif(customer->>'location_id', '')::bigint and active and pickup_enabled;
+    if not found then raise exception 'Please choose a pickup location'; end if;
+    pref := loc.id;
+    addr := 'Pickup: ' || loc.name || case when loc.address <> '' then ', ' || loc.address else '' end; city := coalesce(nullif(loc.city, ''), '-'); pc := coalesce(nullif(loc.postcode, ''), '-');
+  else
+    pref := (select id from locations where is_default);
+    addr := customer->>'address'; city := customer->>'city'; pc := customer->>'postcode';
+    if coalesce(btrim(addr), '') = '' or coalesce(btrim(city), '') = '' or coalesce(btrim(pc), '') = '' then raise exception 'Please enter your delivery address'; end if;
+  end if;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint and active for update;
+    if not found or q < 1 then raise exception 'Not enough stock for %', coalesce(p.name, 'an item'); end if;
+    if pickup then select coalesce(qty, 0) into avail from inventory where product_id = p.id and location_id = loc.id;
+    else select coalesce(sum(i.qty), 0) into avail from inventory i join locations l on l.id = i.location_id where i.product_id = p.id and l.active; end if;
+    if coalesce(avail, 0) < q then raise exception 'Not enough stock for %', p.name; end if;
+    sub := sub + p.price_cents * q;
+  end loop;
+  if code is not null then
+    pct := public.check_code(code, sub);
+    if pct is null then raise exception 'That discount code is not valid'; end if;
+    disc := sub * pct / 100;
+  end if;
+  ship := case when pickup or sub - disc >= free_over then 0 else flat end;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents, discount_cents, promo_code, location_id, fulfillment, source)
+  values (auth.uid(), customer->>'email', customer->>'name', coalesce(customer->>'phone',''), addr, city, pc, coalesce(customer->>'notes',''), sub, ship, sub - disc + ship, disc, code, pref, case when pickup then 'pickup' else 'delivery' end, 'online')
+  returning id, guest_key into oid, gk;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint;
+    insert into order_items (order_id, product_id, name, price_cents, qty) values (oid, p.id, p.name, p.price_cents, q) returning id into item_id;
+    perform public.allocate_stock(item_id, p.id, q, pref, pickup, oid);
+  end loop;
+  return jsonb_build_object('id', oid, 'key', gk);
+end $$;
+grant execute on function public.place_order(jsonb, jsonb) to anon, authenticated;
+
+-- In-store / point-of-sale: admin records a sale taken at one location
+create or replace function public.record_sale(loc_id bigint, items jsonb, customer jsonb, payment text) returns bigint
+language plpgsql security definer set search_path = public as $$
+declare it jsonb; p public.products; q int; sub int := 0; oid bigint; item_id bigint; loc public.locations;
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  select * into loc from locations where id = loc_id and active;
+  if not found then raise exception 'Choose an active location'; end if;
+  if jsonb_array_length(items) = 0 then raise exception 'Add at least one product'; end if;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents, status, location_id, fulfillment, source, payment_method)
+  values (null, coalesce(customer->>'email', ''), coalesce(nullif(customer->>'name', ''), 'Walk-in customer'), coalesce(customer->>'phone', ''), 'In store: ' || loc.name,
+          coalesce(nullif(loc.city, ''), '-'), coalesce(nullif(loc.postcode, ''), '-'), coalesce(customer->>'notes', ''), 0, 0, 0, 'paid', loc.id, 'pickup', 'in_store', left(coalesce(payment, ''), 40))
+  returning id into oid;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int; select * into p from products where id = (it->>'id')::bigint for update;
+    if not found or q < 1 then raise exception 'Invalid item'; end if;
+    insert into order_items (order_id, product_id, name, price_cents, qty) values (oid, p.id, p.name, p.price_cents, q) returning id into item_id;
+    begin perform public.allocate_stock(item_id, p.id, q, loc.id, true, oid);
+    exception when others then raise exception 'Not enough stock of % at %', p.name, loc.name; end;
+    sub := sub + p.price_cents * q;
+  end loop;
+  update orders set subtotal_cents = sub, total_cents = sub where id = oid;
+  return oid;
+end $$;
+revoke all on function public.set_default_location(bigint), public.set_inventory(bigint, bigint, int, text), public.transfer_inventory(bigint, bigint, bigint, int, text), public.record_sale(bigint, jsonb, jsonb, text) from public, anon;
+grant execute on function public.set_default_location(bigint), public.set_inventory(bigint, bigint, int, text), public.transfer_inventory(bigint, bigint, bigint, int, text), public.record_sale(bigint, jsonb, jsonb, text) to authenticated;

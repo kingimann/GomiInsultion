@@ -68,11 +68,11 @@ Deno.serve(async (req) => {
     ${o.discount_cents ? `<p>Discount: −${money(o.discount_cents)}</p>` : ''}<p>Shipping: ${money(o.shipping_cents)}<br><b>Total: ${money(o.total_cents)}</b></p>`;
 
   if (body.kind === 'order_created') {
-    await send(o.email, `We got your order #${o.id}`, `<h2>Thanks, ${esc(o.name)}!</h2><p>We received order #${o.id}.</p>${table}<p>Delivering to ${esc(o.address)}, ${esc(o.city)} ${esc(o.postcode)}.</p><p><a href="${link}">View your order</a></p>`);
+    if (o.email && !o.email.endsWith('.local')) await send(o.email, `We got your order #${o.id}`, `<h2>Thanks, ${esc(o.name)}!</h2><p>We received order #${o.id}.</p>${table}<p>Delivering to ${esc(o.address)}, ${esc(o.city)} ${esc(o.postcode)}.</p><p><a href="${link}">View your order</a></p>`);
     await send(owner, `New order #${o.id} · ${money(o.total_cents)}`, `<p>${esc(o.name)} (${esc(o.email)}, ${esc(o.phone)}) placed an order.</p>${table}<p><a href="${site}/#/admin/orders/${o.id}">Open in admin</a></p>`);
   } else if (['order_paid', 'order_shipped', 'order_delivered'].includes(body.kind)) {
     const what = { order_paid: 'Payment received', order_shipped: 'Your order has shipped', order_delivered: 'Your order was delivered' }[body.kind as string];
-    await send(o.email, `${what} · order #${o.id}`, `<h2>${what}</h2><p>Order #${o.id} is now <b>${body.kind.replace('order_', '')}</b>.</p><p><a href="${link}">View your order</a></p>`);
+    if (o.email) await send(o.email, `${what} · order #${o.id}`, `<h2>${what}</h2><p>Order #${o.id} is now <b>${body.kind.replace('order_', '')}</b>.</p><p><a href="${link}">View your order</a></p>`);
   }
   return new Response('ok');
 });

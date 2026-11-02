@@ -90,3 +90,11 @@ Each response has a **status** (New / In progress / Done) and a **notes** box, w
 
 ## Custom pages
 **Admin → Pages** lets admins create and edit content pages (About, FAQ, Shipping…) with a Markdown editor, toolbar, image upload and live preview. Each page has a link (`#/page/<name>`), can be a draft or published, and can be added to the menu and/or footer. Content is rendered by a small built-in renderer that escapes everything and only allows safe formatting and links.
+
+## Locations, inventory, sales and point of sale
+- **Admin → Locations:** add warehouses, stores or showrooms with address, hours and contact details. One is the *default* (online delivery orders are fulfilled from it first); any active location can be offered for **customer pickup** at checkout.
+- **Admin → Inventory:** a products × locations grid — edit any quantity inline, **transfer stock** between locations, filter, export CSV, and see a log of every change (adjustments, sales, cancellations, transfers). Product stock is always the sum across locations, and cancelling an order returns stock to exactly the locations it came from.
+- **Checkout:** customers choose **Delivery** or **Pickup** at a location that has everything in their cart (pickup is free).
+- **Admin → Point of sale:** record in-person sales at a location (stock is taken from that location). Orders show where they were fulfilled and whether they were online or in store.
+- **Admin → Sales:** revenue, orders, units and average order for 7/30/90 days, 12 months or all time, filterable by location and channel, with a chart, by-location and top-product tables and CSV export.
+- **Dashboard:** things needing attention, period-over-period KPIs, revenue chart, revenue by location, top products, recent orders, low stock and quick links.

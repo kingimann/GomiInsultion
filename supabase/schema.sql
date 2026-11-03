@@ -886,3 +886,458 @@ language sql stable security definer set search_path = public as $$
     (select coalesce(jsonb_agg(jsonb_build_object('name', i.name, 'qty', i.qty, 'price_cents', i.price_cents, 'product_id', i.product_id)), '[]') from order_items i where i.order_id = o.id))
   from orders o where o.id = oid and lower(btrim(o.email)) = lower(btrim(mail)) and o.email <> '' $$;
 grant execute on function public.track_order(bigint, text) to anon, authenticated;
+
+-- ===== Business management: settings, costs/profit, refunds, notes, purchasing, team, audit =====
+create or replace function public.store_cfg(k text, def numeric) returns numeric language sql stable security definer set search_path = public as $$
+  select coalesce((select (value->>k)::numeric from site_settings where key = 'store' and (value->>k) ~ '^-?[0-9]+(\.[0-9]+)?$'), def) $$;
+create or replace function public.store_cfg_text(k text, def text) returns text language sql stable security definer set search_path = public as $$
+  select coalesce((select nullif(value->>k, '') from site_settings where key = 'store'), def) $$;
+
+alter table public.orders add column if not exists tax_cents int not null default 0;
+alter table public.orders add column if not exists tax_label text not null default '';
+alter table public.orders add column if not exists refunded_cents int not null default 0;
+alter table public.orders drop constraint if exists orders_status_check;
+alter table public.orders add constraint orders_status_check check (status in ('pending','paid','shipped','delivered','cancelled','refunded'));
+alter table public.products add column if not exists cost_cents int not null default 0 check (cost_cents >= 0);
+alter table public.products add column if not exists reorder_point int not null default 10 check (reorder_point >= 0);
+alter table public.products add column if not exists reorder_qty int not null default 0 check (reorder_qty >= 0);
+alter table public.order_items add column if not exists cost_cents int not null default 0;
+create or replace function public.trg_item_cost() returns trigger language plpgsql security definer set search_path = public as $$
+begin new.cost_cents := coalesce((select cost_cents from products where id = new.product_id), 0); return new; end $$;
+drop trigger if exists item_cost on public.order_items;
+create trigger item_cost before insert on public.order_items for each row execute function public.trg_item_cost();
+
+-- audit log
+create table if not exists public.audit_log (
+  id bigint generated always as identity primary key, user_id uuid, actor text not null default 'system', action text not null, entity text not null,
+  entity_id text not null default '', detail jsonb not null default '{}', created_at timestamptz not null default now());
+create index if not exists audit_idx on public.audit_log (created_at desc);
+alter table public.audit_log enable row level security;
+drop policy if exists "admin read audit" on public.audit_log;
+create policy "admin read audit" on public.audit_log for select using (public.is_admin());
+create or replace function public.audit(act text, ent text, eid text, det jsonb default '{}') returns void language plpgsql security definer set search_path = public as $$
+begin
+  insert into audit_log (user_id, actor, action, entity, entity_id, detail)
+  values (auth.uid(), coalesce((select coalesce(nullif(name, ''), email) from profiles where id = auth.uid()), 'system'), act, ent, eid, det);
+end $$;
+revoke all on function public.audit(text, text, text, jsonb) from public, anon, authenticated;
+create or replace function public.trg_audit_product() returns trigger language plpgsql security definer set search_path = public as $$
+declare d jsonb := '{}';
+begin
+  if tg_op = 'INSERT' then perform audit('product.created', 'product', new.id::text, jsonb_build_object('name', new.name)); return new; end if;
+  if tg_op = 'DELETE' then perform audit('product.deleted', 'product', old.id::text, jsonb_build_object('name', old.name)); return old; end if;
+  if new.price_cents is distinct from old.price_cents then d := d || jsonb_build_object('price', jsonb_build_array(old.price_cents, new.price_cents)); end if;
+  if new.cost_cents is distinct from old.cost_cents then d := d || jsonb_build_object('cost', jsonb_build_array(old.cost_cents, new.cost_cents)); end if;
+  if new.active is distinct from old.active then d := d || jsonb_build_object('active', jsonb_build_array(old.active, new.active)); end if;
+  if new.name is distinct from old.name then d := d || jsonb_build_object('name', jsonb_build_array(old.name, new.name)); end if;
+  if d <> '{}' then perform audit('product.updated', 'product', new.id::text, d || jsonb_build_object('product', new.name)); end if;
+  return new;
+end $$;
+drop trigger if exists audit_product on public.products;
+create trigger audit_product after insert or update or delete on public.products for each row execute function public.trg_audit_product();
+create or replace function public.trg_audit_order() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.status is distinct from old.status then perform audit('order.status', 'order', new.id::text, jsonb_build_object('from', old.status, 'to', new.status)); end if;
+  return new;
+end $$;
+drop trigger if exists audit_order on public.orders;
+create trigger audit_order after update of status on public.orders for each row execute function public.trg_audit_order();
+create or replace function public.trg_audit_settings() returns trigger language plpgsql security definer set search_path = public as $$
+begin perform audit('settings.changed', 'settings', new.key, '{}'); return new; end $$;
+drop trigger if exists audit_settings on public.site_settings;
+create trigger audit_settings after insert or update on public.site_settings for each row execute function public.trg_audit_settings();
+
+-- team management
+create or replace function public.set_admin(uid uuid, make boolean) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  if not make and (select count(*) from profiles where is_admin and id <> uid) = 0 then raise exception 'There must be at least one admin'; end if;
+  update profiles set is_admin = make where id = uid;
+  if not found then raise exception 'No such user'; end if;
+  perform audit(case when make then 'team.admin_added' else 'team.admin_removed' end, 'user', uid::text, jsonb_build_object('email', (select email from profiles where id = uid)));
+end $$;
+revoke all on function public.set_admin(uuid, boolean) from public, anon;
+grant execute on function public.set_admin(uuid, boolean) to authenticated;
+
+-- order notes (admin only) and refunds
+create table if not exists public.order_notes (
+  id bigint generated always as identity primary key, order_id bigint not null references public.orders(id) on delete cascade,
+  note text not null check (length(btrim(note)) between 1 and 2000), author text not null default '', created_at timestamptz not null default now());
+create table if not exists public.refunds (
+  id bigint generated always as identity primary key, order_id bigint not null references public.orders(id) on delete cascade,
+  amount_cents int not null check (amount_cents > 0), reason text not null default '', author text not null default '', created_at timestamptz not null default now());
+create table if not exists public.customer_info (
+  user_id uuid primary key references auth.users(id) on delete cascade, notes text not null default '' check (length(notes) <= 5000),
+  tags text[] not null default '{}', updated_at timestamptz not null default now());
+alter table public.order_notes enable row level security; alter table public.refunds enable row level security; alter table public.customer_info enable row level security;
+drop policy if exists "admin order notes" on public.order_notes; create policy "admin order notes" on public.order_notes for all using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "admin refunds read" on public.refunds; create policy "admin refunds read" on public.refunds for select using (public.is_admin());
+drop policy if exists "admin customer info" on public.customer_info; create policy "admin customer info" on public.customer_info for all using (public.is_admin()) with check (public.is_admin());
+create or replace function public.refund_order(oid bigint, amount int, why text default '') returns void language plpgsql security definer set search_path = public as $$
+declare o public.orders; who text;
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  select * into o from orders where id = oid for update;
+  if not found then raise exception 'No such order'; end if;
+  if amount < 1 or amount > o.total_cents - o.refunded_cents then raise exception 'Refund must be between $0.01 and $%', to_char((o.total_cents - o.refunded_cents) / 100.0, 'FM999990.00'); end if;
+  who := coalesce((select coalesce(nullif(name, ''), email) from profiles where id = auth.uid()), '');
+  insert into refunds (order_id, amount_cents, reason, author) values (oid, amount, left(coalesce(why, ''), 300), who);
+  update orders set refunded_cents = refunded_cents + amount where id = oid;
+  perform audit('order.refund', 'order', oid::text, jsonb_build_object('amount_cents', amount, 'reason', why));
+  perform notify_user(o.user_id, 'order', 'Refund issued for order #' || oid, '$' || to_char(amount / 100.0, 'FM999990.00') || ' has been refunded', '#/order/' || oid);
+end $$;
+revoke all on function public.refund_order(bigint, int, text) from public, anon; grant execute on function public.refund_order(bigint, int, text) to authenticated;
+
+-- suppliers and purchase orders
+create table if not exists public.suppliers (
+  id bigint generated always as identity primary key, name text not null unique check (length(name) between 1 and 120), contact_name text not null default '',
+  email text not null default '', phone text not null default '', notes text not null default '', active boolean not null default true);
+create table if not exists public.purchase_orders (
+  id bigint generated always as identity primary key, supplier_id bigint references public.suppliers(id) on delete set null, location_id bigint references public.locations(id) on delete set null,
+  status text not null default 'draft' check (status in ('draft','ordered','received','cancelled')), expected_at date, notes text not null default '',
+  created_by uuid default auth.uid(), created_at timestamptz not null default now(), received_at timestamptz);
+create table if not exists public.purchase_order_items (
+  id bigint generated always as identity primary key, po_id bigint not null references public.purchase_orders(id) on delete cascade,
+  product_id bigint not null references public.products(id) on delete cascade, qty int not null check (qty > 0), unit_cost_cents int not null default 0 check (unit_cost_cents >= 0));
+alter table public.suppliers enable row level security; alter table public.purchase_orders enable row level security; alter table public.purchase_order_items enable row level security;
+drop policy if exists "admin suppliers" on public.suppliers; create policy "admin suppliers" on public.suppliers for all using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "admin pos" on public.purchase_orders; create policy "admin pos" on public.purchase_orders for all using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "admin po items" on public.purchase_order_items; create policy "admin po items" on public.purchase_order_items for all using (public.is_admin()) with check (public.is_admin());
+create or replace function public.receive_purchase_order(poid bigint) returns void language plpgsql security definer set search_path = public as $$
+declare po public.purchase_orders; it record; n int;
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  select * into po from purchase_orders where id = poid for update;
+  if not found then raise exception 'No such purchase order'; end if;
+  if po.status not in ('draft', 'ordered') then raise exception 'This purchase order is already %', po.status; end if;
+  if po.location_id is null then raise exception 'Choose a delivery location first'; end if;
+  for it in select * from purchase_order_items where po_id = poid loop
+    insert into inventory (product_id, location_id, qty) values (it.product_id, po.location_id, it.qty)
+      on conflict (product_id, location_id) do update set qty = inventory.qty + it.qty returning qty into n;
+    insert into inventory_log (product_id, location_id, delta, qty_after, kind, note) values (it.product_id, po.location_id, it.qty, n, 'receive', 'Purchase order #' || poid);
+    if it.unit_cost_cents > 0 then update products set cost_cents = it.unit_cost_cents where id = it.product_id; end if;
+  end loop;
+  update purchase_orders set status = 'received', received_at = now() where id = poid;
+  perform audit('purchase.received', 'purchase_order', poid::text, '{}');
+end $$;
+revoke all on function public.receive_purchase_order(bigint) from public, anon; grant execute on function public.receive_purchase_order(bigint) to authenticated;
+
+-- place_order / record_sale now use the shipping + tax settings
+create or replace function public.place_order(items jsonb, customer jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare it jsonb; p public.products; q int; sub int := 0; ship int; oid bigint; gk uuid; item_id bigint;
+  disc int := 0; pct int; code text := nullif(upper(trim(coalesce(customer->>'code',''))), '');
+  free_over int := public.store_cfg('free_over_cents', 50000)::int; flat int := public.store_cfg('ship_flat_cents', 1500)::int;
+  rate numeric := public.store_cfg('tax_rate', 0); tax int; tlabel text := public.store_cfg_text('tax_label', 'Tax');
+  pickup boolean := coalesce(customer->>'fulfillment', 'delivery') = 'pickup'; loc public.locations; pref bigint;
+  addr text; city text; pc text; avail int;
+begin
+  if jsonb_array_length(items) = 0 then raise exception 'Cart is empty'; end if;
+  if pickup then
+    select * into loc from locations where id = nullif(customer->>'location_id', '')::bigint and active and pickup_enabled;
+    if not found then raise exception 'Please choose a pickup location'; end if;
+    pref := loc.id;
+    addr := 'Pickup: ' || loc.name || case when loc.address <> '' then ', ' || loc.address else '' end; city := coalesce(nullif(loc.city, ''), '-'); pc := coalesce(nullif(loc.postcode, ''), '-');
+  else
+    pref := (select id from locations where is_default);
+    addr := customer->>'address'; city := customer->>'city'; pc := customer->>'postcode';
+    if coalesce(btrim(addr), '') = '' or coalesce(btrim(city), '') = '' or coalesce(btrim(pc), '') = '' then raise exception 'Please enter your delivery address'; end if;
+  end if;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint and active for update;
+    if not found or q < 1 then raise exception 'Not enough stock for %', coalesce(p.name, 'an item'); end if;
+    if pickup then select coalesce(qty, 0) into avail from inventory where product_id = p.id and location_id = loc.id;
+    else select coalesce(sum(i.qty), 0) into avail from inventory i join locations l on l.id = i.location_id where i.product_id = p.id and l.active; end if;
+    if coalesce(avail, 0) < q then raise exception 'Not enough stock for %', p.name; end if;
+    sub := sub + p.price_cents * q;
+  end loop;
+  if code is not null then
+    pct := public.check_code(code, sub);
+    if pct is null then raise exception 'That discount code is not valid'; end if;
+    disc := sub * pct / 100;
+  end if;
+  ship := case when pickup or sub - disc >= free_over then 0 else flat end;
+  tax := round((sub - disc + ship) * rate / 100.0)::int;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents, discount_cents, promo_code, location_id, fulfillment, source, tax_cents, tax_label)
+  values (auth.uid(), customer->>'email', customer->>'name', coalesce(customer->>'phone',''), addr, city, pc, coalesce(customer->>'notes',''), sub, ship, sub - disc + ship + tax, disc, code, pref,
+          case when pickup then 'pickup' else 'delivery' end, 'online', tax, case when tax > 0 then tlabel else '' end)
+  returning id, guest_key into oid, gk;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint;
+    insert into order_items (order_id, product_id, name, price_cents, qty) values (oid, p.id, p.name, p.price_cents, q) returning id into item_id;
+    perform public.allocate_stock(item_id, p.id, q, pref, pickup, oid);
+  end loop;
+  return jsonb_build_object('id', oid, 'key', gk);
+end $$;
+grant execute on function public.place_order(jsonb, jsonb) to anon, authenticated;
+
+create or replace function public.record_sale(loc_id bigint, items jsonb, customer jsonb, payment text) returns bigint
+language plpgsql security definer set search_path = public as $$
+declare it jsonb; p public.products; q int; sub int := 0; oid bigint; item_id bigint; loc public.locations; rate numeric := public.store_cfg('tax_rate', 0); tax int; tlabel text := public.store_cfg_text('tax_label', 'Tax');
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  select * into loc from locations where id = loc_id and active;
+  if not found then raise exception 'Choose an active location'; end if;
+  if jsonb_array_length(items) = 0 then raise exception 'Add at least one product'; end if;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents, status, location_id, fulfillment, source, payment_method)
+  values (null, coalesce(customer->>'email', ''), coalesce(nullif(customer->>'name', ''), 'Walk-in customer'), coalesce(customer->>'phone', ''), 'In store: ' || loc.name,
+          coalesce(nullif(loc.city, ''), '-'), coalesce(nullif(loc.postcode, ''), '-'), coalesce(customer->>'notes', ''), 0, 0, 0, 'paid', loc.id, 'pickup', 'in_store', left(coalesce(payment, ''), 40))
+  returning id into oid;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int; select * into p from products where id = (it->>'id')::bigint for update;
+    if not found or q < 1 then raise exception 'Invalid item'; end if;
+    insert into order_items (order_id, product_id, name, price_cents, qty) values (oid, p.id, p.name, p.price_cents, q) returning id into item_id;
+    begin perform public.allocate_stock(item_id, p.id, q, loc.id, true, oid);
+    exception when others then raise exception 'Not enough stock of % at %', p.name, loc.name; end;
+    sub := sub + p.price_cents * q;
+  end loop;
+  tax := round(sub * rate / 100.0)::int;
+  update orders set subtotal_cents = sub, tax_cents = tax, tax_label = case when tax > 0 then tlabel else '' end, total_cents = sub + tax where id = oid;
+  return oid;
+end $$;
+
+-- ===== Roles & permissions =====
+alter table public.profiles add column if not exists role text not null default 'customer'
+  check (role in ('customer','owner','admin','manager','staff','warehouse','accountant','support'));
+update public.profiles set role = 'owner' where is_admin and role = 'customer';
+create table if not exists public.role_permissions (role text not null, perm text not null, primary key (role, perm));
+alter table public.role_permissions enable row level security;
+insert into public.role_permissions (role, perm) values
+ ('owner','*'), ('admin','*'),
+ ('manager','orders.view'),('manager','orders.manage'),('manager','orders.refund'),('manager','catalog.manage'),('manager','inventory.view'),('manager','inventory.manage'),('manager','pos'),
+ ('manager','reports.view'),('manager','customers.view'),('manager','customers.manage'),('manager','messages'),('manager','purchasing.view'),('manager','purchasing.manage'),('manager','content.manage'),
+ ('staff','orders.view'),('staff','pos'),('staff','customers.view'),('staff','messages'),('staff','inventory.view'),
+ ('warehouse','orders.view'),('warehouse','orders.manage'),('warehouse','inventory.view'),('warehouse','inventory.manage'),('warehouse','purchasing.view'),('warehouse','purchasing.manage'),
+ ('accountant','invoices.view'),('accountant','invoices.manage'),('accountant','reports.view'),('accountant','orders.view'),('accountant','customers.view'),('accountant','purchasing.view'),
+ ('support','messages'),('support','orders.view'),('support','customers.view')
+on conflict do nothing;
+
+create or replace function public.user_has_perm(uid uuid, p text) returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from profiles pr join role_permissions rp on rp.role = pr.role where pr.id = uid and rp.perm in (p, '*')) $$;
+create or replace function public.has_perm(p text) returns boolean language sql stable security definer set search_path = public as $$
+  select public.user_has_perm(auth.uid(), p) $$;
+create or replace function public.my_perms() returns jsonb language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(rp.perm), '[]') from role_permissions rp join profiles pr on pr.role = rp.role where pr.id = auth.uid() $$;
+grant execute on function public.has_perm(text), public.my_perms() to anon, authenticated;
+revoke all on function public.user_has_perm(uuid, text) from public, anon, authenticated;
+
+-- keep profiles.is_admin (= owner or admin) in sync with the role
+create or replace function public.trg_profile_role() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.role is distinct from old.role then new.is_admin := new.role in ('owner','admin');
+  elsif new.is_admin is distinct from old.is_admin then
+    new.role := case when new.is_admin then (case when exists (select 1 from profiles where role = 'owner' and id <> new.id) then 'admin' else 'owner' end) else 'customer' end;
+  end if;
+  return new;
+end $$;
+drop trigger if exists profile_role_sync on public.profiles;
+create trigger profile_role_sync before update of role, is_admin on public.profiles for each row execute function public.trg_profile_role();
+
+create or replace function public.set_role(uid uuid, new_role text) returns void language plpgsql security definer set search_path = public as $$
+declare caller text := (select role from profiles where id = auth.uid()); cur text := (select role from profiles where id = uid);
+begin
+  if not public.has_perm('team.manage') then raise exception 'Not allowed'; end if;
+  if cur is null then raise exception 'No such user'; end if;
+  if new_role not in ('customer','owner','admin','manager','staff','warehouse','accountant','support') then raise exception 'Unknown role'; end if;
+  if (new_role in ('owner','admin') or cur in ('owner','admin')) and caller <> 'owner' then raise exception 'Only an owner can change owners and admins'; end if;
+  if cur in ('owner','admin') and new_role not in ('owner','admin') and (select count(*) from profiles where role in ('owner','admin') and id <> uid) = 0 then raise exception 'There must be at least one owner or admin'; end if;
+  if cur = 'owner' and new_role <> 'owner' and (select count(*) from profiles where role = 'owner' and id <> uid) = 0 then raise exception 'There must be at least one owner'; end if;
+  update profiles set role = new_role where id = uid;
+  perform audit('team.role_changed', 'user', uid::text, jsonb_build_object('email', (select email from profiles where id = uid), 'from', cur, 'to', new_role));
+end $$;
+revoke all on function public.set_role(uuid, text) from public, anon; grant execute on function public.set_role(uuid, text) to authenticated;
+create or replace function public.set_admin(uid uuid, make boolean) returns void language sql security definer set search_path = public as $$
+  select public.set_role(uid, case when make then 'admin' else 'customer' end) $$;
+revoke all on function public.set_admin(uuid, boolean) from public, anon; grant execute on function public.set_admin(uuid, boolean) to authenticated;
+
+-- RPCs now check the specific permission instead of "admin"
+do $$ declare r record; def text; begin
+  for r in select * from (values ('set_order_status','orders.manage'),('set_order_tracking','orders.manage'),('refund_order','orders.refund'),('set_inventory','inventory.manage'),
+      ('transfer_inventory','inventory.manage'),('record_sale','pos'),('receive_purchase_order','purchasing.manage'),('mark_conversation_read','messages')) as v(fn, perm) loop
+    select pg_get_functiondef(p.oid) into def from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = r.fn;
+    def := replace(def, 'public.is_admin()', format('public.has_perm(%L)', r.perm));
+    execute def;
+  end loop;
+end $$;
+
+-- who gets which notification
+create or replace function public.notify_admins(k text, t text, b text, l text) returns void language sql security definer set search_path = public as $$
+  insert into notifications (user_id, kind, title, body, link)
+  select pr.id, k, left(t, 200), left(b, 300), l from profiles pr
+  where pr.role <> 'customer' and public.user_has_perm(pr.id, case k when 'order' then 'orders.view' when 'stock' then 'inventory.view' when 'form' then 'content.manage'
+        when 'quote' then 'customers.view' when 'message' then 'messages' when 'invoice' then 'invoices.view' else 'team.manage' end) $$;
+revoke all on function public.notify_admins(text, text, text, text) from public, anon, authenticated;
+
+-- extra policies for the limited roles (admins keep their existing "all" policies)
+do $$ declare x record; begin
+  for x in select * from (values
+    ('profiles','staff view profiles','select','public.has_perm(''customers.view'')',null),
+    ('orders','staff view orders','select','public.has_perm(''orders.view'')',null),
+    ('order_items','staff view order items','select','public.has_perm(''orders.view'')',null),
+    ('order_notes','staff order notes','all','public.has_perm(''orders.manage'')','public.has_perm(''orders.manage'')'),
+    ('refunds','staff view refunds','select','public.has_perm(''orders.view'')',null),
+    ('order_item_allocations','staff view allocations','select','public.has_perm(''orders.view'')',null),
+    ('products','staff products','all','public.has_perm(''catalog.manage'')','public.has_perm(''catalog.manage'')'),
+    ('product_images','staff product images','all','public.has_perm(''catalog.manage'')','public.has_perm(''catalog.manage'')'),
+    ('competitors','staff competitors','all','public.has_perm(''catalog.manage'')','public.has_perm(''catalog.manage'')'),
+    ('competitor_prices','staff competitor prices','all','public.has_perm(''catalog.manage'')','public.has_perm(''catalog.manage'')'),
+    ('inventory','staff view inventory','select','public.has_perm(''inventory.view'')',null),
+    ('inventory_log','staff view inventory log','select','public.has_perm(''inventory.view'')',null),
+    ('locations','staff view locations','select','public.has_perm(''inventory.view'') or public.has_perm(''pos'')',null),
+    ('quotes','staff view quotes','select','public.has_perm(''customers.view'')',null),
+    ('customer_info','staff view customer info','select','public.has_perm(''customers.view'')',null),
+    ('customer_info','staff manage customer info','all','public.has_perm(''customers.manage'')','public.has_perm(''customers.manage'')'),
+    ('discount_codes','staff codes','all','public.has_perm(''content.manage'')','public.has_perm(''content.manage'')'),
+    ('pages','staff pages','all','public.has_perm(''content.manage'')','public.has_perm(''content.manage'')'),
+    ('forms','staff forms','all','public.has_perm(''content.manage'')','public.has_perm(''content.manage'')'),
+    ('form_submissions','staff responses','all','public.has_perm(''content.manage'')','public.has_perm(''content.manage'')'),
+    ('conversations','staff view conversations','select','public.has_perm(''messages'')',null),
+    ('conversations','staff update conversations','update','public.has_perm(''messages'')','public.has_perm(''messages'')'),
+    ('conversations','staff start conversations','insert',null,'created_by = auth.uid() and public.has_perm(''messages'')'),
+    ('messages','staff view messages','select','public.has_perm(''messages'')',null),
+    ('messages','staff send messages','insert',null,'sender_id = auth.uid() and public.has_perm(''messages'')'),
+    ('suppliers','staff view suppliers','select','public.has_perm(''purchasing.view'')',null),
+    ('suppliers','staff manage suppliers','all','public.has_perm(''purchasing.manage'')','public.has_perm(''purchasing.manage'')'),
+    ('purchase_orders','staff view pos','select','public.has_perm(''purchasing.view'')',null),
+    ('purchase_orders','staff manage pos','all','public.has_perm(''purchasing.manage'')','public.has_perm(''purchasing.manage'')'),
+    ('purchase_order_items','staff view po items','select','public.has_perm(''purchasing.view'')',null),
+    ('purchase_order_items','staff manage po items','all','public.has_perm(''purchasing.manage'')','public.has_perm(''purchasing.manage'')')
+  ) as v(tbl, pol, cmd, using_expr, check_expr) loop
+    execute format('drop policy if exists %I on public.%I', x.pol, x.tbl);
+    execute format('create policy %I on public.%I for %s %s %s', x.pol, x.tbl, x.cmd,
+      case when x.using_expr is not null then 'using (' || x.using_expr || ')' else '' end,
+      case when x.check_expr is not null then 'with check (' || x.check_expr || ')' else '' end);
+  end loop;
+end $$;
+
+-- ===== Invoicing (QuickBooks-style; owner/admin/accountant) =====
+create sequence if not exists public.invoice_number_seq start 1001;
+create table if not exists public.invoices (
+  id bigint generated always as identity primary key, number text unique not null, view_key uuid not null default gen_random_uuid(),
+  customer_id uuid references public.profiles(id) on delete set null, customer_name text not null check (length(btrim(customer_name)) > 0),
+  customer_email text not null default '', customer_address text not null default '',
+  issue_date date not null default current_date, due_date date not null default (current_date + 14),
+  status text not null default 'draft' check (status in ('draft','sent','paid','void')),
+  notes text not null default '' check (length(notes) <= 3000), terms text not null default '' check (length(terms) <= 3000),
+  discount_cents int not null default 0 check (discount_cents >= 0), tax_rate numeric not null default 0, tax_label text not null default '',
+  subtotal_cents int not null default 0, tax_cents int not null default 0, total_cents int not null default 0, paid_cents int not null default 0,
+  sent_at timestamptz, created_by uuid default auth.uid(), created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table if not exists public.invoice_items (
+  id bigint generated always as identity primary key, invoice_id bigint not null references public.invoices(id) on delete cascade,
+  description text not null check (length(btrim(description)) between 1 and 500), qty numeric(12,3) not null default 1 check (qty > 0),
+  unit_price_cents int not null default 0, taxable boolean not null default true, product_id bigint references public.products(id) on delete set null, sort int not null default 0);
+create table if not exists public.invoice_payments (
+  id bigint generated always as identity primary key, invoice_id bigint not null references public.invoices(id) on delete cascade,
+  amount_cents int not null check (amount_cents > 0), method text not null default '', reference text not null default '', note text not null default '',
+  paid_on date not null default current_date, created_by uuid default auth.uid(), created_at timestamptz not null default now());
+create index if not exists invoices_status_idx on public.invoices (status, due_date);
+alter table public.invoices enable row level security; alter table public.invoice_items enable row level security; alter table public.invoice_payments enable row level security;
+drop policy if exists "view invoices" on public.invoices;
+create policy "view invoices" on public.invoices for select using (public.has_perm('invoices.view') or (customer_id = auth.uid() and status <> 'draft'));
+drop policy if exists "view invoice items" on public.invoice_items;
+create policy "view invoice items" on public.invoice_items for select using (exists (select 1 from public.invoices i where i.id = invoice_id and (public.has_perm('invoices.view') or (i.customer_id = auth.uid() and i.status <> 'draft'))));
+drop policy if exists "view invoice payments" on public.invoice_payments;
+create policy "view invoice payments" on public.invoice_payments for select using (exists (select 1 from public.invoices i where i.id = invoice_id and (public.has_perm('invoices.view') or (i.customer_id = auth.uid() and i.status <> 'draft'))));
+-- (no write policies: everything goes through the functions below)
+
+create or replace function public.save_invoice(inv jsonb, items jsonb) returns bigint language plpgsql security definer set search_path = public as $$
+declare iid bigint := nullif(inv->>'id', '')::bigint; it jsonb; amt int; sub int := 0; tsub int := 0; disc int; taxable int; rate numeric; lbl text; tax int; tot int; cur record; n int := 0;
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  if jsonb_typeof(items) <> 'array' or jsonb_array_length(items) = 0 then raise exception 'Add at least one line item'; end if;
+  for it in select * from jsonb_array_elements(items) loop
+    amt := round((it->>'qty')::numeric * (it->>'unit_price_cents')::numeric)::int; sub := sub + amt;
+    if coalesce((it->>'taxable')::boolean, true) then tsub := tsub + amt; end if;
+  end loop;
+  disc := least(greatest(coalesce(nullif(inv->>'discount_cents', '')::int, 0), 0), sub);
+  taxable := case when sub > 0 then tsub - round(disc * tsub::numeric / sub)::int else 0 end;
+  rate := coalesce(nullif(inv->>'tax_rate', '')::numeric, public.store_cfg('tax_rate', 0)); lbl := coalesce(nullif(inv->>'tax_label', ''), public.store_cfg_text('tax_label', 'Tax'));
+  tax := round(taxable * rate / 100.0)::int; tot := sub - disc + tax;
+  if iid is null then
+    insert into invoices (number, customer_id, customer_name, customer_email, customer_address, issue_date, due_date, notes, terms, discount_cents, tax_rate, tax_label, subtotal_cents, tax_cents, total_cents)
+    values (public.store_cfg_text('invoice_prefix', 'INV') || '-' || nextval('public.invoice_number_seq'), nullif(inv->>'customer_id', '')::uuid, btrim(inv->>'customer_name'), coalesce(inv->>'customer_email', ''), coalesce(inv->>'customer_address', ''),
+      coalesce(nullif(inv->>'issue_date', '')::date, current_date), coalesce(nullif(inv->>'due_date', '')::date, current_date + 14), coalesce(inv->>'notes', ''), coalesce(inv->>'terms', ''), disc, rate, lbl, sub, tax, tot)
+    returning id into iid;
+    perform audit('invoice.created', 'invoice', iid::text, '{}');
+  else
+    select * into cur from invoices where id = iid for update;
+    if not found then raise exception 'No such invoice'; end if;
+    if cur.status in ('paid', 'void') then raise exception 'This invoice is % and can no longer be edited', cur.status; end if;
+    if tot < cur.paid_cents then raise exception 'Total cannot be lower than the % already paid', to_char(cur.paid_cents / 100.0, 'FM999990.00'); end if;
+    update invoices set customer_id = nullif(inv->>'customer_id', '')::uuid, customer_name = btrim(inv->>'customer_name'), customer_email = coalesce(inv->>'customer_email', ''), customer_address = coalesce(inv->>'customer_address', ''),
+      issue_date = coalesce(nullif(inv->>'issue_date', '')::date, issue_date), due_date = coalesce(nullif(inv->>'due_date', '')::date, due_date), notes = coalesce(inv->>'notes', ''), terms = coalesce(inv->>'terms', ''),
+      discount_cents = disc, tax_rate = rate, tax_label = lbl, subtotal_cents = sub, tax_cents = tax, total_cents = tot, updated_at = now() where id = iid;
+    delete from invoice_items where invoice_id = iid;
+  end if;
+  for it in select * from jsonb_array_elements(items) loop
+    n := n + 1;
+    insert into invoice_items (invoice_id, description, qty, unit_price_cents, taxable, product_id, sort)
+    values (iid, btrim(it->>'description'), (it->>'qty')::numeric, (it->>'unit_price_cents')::int, coalesce((it->>'taxable')::boolean, true), nullif(it->>'product_id', '')::bigint, n);
+  end loop;
+  return iid;
+end $$;
+
+create or replace function public.record_invoice_payment(iid bigint, amount int, pay_method text default '', ref text default '', paid date default current_date, memo text default '') returns void
+language plpgsql security definer set search_path = public as $$
+declare inv public.invoices;
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  select * into inv from invoices where id = iid for update;
+  if not found then raise exception 'No such invoice'; end if;
+  if inv.status = 'void' then raise exception 'This invoice is void'; end if;
+  if amount < 1 or amount > inv.total_cents - inv.paid_cents then raise exception 'Payment must be between $0.01 and $%', to_char((inv.total_cents - inv.paid_cents) / 100.0, 'FM999990.00'); end if;
+  insert into invoice_payments (invoice_id, amount_cents, method, reference, paid_on, note) values (iid, amount, left(coalesce(pay_method, ''), 40), left(coalesce(ref, ''), 80), coalesce(paid, current_date), left(coalesce(memo, ''), 300));
+  update invoices set paid_cents = paid_cents + amount, status = case when paid_cents + amount >= total_cents then 'paid' when status = 'draft' then 'sent' else status end,
+    sent_at = coalesce(sent_at, now()), updated_at = now() where id = iid;
+  perform audit('invoice.payment', 'invoice', iid::text, jsonb_build_object('amount_cents', amount, 'method', pay_method));
+  perform notify_admins('invoice', 'Payment on ' || inv.number, '$' || to_char(amount / 100.0, 'FM999990.00') || ' from ' || inv.customer_name, '#/admin/invoices/' || iid);
+end $$;
+
+create or replace function public.delete_invoice_payment(pid bigint) returns void language plpgsql security definer set search_path = public as $$
+declare p public.invoice_payments;
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  select * into p from invoice_payments where id = pid; if not found then raise exception 'No such payment'; end if;
+  delete from invoice_payments where id = pid;
+  update invoices set paid_cents = greatest(0, paid_cents - p.amount_cents), status = case when status = 'paid' then 'sent' else status end, updated_at = now() where id = p.invoice_id;
+  perform audit('invoice.payment_deleted', 'invoice', p.invoice_id::text, jsonb_build_object('amount_cents', p.amount_cents));
+end $$;
+
+create or replace function public.set_invoice_status(iid bigint, new_status text) returns void language plpgsql security definer set search_path = public as $$
+declare inv public.invoices;
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  select * into inv from invoices where id = iid for update; if not found then raise exception 'No such invoice'; end if;
+  if new_status = 'sent' then
+    if inv.status = 'void' then raise exception 'Reopen the invoice first'; end if;
+    update invoices set status = case when paid_cents >= total_cents and total_cents > 0 then 'paid' else 'sent' end, sent_at = coalesce(sent_at, now()), updated_at = now() where id = iid;
+    perform notify_user(inv.customer_id, 'invoice', 'Invoice ' || inv.number || ' from the store', 'Total $' || to_char(inv.total_cents / 100.0, 'FM999990.00') || ', due ' || inv.due_date, '#/invoice/' || iid);
+    perform public.send_notification('invoice_sent', jsonb_build_object('invoice_id', iid));
+  elsif new_status = 'void' then
+    if inv.paid_cents > 0 then raise exception 'Remove the recorded payments before voiding'; end if;
+    update invoices set status = 'void', updated_at = now() where id = iid;
+  elsif new_status = 'draft' then
+    if inv.paid_cents > 0 then raise exception 'This invoice has payments and cannot go back to draft'; end if;
+    update invoices set status = 'draft', updated_at = now() where id = iid;
+  else raise exception 'Unknown status'; end if;
+  perform audit('invoice.' || new_status, 'invoice', iid::text, '{}');
+end $$;
+
+create or replace function public.delete_invoice(iid bigint) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  if (select status from invoices where id = iid) not in ('draft', 'void') then raise exception 'Only draft or void invoices can be deleted'; end if;
+  delete from invoices where id = iid; perform audit('invoice.deleted', 'invoice', iid::text, '{}');
+end $$;
+
+-- customers (or guests with the private link) can view a sent invoice
+create or replace function public.get_invoice_public(iid bigint, k uuid) returns jsonb language sql stable security definer set search_path = public as $$
+  select to_jsonb(i) - 'view_key' - 'created_by' || jsonb_build_object(
+    'items', (select coalesce(jsonb_agg(to_jsonb(x) order by x.sort), '[]') from invoice_items x where x.invoice_id = i.id),
+    'payments', (select coalesce(jsonb_agg(jsonb_build_object('amount_cents', p.amount_cents, 'method', p.method, 'paid_on', p.paid_on) order by p.id), '[]') from invoice_payments p where p.invoice_id = i.id))
+  from invoices i where i.id = iid and i.view_key = k and i.status <> 'draft' $$;
+grant execute on function public.get_invoice_public(bigint, uuid) to anon, authenticated;
+revoke all on function public.save_invoice(jsonb, jsonb), public.record_invoice_payment(bigint, int, text, text, date, text), public.delete_invoice_payment(bigint), public.set_invoice_status(bigint, text), public.delete_invoice(bigint) from public, anon;
+grant execute on function public.save_invoice(jsonb, jsonb), public.record_invoice_payment(bigint, int, text, text, date, text), public.delete_invoice_payment(bigint), public.set_invoice_status(bigint, text), public.delete_invoice(bigint) to authenticated;

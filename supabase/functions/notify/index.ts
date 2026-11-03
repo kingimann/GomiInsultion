@@ -28,6 +28,18 @@ Deno.serve(async (req) => {
     return new Response('ok');
   }
 
+  if (body.kind === 'invoice_sent') {
+    const { data: inv } = await admin.from('invoices').select('*, invoice_items(*)').eq('id', body.invoice_id).single();
+    if (!inv || !inv.customer_email) return new Response('no recipient');
+    const rows = inv.invoice_items.sort((x: any, y: any) => x.sort - y.sort).map((i: any) => `<tr><td>${esc(i.description)}</td><td align="right">${Number(i.qty)}</td><td align="right">${money(Math.round(Number(i.qty) * i.unit_price_cents))}</td></tr>`).join('');
+    const balance = inv.total_cents - inv.paid_cents;
+    await send(inv.customer_email, `Invoice ${inv.number}${balance > 0 ? ` — ${money(balance)} due ${inv.due_date}` : ''}`,
+      `<h2>Invoice ${esc(inv.number)}</h2><p>Hello ${esc(inv.customer_name)}, here is your invoice.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left">Description</th><th>Qty</th><th align="right">Amount</th></tr>${rows}</table>
+       ${inv.discount_cents ? `<p>Discount: −${money(inv.discount_cents)}</p>` : ''}${inv.tax_cents ? `<p>${esc(inv.tax_label || 'Tax')}: ${money(inv.tax_cents)}</p>` : ''}<p><b>Total: ${money(inv.total_cents)}</b>${inv.paid_cents ? `<br>Paid: ${money(inv.paid_cents)}<br><b>Balance due: ${money(balance)}</b>` : ''}</p><p>Due date: ${esc(inv.due_date)}</p>
+       ${inv.terms ? `<p style="white-space:pre-wrap">${esc(inv.terms)}</p>` : ''}<p><a href="${site}/#/invoice/${inv.id}?k=${inv.view_key}">View or print this invoice</a></p>`);
+    return new Response('ok');
+  }
+
   if (body.kind === 'new_message') {
     const { data: m } = await admin.from('messages').select('*, conversations(*)').eq('id', body.message_id).single();
     if (!m) return new Response('no message', { status: 404 });

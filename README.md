@@ -107,3 +107,18 @@ Prices are entered by hand on purpose: these retailers offer no public price fee
 ## Hosting on Netlify or Cloudflare Pages
 The site is static files in `web/` (no build). **Netlify:** Add new site → Import from Git → pick this repo → leave the build command empty (`netlify.toml` sets the publish folder to `web`). **Cloudflare Pages:** build command empty, output directory `web`.
 Both redeploy on every push to `main` and build preview links for other branches/pull requests. Afterwards add the new site address to Supabase → Authentication → URL Configuration (Site URL + Redirect URLs as `https://YOUR-SITE/**`) and update the `SITE_URL` secret used by the Supabase functions.
+
+## Roles & permissions
+**Admin → Team & roles** assigns a role to anyone who has signed up. Roles: **owner** and **admin** (full access; only an owner can create or change owners/admins, and the last owner can't be removed), **manager** (orders, refunds, products, inventory, purchasing, content, customers, reports), **staff** (POS/in-store sales; view orders, customers, stock; messages), **warehouse** (ship orders, manage stock and purchase orders), **accountant** (invoicing, reports, view orders/customers) and **support** (messages; view orders/customers).
+Permissions are enforced by the database (row-level security and permission checks inside every admin function), so a role can't reach data or actions it doesn't have even by calling the API directly. The menus and dashboard also adapt to each role.
+
+## Invoicing (QuickBooks-style) — owner, admin and accountant
+**Admin → Invoices**: create invoices for anyone (pick an existing customer or type a new one) with custom line items (qty, rate, taxable or not, or pick a product), discount, tax and terms; automatic numbering (prefix configurable); mark as sent (emails the customer a link when email is set up); record full or partial payments (method, reference, date); void or delete; receivables **aging** (current, 1–30, 31–60, 61–90, 90+), outstanding/overdue totals, search and CSV export; a printable invoice page (customer link `#/invoice/<id>?k=…`) with your business details and "how to pay" instructions from **Settings**.
+
+## Store settings, purchasing, refunds, activity
+- **Settings:** delivery fee and free-delivery threshold, sales tax (name + rate, applied online and in store), business details for invoices, invoice prefix/terms/payment info.
+- **Products:** unit cost (profit and margin appear on **Sales**), reorder point and reorder quantity.
+- **Purchasing & suppliers:** purchase orders with receiving (adds stock at the chosen location and updates product cost), plus reorder suggestions for low-stock products.
+- **Orders:** search, status filters, bulk status updates, internal notes, refunds (reduce revenue reports), printable packing slip/invoice.
+- **Customers:** detail page with lifetime spend, private notes and tags.
+- **Activity log:** who changed what (orders, prices, invoices and payments, stock receipts, roles, settings).

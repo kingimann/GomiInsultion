@@ -1,8 +1,10 @@
 const C = window.GOMI;
 const sb = supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY);
 const $app = document.getElementById('app');
-const STATUSES = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'];
-const FREE_SHIP = 50000, SHIP = 1500;
+const STATUSES = ['pending', 'paid', 'shipped', 'delivered', 'cancelled', 'refunded'];
+let FREE_SHIP = 50000, SHIP = 1500;
+let STORE = { ship_flat_cents: 1500, free_over_cents: 50000, tax_rate: 0, tax_label: 'Tax', biz: {} };
+function applyStoreCfg(v) { STORE = { ...STORE, ...(v || {}) }; FREE_SHIP = Number(STORE.free_over_cents) || 0; SHIP = Number(STORE.ship_flat_cents) || 0; }
 
 // ---- themes ----
 const THEME_OPTS = {
@@ -56,8 +58,8 @@ function applyBranding() {
 window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
 applyTheme();
 async function loadSiteTheme() {
-  const { data } = await sb.from('site_settings').select('value').eq('key', 'theme').maybeSingle();
-  if (data) { theme = data.value || {}; applyTheme(); }
+  const { data } = await sb.from('site_settings').select('key,value').in('key', ['theme', 'store']);
+  (Array.isArray(data) ? data : []).forEach((r) => { if (r.key === 'theme') { theme = r.value || {}; applyTheme(); } else if (r.key === 'store') applyStoreCfg(r.value); });
 }
 async function saveSiteTheme() {
   if (!profile?.is_admin) return;
@@ -99,7 +101,9 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const money = (c) => `${C.CURRENCY}${(c / 100).toFixed(2)}`;
 const safeUrl = (u) => (/^(https?:\/\/|\/)/.test(u || '') ? u : '');
 let session = null, profile = null;
-let unread = { all: 0, msg: 0 }, notifChan = null, threadChan = [];
+let unread = { all: 0, msg: 0 }, notifChan = null, threadChan = [], perms = [];
+const can = (p) => !!profile && profile.role !== 'customer' && (profile.role === 'owner' || perms.includes('*') || perms.includes(p));
+const isStaff = () => !!profile && profile.role && profile.role !== 'customer';
 const getCart = () => { try { return JSON.parse(localStorage.getItem('cart') || '{}'); } catch { return {}; } };
 const setCart = (c) => { localStorage.setItem('cart', JSON.stringify(c)); renderNav(); };
 function flash(msg, type = 'ok') {
@@ -153,25 +157,35 @@ document.addEventListener('click', (e) => {
 const card = (p) => `<article class="card">${p.stock <= 0 ? '<span class="badge">Sold out</span>' : p.stock <= 10 ? '<span class="badge warn">Low stock</span>' : ''}<button class="heart" data-id="${p.id}" aria-label="Save to wishlist" style="${getWish().includes(p.id) ? 'color:#dc2626' : ''}">${getWish().includes(p.id) ? '♥' : '♡'}</button><a href="#/product/${esc(p.slug)}">${img(p)}</a><div class="pad"><span class="tag">${esc(p.category)}</span>
   <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}${saveBadge(p)}<div class="cardfoot"><p class="price">${money(p.price_cents)}</p>${p.stock > 0 ? `<button class="addbtn" data-id="${p.id}" data-stock="${p.stock}" data-name="${esc(p.name)}" aria-label="Add ${esc(p.name)} to cart">+ Add</button>` : '<span class="muted" style="font-size:.85rem">Sold out</span>'}</div></div></article>`;
 const getPromo = () => { try { return JSON.parse(localStorage.getItem('promo') || 'null'); } catch { return null; } };
-const totals = (sub) => { const pr = getPromo(), disc = pr && sub ? Math.floor(sub * pr.percent / 100) : 0; const ship = !sub || sub - disc >= FREE_SHIP ? 0 : SHIP; return { sub, disc, code: disc ? pr.code : '', ship, total: sub - disc + ship }; };
-const totalsHtml = (t) => `<dl class="totals"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount${t.code ? ' (' + esc(t.code) + ')' : ''}</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>Shipping</dt><dd>${t.ship ? money(t.ship) : 'Free'}</dd><dt>Total</dt><dd><strong>${money(t.total)}</strong></dd></dl>`;
+const totals = (sub, pickup = false) => { const pr = getPromo(), disc = pr && sub ? Math.floor(sub * pr.percent / 100) : 0; const ship = pickup || !sub || sub - disc >= FREE_SHIP ? 0 : SHIP; const base = sub - disc + ship, tax = Math.round(base * (Number(STORE.tax_rate) || 0) / 100); return { sub, disc, code: disc ? pr.code : '', ship, tax, taxLabel: STORE.tax_label || 'Tax', total: base + tax }; };
+const totalsHtml = (t) => `<dl class="totals"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount${t.code ? ' (' + esc(t.code) + ')' : ''}</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>Shipping</dt><dd>${t.ship ? money(t.ship) : 'Free'}</dd>${t.tax ? `<dt>${esc(t.taxLabel || 'Tax')}</dt><dd>${money(t.tax)}</dd>` : ''}<dt>Total</dt><dd><strong>${money(t.total)}</strong></dd>${t.refunded ? `<dt>Refunded</dt><dd>−${money(t.refunded)}</dd>` : ''}</dl>`;
 const fail = (e) => { console.error(e); flash(e.message || 'Something went wrong', 'error'); };
 const dateOf = (s) => new Date(s).toLocaleString();
 
 async function loadSession() {
   const { data } = await sb.auth.getSession(); session = data.session; profile = null;
-  if (session) { const r = await sb.from('profiles').select('*').eq('id', session.user.id).maybeSingle(); profile = r.data; }
+  perms = [];
+  if (session) { const r = await sb.from('profiles').select('*').eq('id', session.user.id).maybeSingle(); profile = r.data; if (profile && profile.role && profile.role !== 'customer') perms = (await sb.rpc('my_perms')).data || []; }
   renderNav(); startRealtime(); refreshUnread();
   if (!profile?.is_admin) { const pn = document.getElementById('stylepanel'); if (pn) pn.hidden = true; }
 }
 function renderNav() {
   const n = Object.values(getCart()).reduce((a, b) => a + b, 0);
-  document.getElementById('cartlink').innerHTML = (session ? `<button class="stylebtn bell" id="bellbtn" aria-label="Notifications">🔔${unread.all ? `<span class="dot">${unread.all > 99 ? '99+' : unread.all}</span>` : ''}</button> ` : '') + `<a class="cart" href="#/cart">🛒 Cart (${n})</a>`;
-  document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a>${sitePages.filter((x) => x.show_in_nav).map((x) => `<a href="#/page/${esc(x.slug)}">${esc(x.title)}</a>`).join('')}<a href="#/quote">Get a quote</a><a href="#/wishlist">♡ ${getWish().length}</a>` + (session ? `<a href="#/messages">💬 Messages${unread.msg ? ` <span class="dot">${unread.msg}</span>` : ''}</a>` : '') + (session
-    ? `${profile?.is_admin ? '<a href="#/admin">Admin</a>' : ''}<a href="#/account">${esc((profile?.name || 'Account').split(' ')[0])}</a><button class="link" id="logout">Log out</button>`
-    : `<a href="#/login">Log in</a><a href="#/register">Sign up</a>`) + `${profile?.is_admin ? '<button class="stylebtn" id="stylebtn" aria-label="Customize site style">🎨 Style</button>' : ''}`;
+  document.getElementById('cartlink').innerHTML = (session ? `<button class="stylebtn bell" id="bellbtn" aria-label="Notifications">🔔${unread.all ? `<span class="dot">${unread.all > 99 ? '99+' : unread.all}</span>` : ''}</button> ` : '') + `<a class="cart" href="#/cart" aria-label="Cart, ${n} item${n === 1 ? '' : 's'}">🛒 <span class="cl">Cart </span>(${n})</a>`;
+  const first = esc((profile?.name || 'Account').split(' ')[0]);
+  document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a>${sitePages.filter((x) => x.show_in_nav).map((x) => `<a href="#/page/${esc(x.slug)}">${esc(x.title)}</a>`).join('')}<a href="#/quote">Get a quote</a><a href="#/wishlist" aria-label="Wishlist">♡${getWish().length ? ' ' + getWish().length : ''}</a>`
+    + (session ? `<a href="#/messages" class="msglink">💬<span class="lbl"> Messages</span>${unread.msg ? ` <span class="dot">${unread.msg}</span>` : ''}</a>
+      <div class="usermenu"><button class="userbtn" id="userbtn" aria-haspopup="true" aria-expanded="false">${avatar(profile?.name || 'U')}<span class="uname">${first}</span><span class="caret">▾</span></button>
+      <div class="umpanel" id="umpanel"><div class="umhead"><b>${esc(profile?.name || 'Account')}</b><small class="muted">${esc(session.user.email)}${profile?.role && profile.role !== 'customer' ? ' · ' + esc(profile.role) : ''}</small></div>
+        <a href="#/account">My account</a><a href="#/account">My orders</a><a href="#/notifications">Notifications</a>${isStaff() ? '<a href="#/admin">Admin dashboard</a>' : ''}${profile?.is_admin ? '<button class="link" id="stylebtn">🎨 Site style</button>' : ''}<button class="link" id="logout">Log out</button></div></div>`
+      : `<a href="#/login">Log in</a><a href="#/register" class="signup">Sign up</a>`);
   document.getElementById('logout')?.addEventListener('click', async () => { await sb.auth.signOut(); location.hash = '#/'; });
 }
+document.addEventListener('click', (e) => {
+  const ub = e.target.closest('#userbtn'), um = document.querySelector('.usermenu');
+  if (ub) { const open = !um.classList.contains('open'); um.classList.toggle('open', open); ub.setAttribute('aria-expanded', String(open)); return; }
+  if (um && (!e.target.closest('.umpanel') || e.target.closest('.umpanel a, .umpanel button'))) um.classList.remove('open');
+});
 const setMenu = (open) => { document.body.classList.toggle('menu-open', open); document.getElementById('menubtn').setAttribute('aria-expanded', String(open)); document.getElementById('menubtn').textContent = open ? '✕' : '☰'; };
 document.getElementById('menubtn').addEventListener('click', () => setMenu(!document.body.classList.contains('menu-open')));
 document.getElementById('nav').addEventListener('click', (e) => { if (e.target.closest('a,button.link')) setMenu(false); });
@@ -353,7 +367,7 @@ pages.checkout.after = () => {
     const pick = document.querySelector('#co input[name=fulfillment]:checked')?.value === 'pickup';
     const ab = document.getElementById('addrbox'), pb = document.getElementById('pickbox'); if (!ab) return;
     ab.hidden = pick; if (pb) pb.hidden = !pick; ab.querySelectorAll('input').forEach((i) => (i.required = !pick));
-    document.querySelector('aside .totals')?.replaceWith(Object.assign(document.createElement('div'), { innerHTML: totalsHtml(pick ? { ...CHK.t, ship: 0, total: CHK.t.sub - CHK.t.disc } : CHK.t) }).firstElementChild);
+    document.querySelector('aside .totals')?.replaceWith(Object.assign(document.createElement('div'), { innerHTML: totalsHtml(totals(CHK.t.sub, pick)) }).firstElementChild);
   };
   document.querySelectorAll('#co input[name=fulfillment]').forEach((r) => r.addEventListener('change', setFulfil));
   document.getElementById('co')?.addEventListener('submit', async (e) => {
@@ -382,16 +396,16 @@ const orderHtml = (o, items, admin) => {
   const steps = ['pending', 'paid', 'shipped', 'delivered'], idx = steps.indexOf(o.status);
   const kind = o.source === 'in_store' ? 'In-store sale' : o.fulfillment === 'pickup' ? 'Pickup' : 'Delivery';
   const link = o.tracking_number ? trackLink(o.tracking_carrier, o.tracking_number) : '';
-  return `<div class="printonly"><h2>${esc(theme.name || 'Gomi Insulation')}</h2><p>Invoice for order #${o.id} · ${dateOf(o.created_at)}</p></div>
+  return `<div class="printonly"><h2>${esc(STORE.biz?.legal_name || theme.name || 'Gomi Insulation')}</h2><p>${[STORE.biz?.address, STORE.biz?.phone, STORE.biz?.email].filter(Boolean).map(esc).join(' · ')}${STORE.biz?.tax_number ? `<br>${esc(STORE.tax_label || 'Tax')} no. ${esc(STORE.biz.tax_number)}` : ''}</p><p><b>Invoice for order #${o.id}</b> · ${dateOf(o.created_at)}</p></div>
   <div class="ohead"><div><h1 style="margin:0">Order #${o.id}</h1><p class="muted" style="margin:2px 0 0">Placed ${dateOf(o.created_at)} · ${kind}</p></div><span class="status big ${esc(o.status)}">${esc(o.status)}</span></div>
   ${o.status === 'cancelled' ? '' : `<ol class="timeline">${steps.map((st, i) => `<li class="${i < idx ? 'done' : i === idx ? 'on' : ''}"><i></i><span>${st}</span></li>`).join('')}</ol>`}
   ${o.tracking_number ? `<div class="trackbox">📦 <span><b>${esc(o.tracking_carrier || 'Tracking number')}</b> · ${esc(o.tracking_number)}</span>${link ? `<a class="btn ghost noprint" href="${esc(link)}" target="_blank" rel="noopener nofollow">Track package ↗</a>` : ''}</div>` : ''}
   <div class="cartwrap"><div><div class="citems">${items.map((i) => `<div class="citem oi"><div class="cinfo"><b>${esc(i.name)}</b><small class="muted">${money(i.price_cents)} × ${i.qty}</small></div><b class="ctotal">${money(i.price_cents * i.qty)}</b></div>`).join('')}</div>
   ${o.notes ? `<p class="muted"><em>Notes: ${esc(o.notes)}</em></p>` : ''}</div>
-  <aside class="summary">${totalsHtml({ sub: o.subtotal_cents, disc: o.discount_cents, code: o.promo_code, ship: o.shipping_cents, total: o.total_cents })}
+  <aside class="summary">${totalsHtml({ sub: o.subtotal_cents, disc: o.discount_cents, code: o.promo_code, ship: o.shipping_cents, tax: o.tax_cents, taxLabel: o.tax_label, total: o.total_cents, refunded: o.refunded_cents })}
     <div><h3 style="margin:0 0 4px">${kind === 'Delivery' ? 'Delivering to' : kind === 'Pickup' ? 'Pickup' : 'Sold at'}</h3><p style="margin:0">${esc(o.name)}<br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br><span class="muted">${esc(o.email)} ${esc(o.phone)}</span></p>${o.payment_method ? `<p class="muted" style="margin:6px 0 0">Paid by ${esc(o.payment_method)}</p>` : ''}</div>
-    ${admin ? `<form class="stack" id="status"><label>Status<select name="status">${STATUSES.map((s) => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select></label><button class="btn alt">Update status</button></form>
-    <form class="stack" id="trackform"><label>Carrier<select name="carrier">${['', ...Object.keys(CARRIERS), 'Other'].map((c) => `<option value="${c}" ${c === (o.tracking_carrier || '') ? 'selected' : ''}>${c || '— none —'}</option>`).join('')}</select></label><label>Tracking number<input name="number" maxlength="60" value="${esc(o.tracking_number || '')}"></label><button class="btn ghost">Save tracking</button></form>`
+    ${admin === 'ro' ? '<button class="btn ghost noprint" id="printbtn" type="button">🖨 Print</button>' : admin ? `<form class="stack" id="status"><label>Status<select name="status">${STATUSES.map((s) => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select></label><button class="btn alt">Update status</button></form>
+    <form class="stack" id="trackform"><label>Carrier<select name="carrier">${['', ...Object.keys(CARRIERS), 'Other'].map((c) => `<option value="${c}" ${c === (o.tracking_carrier || '') ? 'selected' : ''}>${c || '— none —'}</option>`).join('')}</select></label><label>Tracking number<input name="number" maxlength="60" value="${esc(o.tracking_number || '')}"></label><button class="btn ghost">Save tracking</button></form><button class="btn ghost noprint" id="printbtn" type="button">🖨 Print / packing slip</button>`
       : `<div class="row noprint"><button class="btn ghost" id="printbtn" type="button">🖨 Print invoice</button><button class="btn" id="reorder" type="button" data-items="${esc(JSON.stringify(items.filter((i) => i.product_id).map((i) => [i.product_id, i.qty])))}">↻ Order again</button></div>`}</aside></div>`;
 };
 pages.order = async ([id], q) => {
@@ -575,7 +589,12 @@ const salesChart = (orders) => {
   ${days.map((d, i) => { const h = d.v / max * 140; return `<g><title>${d.label}: ${money(d.v)}</title><rect x="${i * 49 + 12}" y="${160 - h}" width="34" height="${Math.max(h, 2)}" rx="5" fill="var(--brand)" opacity="${d.v ? 1 : .25}"/><text x="${i * 49 + 29}" y="182" font-size="10" text-anchor="middle" fill="var(--muted)">${d.label}</text></g>`; }).join('')}</svg>`;
 };
 const RESP_STATUS = { new: 'New', in_progress: 'In progress', done: 'Done' };
-let FB = null, PG = null; // form being edited in the builder
+let FB = null, PG = null;
+const SECTION_PERM = { orders: 'orders.view', products: 'catalog.manage', inventory: 'inventory.view', locations: 'inventory.view', sales: 'reports.view', pos: 'pos', customers: 'customers.view', forms: 'content.manage', pages: 'content.manage', codes: 'content.manage',
+  compare: 'catalog.manage', purchasing: 'purchasing.view', suppliers: 'purchasing.view', invoices: 'invoices.view', team: 'team.manage', settings: 'team.manage', activity: 'team.manage', quotes: 'customers.view' };
+const ROLES = { owner: 'Owner — full access, including who is an admin', admin: 'Admin — full access (cannot change owners/admins)', manager: 'Manager — orders, refunds, products, inventory, purchasing, content, customers, reports',
+  staff: 'Staff — in-store sales (POS), view orders, customers and stock, messages', warehouse: 'Warehouse — pick & ship orders, manage stock and purchase orders', accountant: 'Accountant — invoicing, reports, view orders and customers',
+  support: 'Support — messages, view orders and customers', customer: 'Customer — no admin access' }; // form being edited in the builder
 const form_inv = (f) => [...f.querySelectorAll('input[name^="inv_"]')];
 const slugify = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 const formUrl = (slug) => `${location.origin}${location.pathname}#/form/${slug}`;
@@ -596,10 +615,19 @@ function fieldRows() {
 }
 const toLocalInput = (d) => { const t = new Date(d); return new Date(t - t.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
 pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
-  if (!profile?.is_admin) return '<h1>Forbidden</h1>';
+  if (!isStaff()) return '<h1>Forbidden</h1>';
+  if (sub && SECTION_PERM[sub] && !can(SECTION_PERM[sub])) return `<h1>No access</h1><p class="muted">Your role (${esc(profile.role)}) doesn't include this area. Ask an owner or admin if you need it.</p><p><a class="btn ghost" href="#/admin">← Dashboard</a></p>`;
   if (sub === 'orders' && id) {
     const o = (await sb.from('orders').select('*').eq('id', id).single()).data;
-    return orderHtml(o, (await sb.from('order_items').select('*').eq('order_id', id)).data, true);
+    const [itemsR, notesR, refR] = await Promise.all([sb.from('order_items').select('*').eq('order_id', id), sb.from('order_notes').select('*').eq('order_id', id).order('id', { ascending: false }), sb.from('refunds').select('*').eq('order_id', id).order('id', { ascending: false })]);
+    const remaining = o.total_cents - (o.refunded_cents || 0);
+    return `${orderHtml(o, itemsR.data, can('orders.manage') ? true : 'ro')}
+    <section class="cs" style="margin-top:16px"><h3>Internal notes <small class="muted" style="font-weight:400">(only admins can see these)</small></h3>
+      ${(notesR.data || []).map((n) => `<div class="addr"><div style="white-space:pre-wrap">${esc(n.note)}</div><small class="muted">${esc(n.author)} · ${ago(n.created_at)}</small></div>`).join('') || '<p class="muted" style="margin:0">No notes yet.</p>'}
+      <form id="noteform" class="row" style="flex-wrap:nowrap"><input name="note" maxlength="2000" placeholder="Add a note (e.g. customer called, will collect Friday)" required style="flex:1;min-width:0"><button class="btn ghost">Add note</button></form></section>
+    <section class="cs" style="margin-top:16px"><h3>Refunds</h3>
+      ${(refR.data || []).map((r) => `<div class="addr"><b>${money(r.amount_cents)}</b> refunded · ${esc(r.reason || 'no reason given')}<br><small class="muted">${esc(r.author)} · ${dateOf(r.created_at)}</small></div>`).join('') || '<p class="muted" style="margin:0">No refunds on this order.</p>'}
+      ${remaining > 0 && can('orders.refund') ? `<form id="refundform" class="row"><input name="amount" type="number" step="0.01" min="0.01" max="${(remaining / 100).toFixed(2)}" placeholder="Amount (up to ${money(remaining)})" required style="width:210px"><input name="reason" maxlength="300" placeholder="Reason" style="flex:1;min-width:160px"><button class="btn ghost" style="color:var(--err)">Issue refund</button></form><small class="muted">Recording a refund doesn't move money — refund the customer through your payment provider, then record it here. It lowers your revenue reports.</small>` : '<p class="muted" style="margin:0">Fully refunded.</p>'}</section>`;
   }
   if (sub === 'forms' && id && extra === 'responses') {
     const f = (await sb.from('forms').select('*').eq('id', id).single()).data;
@@ -699,29 +727,32 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const days = q.get('days') || '30', locF = q.get('loc') || '', srcF = q.get('source') || '';
     const since = days === 'all' ? null : new Date(Date.now() - Number(days) * 864e5).toISOString();
     const locs = (await sb.from('locations').select('id,name').order('name')).data || [], lname = Object.fromEntries(locs.map((l) => [l.id, l.name]));
-    let oq = sb.from('orders').select('id,created_at,status,total_cents,location_id,source,name').neq('status', 'cancelled').order('created_at');
-    let iq = sb.from('order_items').select('name,qty,price_cents,orders!inner(created_at,status,location_id,source)').neq('orders.status', 'cancelled');
+    let oq = sb.from('orders').select('id,created_at,status,total_cents,tax_cents,refunded_cents,location_id,source,name').neq('status', 'cancelled').order('created_at');
+    let iq = sb.from('order_items').select('name,qty,price_cents,cost_cents,orders!inner(created_at,status,location_id,source)').neq('orders.status', 'cancelled');
     if (since) { oq = oq.gte('created_at', since); iq = iq.gte('orders.created_at', since); }
     if (locF) { oq = oq.eq('location_id', locF); iq = iq.eq('orders.location_id', locF); }
     if (srcF) { oq = oq.eq('source', srcF); iq = iq.eq('orders.source', srcF); }
     const [orders, items] = [(await oq).data || [], (await iq).data || []];
-    const revenue = orders.reduce((a, o) => a + o.total_cents, 0), units = items.reduce((a, i) => a + i.qty, 0);
-    const byLoc = {}; orders.forEach((o) => { const k = o.location_id || 0; (byLoc[k] = byLoc[k] || { n: 0, rev: 0, units: 0 }); byLoc[k].n++; byLoc[k].rev += o.total_cents; });
+    const revenue = orders.reduce((a, o) => a + net(o), 0), taxTotal = orders.reduce((a, o) => a + (o.tax_cents || 0), 0), refundTotal = orders.reduce((a, o) => a + (o.refunded_cents || 0), 0), units = items.reduce((a, i) => a + i.qty, 0);
+    const itemRev = items.reduce((a, i) => a + i.qty * i.price_cents, 0), profit = items.reduce((a, i) => a + i.qty * (i.price_cents - (i.cost_cents || 0)), 0), hasCost = items.some((i) => i.cost_cents > 0);
+    const byLoc = {}; orders.forEach((o) => { const k = o.location_id || 0; (byLoc[k] = byLoc[k] || { n: 0, rev: 0, units: 0 }); byLoc[k].n++; byLoc[k].rev += net(o); });
     items.forEach((i) => { const k = i.orders.location_id || 0; (byLoc[k] = byLoc[k] || { n: 0, rev: 0, units: 0 }); byLoc[k].units += i.qty; });
-    const bySrc = { online: 0, in_store: 0 }; orders.forEach((o) => (bySrc[o.source] = (bySrc[o.source] || 0) + o.total_cents));
-    const top = {}; items.forEach((i) => { const t = (top[i.name] = top[i.name] || { units: 0, rev: 0 }); t.units += i.qty; t.rev += i.qty * i.price_cents; });
+    const bySrc = { online: 0, in_store: 0 }; orders.forEach((o) => (bySrc[o.source] = (bySrc[o.source] || 0) + net(o)));
+    const top = {}; items.forEach((i) => { const t = (top[i.name] = top[i.name] || { units: 0, rev: 0, profit: 0 }); t.units += i.qty; t.rev += i.qty * i.price_cents; t.profit += i.qty * (i.price_cents - (i.cost_cents || 0)); });
     const topRows = Object.entries(top).sort((a, b) => b[1].rev - a[1].rev).slice(0, 10);
     const mk = (extra) => { const n = new URLSearchParams(q); Object.entries(extra).forEach(([k, v]) => (v ? n.set(k, v) : n.delete(k))); return `#/admin/sales?${n}`; };
-    SALES_ROWS = orders.map((o) => [o.id, o.created_at, lname[o.location_id] || '', o.source, o.status, o.name, (o.total_cents / 100).toFixed(2)]);
+    SALES_ROWS = orders.map((o) => [o.id, o.created_at, lname[o.location_id] || '', o.source, o.status, o.name, (net(o) / 100).toFixed(2)]);
     return `<h1>Sales</h1>${rangeChips('#/admin/sales', q)}
     <div class="row" style="margin-bottom:14px"><select id="salesloc" aria-label="Location"><option value="">All locations</option>${locs.map((l) => `<option value="${l.id}" ${String(l.id) === locF ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
     <select id="salessrc" aria-label="Channel"><option value="">All channels</option><option value="online" ${srcF === 'online' ? 'selected' : ''}>Online</option><option value="in_store" ${srcF === 'in_store' ? 'selected' : ''}>In store</option></select>
     <button class="btn ghost" id="salescsv">⬇ Export orders CSV</button></div>
-    <div class="stats"><div><b>${money(revenue)}</b>revenue</div><div><b>${orders.length}</b>orders</div><div><b>${units}</b>units sold</div><div><b>${money(orders.length ? Math.round(revenue / orders.length) : 0)}</b>average order</div></div>
+    <div class="stats"><div><b>${money(revenue)}</b>revenue (excl. tax, after refunds)</div><div><b>${orders.length}</b>orders</div><div><b>${units}</b>units sold</div><div><b>${money(orders.length ? Math.round(revenue / orders.length) : 0)}</b>average order</div>
+    ${hasCost ? `<div><b>${money(profit)}</b>gross profit (est.)</div><div><b>${itemRev ? Math.round(profit / itemRev * 100) : 0}%</b>margin</div>` : ''}${taxTotal ? `<div><b>${money(taxTotal)}</b>tax collected</div>` : ''}${refundTotal ? `<div><b>${money(refundTotal)}</b>refunded</div>` : ''}</div>
+    ${hasCost ? '' : '<p class="muted">Add a unit cost to your products to see profit and margin here.</p>'}
     <h2>Revenue over time</h2>${barChart(bucketize(orders, days))}
     <div class="two" style="margin-top:8px"><div><h2>By location</h2>${Object.keys(byLoc).length ? `<table><tr><th>Location</th><th>Orders</th><th>Units</th><th>Revenue</th></tr>${Object.entries(byLoc).sort((a, b) => b[1].rev - a[1].rev).map(([k, v]) => `<tr><td>${esc(lname[k] || 'Unassigned')}</td><td>${v.n}</td><td>${v.units}</td><td>${money(v.rev)}</td></tr>`).join('')}</table>` : '<p class="muted">No sales in this period.</p>'}
     <h2>By channel</h2><table><tr><th>Channel</th><th>Revenue</th></tr><tr><td>Online</td><td>${money(bySrc.online || 0)}</td></tr><tr><td>In store</td><td>${money(bySrc.in_store || 0)}</td></tr></table></div>
-    <div><h2>Top products</h2>${topRows.length ? `<table><tr><th>Product</th><th>Units</th><th>Revenue</th></tr>${topRows.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.units}</td><td>${money(v.rev)}</td></tr>`).join('')}</table>` : '<p class="muted">No sales in this period.</p>'}</div></div>
+    <div><h2>Top products</h2>${topRows.length ? `<table><tr><th>Product</th><th>Units</th><th>Revenue</th>${hasCost ? '<th>Profit</th>' : ''}</tr>${topRows.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.units}</td><td>${money(v.rev)}</td>${hasCost ? `<td>${money(v.profit)}</td>` : ''}</tr>`).join('')}</table>` : '<p class="muted">No sales in this period.</p>'}</div></div>
 `;
   }
   if (sub === 'pos') {
@@ -759,6 +790,123 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <h2>Retailers</h2><table><tr><th>Name</th><th>Status</th><th></th></tr>${comps.data.map((c) => `<tr><td>${esc(c.name)}</td><td>${c.active ? 'Shown' : 'Hidden'}</td><td><button class="link togcomp" data-id="${c.id}" data-active="${c.active}" style="color:var(--brand)">${c.active ? 'Hide' : 'Show'}</button></td></tr>`).join('')}</table>
     <form id="addcomp" class="row"><input name="name" placeholder="Add a retailer (e.g. Lowe's)" maxlength="80" required><button class="btn ghost">Add</button></form>`;
   }
+  if (sub === 'settings') {
+    const b = STORE.biz || {};
+    return `<h1>Store settings</h1><p class="muted">These apply to the whole store: shipping and tax at checkout, and the details printed on invoices.</p>
+    <form id="setf" class="stack narrow"><fieldset class="cmpset"><legend>Shipping</legend>
+      <label>Flat delivery fee ($)<input name="ship" type="number" step="0.01" min="0" value="${((STORE.ship_flat_cents || 0) / 100).toFixed(2)}"></label>
+      <label>Free delivery on orders over ($) <small class="muted">0 = never free</small><input name="free" type="number" step="0.01" min="0" value="${((STORE.free_over_cents || 0) / 100).toFixed(2)}"></label></fieldset>
+    <fieldset class="cmpset"><legend>Sales tax</legend>
+      <div class="two2"><label>Tax name<input name="tax_label" maxlength="30" value="${esc(STORE.tax_label || 'Tax')}" placeholder="GST/HST"></label><label>Rate (%)<input name="tax_rate" type="number" step="0.001" min="0" max="50" value="${Number(STORE.tax_rate) || 0}"></label></div>
+      <small class="muted">Added to online and in-store orders (on goods + delivery, after discounts). Set 0 for no tax. Check your local rules — this is a single flat rate.</small></fieldset>
+    <fieldset class="cmpset"><legend>Business details (shown on invoices)</legend>
+      <label>Legal / trading name<input name="legal_name" maxlength="120" value="${esc(b.legal_name || '')}"></label><label>Address<input name="address" maxlength="200" value="${esc(b.address || '')}"></label>
+      <div class="two2"><label>Phone<input name="phone" maxlength="40" value="${esc(b.phone || '')}"></label><label>Email<input name="email" type="email" maxlength="120" value="${esc(b.email || '')}"></label></div>
+      <label>Tax / GST registration number<input name="tax_number" maxlength="40" value="${esc(b.tax_number || '')}"></label></fieldset>
+    <fieldset class="cmpset"><legend>Invoicing</legend>
+      <div class="two2"><label>Invoice number prefix<input name="invoice_prefix" maxlength="10" value="${esc(STORE.invoice_prefix || 'INV')}"></label><label>Default days until due<input name="invoice_due_days" type="number" min="0" max="365" value="${Number(STORE.invoice_due_days) || 14}"></label></div>
+      <label>Default terms<textarea name="invoice_terms" rows="2" maxlength="1000" placeholder="e.g. Payment due within 14 days. Late balances accrue 2% monthly.">${esc(STORE.invoice_terms || '')}</textarea></label>
+      <label>How customers can pay<textarea name="invoice_pay_info" rows="3" maxlength="1000" placeholder="e-Transfer to pay@yourshop.com, or cheque payable to…">${esc(STORE.invoice_pay_info || '')}</textarea></label></fieldset>
+    <button class="btn">Save settings</button></form>`;
+  }
+  if (sub === 'team') {
+    const term = (q.get('search') || '').trim().replace(/[%,()]/g, '');
+    let uq = sb.from('profiles').select('id,name,email,role,created_at').limit(300); if (term) uq = uq.or(`name.ilike.%${term}%,email.ilike.%${term}%`);
+    const us = ((await uq).data || []).sort((a, b) => (a.role === 'customer') - (b.role === 'customer') || (a.name || a.email).localeCompare(b.name || b.email)), meOwner = profile.role === 'owner';
+    return `<h1>Team &amp; roles</h1><p class="muted">Give people on your team the access they need — and nothing more. They sign up on the site like a customer first, then you assign a role here. These limits are enforced by the database, not just hidden menus.</p>
+    <section class="cs"><h3>What each role can do</h3><ul class="plain">${Object.entries(ROLES).filter(([r]) => r !== 'customer').map(([r, d]) => `<li><span><b style="text-transform:capitalize">${r}</b> — ${esc(d.split(' — ')[1])}</span></li>`).join('')}</ul></section>
+    <form id="teamsearch" class="row" style="margin:16px 0 10px;flex-wrap:nowrap"><input name="search" value="${esc(term)}" placeholder="Find a person by name or email…" style="flex:1;min-width:0"><button class="btn ghost">Search</button></form>
+    <table><tr><th>Person</th><th>Role</th><th>Joined</th></tr>${us.map((u) => { const locked = !meOwner && (u.role === 'owner' || u.role === 'admin');
+      return `<tr><td><b>${esc(u.name || u.email)}</b><br><small class="muted">${esc(u.email)}${u.id === session.user.id ? ' · you' : ''}</small></td><td><select class="rolesel" data-id="${u.id}" ${locked ? 'disabled' : ''} aria-label="Role for ${esc(u.email)}">${Object.keys(ROLES).map((r) => `<option value="${r}" ${r === u.role ? 'selected' : ''} ${!meOwner && (r === 'owner' || r === 'admin') ? 'disabled' : ''}>${r}</option>`).join('')}</select></td><td>${new Date(u.created_at).toLocaleDateString()}</td></tr>`; }).join('')}</table>
+    ${meOwner ? '' : '<p class="muted">Only an owner can create or change owners and admins.</p>'}`;
+  }
+  if (sub === 'activity') {
+    const ent = q.get('entity') || '', ents = ['order', 'product', 'invoice', 'purchase_order', 'user', 'settings'];
+    let aq = sb.from('audit_log').select('*').order('id', { ascending: false }).limit(200); if (ent) aq = aq.eq('entity', ent);
+    const rows = (await aq).data || [];
+    return `<h1>Activity log</h1><p class="muted">Who changed what — orders, products and prices, invoices and payments, stock receipts, roles and settings.</p>
+    <div class="chips"><a class="chip ${!ent ? 'on' : ''}" href="#/admin/activity">Everything</a>${ents.map((e) => `<a class="chip ${ent === e ? 'on' : ''}" href="#/admin/activity?entity=${e}">${e.replace('_', ' ')}</a>`).join('')}</div>
+    ${rows.length ? `<table><tr><th>When</th><th>Who</th><th>What</th></tr>${rows.map((a) => `<tr><td>${dateOf(a.created_at)}</td><td>${esc(a.actor)}</td><td>${fmtAudit(a)}</td></tr>`).join('')}</table>` : '<p class="muted">Nothing recorded yet.</p>'}`;
+  }
+  if (sub === 'invoices' && (id === 'new' || extra === 'edit')) {
+    const ex = id === 'new' ? null : (await sb.from('invoices').select('*').eq('id', id).single()).data;
+    const exItems = ex ? (await sb.from('invoice_items').select('*').eq('invoice_id', id).order('sort')).data : [];
+    if (ex && ['paid', 'void'].includes(ex.status)) return `<h1>Invoice ${esc(ex.number)}</h1><p class="flash error" style="margin-top:0">A ${ex.status} invoice can't be edited.</p><p><a class="btn ghost" href="#/admin/invoices/${ex.id}">← Back to invoice</a></p>`;
+    const [custs, prods] = await Promise.all([sb.from('profiles').select('id,name,email').eq('role', 'customer').order('name').limit(300), sb.from('products').select('id,name,price_cents').eq('active', true).order('name')]);
+    INV = { id: ex?.id || null, customer_id: ex?.customer_id || '', customer_name: ex?.customer_name || '', customer_email: ex?.customer_email || '', customer_address: ex?.customer_address || '',
+      issue_date: ex?.issue_date || todayStr(), due_date: ex?.due_date || addDays(todayStr(), Number(STORE.invoice_due_days) || 14), notes: ex?.notes || '', terms: ex ? ex.terms : (STORE.invoice_terms || ''),
+      discount_cents: ex?.discount_cents || 0, tax_rate: ex ? Number(ex.tax_rate) : (Number(STORE.tax_rate) || 0), tax_label: ex?.tax_label || STORE.tax_label || 'Tax',
+      items: ex ? exItems.map((x) => ({ description: x.description, qty: Number(x.qty), unit_price_cents: x.unit_price_cents, taxable: x.taxable, product_id: x.product_id })) : [{ description: '', qty: 1, unit_price_cents: 0, taxable: true, product_id: null }], custs: custs.data || [], prods: prods.data || [] };
+    return `<h1>${ex ? 'Edit invoice ' + esc(ex.number) : 'New invoice'}</h1><p><a href="#/admin/invoices${ex ? '/' + ex.id : ''}">← Cancel</a></p><div class="invedit">
+      <section class="cs"><h3>Customer</h3><label>Name <small class="muted">(type to pick an existing customer, or enter anyone)</small><input id="iv_name" list="custlist" value="${esc(INV.customer_name)}" required autocomplete="off"></label>
+      <datalist id="custlist">${INV.custs.map((c) => `<option value="${esc(c.name || c.email)}" data-id="${c.id}" data-email="${esc(c.email)}">${esc(c.email)}</option>`).join('')}</datalist>
+      <div class="two2"><label>Email<input id="iv_email" type="email" value="${esc(INV.customer_email)}"></label><label>Issue date<input id="iv_issue" type="date" value="${INV.issue_date}"></label></div>
+      <div class="two2"><label>Billing address<textarea id="iv_addr" rows="3">${esc(INV.customer_address)}</textarea></label><div class="stack"><label>Due date<input id="iv_due" type="date" value="${INV.due_date}"></label><div class="row"><small class="muted">Quick terms:</small>${[7, 14, 30, 60].map((n) => `<button type="button" class="btn ghost duebtn" data-n="${n}" style="padding:4px 10px;min-height:0">Net ${n}</button>`).join('')}</div></div></div></section>
+      <section class="cs"><h3>Line items</h3><table class="invlines"><tr><th>Description</th><th>Qty</th><th>Rate ($)</th><th>Tax</th><th class="r">Amount</th><th></th></tr><tbody id="ivlines">${INV.items.map(invLineRow).join('')}</tbody></table>
+      <div class="row"><button type="button" class="btn ghost" id="iv_add">+ Add line</button><select id="iv_prod" aria-label="Add a product"><option value="">+ Add a product…</option>${INV.prods.map((x) => `<option value="${x.id}">${esc(x.name)} — ${money(x.price_cents)}</option>`).join('')}</select></div>
+      <div class="two2"><div class="stack"><label>Discount ($)<input id="iv_disc" type="number" step="0.01" min="0" value="${(INV.discount_cents / 100).toFixed(2)}"></label><div class="two2"><label>Tax name<input id="iv_tlabel" value="${esc(INV.tax_label)}" maxlength="30"></label><label>Rate (%)<input id="iv_trate" type="number" step="0.001" min="0" max="50" value="${INV.tax_rate}"></label></div></div><div id="iv_totals">${invTotalsHtml()}</div></div></section>
+      <section class="cs"><h3>Notes &amp; terms</h3><label>Notes (shown to the customer)<textarea id="iv_notes" rows="3" maxlength="3000">${esc(INV.notes)}</textarea></label><label>Terms<textarea id="iv_terms" rows="3" maxlength="3000">${esc(INV.terms)}</textarea></label></section>
+      <div class="row"><button class="btn" id="iv_save" type="button">Save draft</button><button class="btn ghost" id="iv_send" type="button">Save &amp; mark as sent</button></div></div>`;
+  }
+  if (sub === 'invoices' && id) {
+    const [ir, itr, pr] = await Promise.all([sb.from('invoices').select('*').eq('id', id).single(), sb.from('invoice_items').select('*').eq('invoice_id', id).order('sort'), sb.from('invoice_payments').select('*').eq('invoice_id', id).order('id')]);
+    const inv = ir.data, items = itr.data || [], pays = pr.data || [], bal = invBal(inv), mng = can('invoices.manage'), link = `${location.origin}${location.pathname}#/invoice/${inv.id}?k=${inv.view_key}`;
+    return `<p><a href="#/admin/invoices">← All invoices</a></p>
+    ${mng ? `<div class="row noprint" style="margin-bottom:12px">${inv.status === 'draft' ? `<a class="btn ghost" href="#/admin/invoices/${inv.id}/edit">✎ Edit</a><button class="btn" data-invact="sent">Mark as sent &amp; email</button>` : ''}${inv.status === 'sent' ? `<a class="btn ghost" href="#/admin/invoices/${inv.id}/edit">✎ Edit</a><button class="btn ghost" data-invact="sent">Re-send email</button>` : ''}
+      ${inv.status === 'void' ? '<button class="btn ghost" data-invact="draft">Reopen as draft</button>' : inv.status !== 'paid' && !inv.paid_cents ? '<button class="btn ghost" data-invact="void" style="color:var(--err)">Void</button>' : ''}${['draft', 'void'].includes(inv.status) ? '<button class="btn ghost" id="invdel" style="color:var(--err)">Delete</button>' : ''}<button class="btn ghost" id="printbtn" type="button">🖨 Print</button></div>` : '<div class="row noprint"><button class="btn ghost" id="printbtn" type="button">🖨 Print</button></div>'}
+    <div class="cartwrap"><div>${invDoc(inv, items, pays.map((x) => ({ ...x })))}</div><aside class="summary noprint">
+      <h3>Payments</h3>${pays.length ? pays.map((x) => `<div class="addr"><b>${money(x.amount_cents)}</b> · ${esc(x.method || 'payment')} · ${esc(x.paid_on)}${x.reference ? `<br><small class="muted">Ref ${esc(x.reference)}</small>` : ''}${mng ? `<br><button class="link delpay" data-id="${x.id}" style="color:var(--err)">Remove</button>` : ''}</div>`).join('') : '<p class="muted" style="margin:0">No payments yet.</p>'}
+      ${mng && inv.status !== 'void' && bal > 0 ? `<form id="payform" class="stack"><label>Amount ($)<input name="amount" type="number" step="0.01" min="0.01" max="${(bal / 100).toFixed(2)}" value="${(bal / 100).toFixed(2)}" required></label><label>Method<select name="method"><option>E-transfer</option><option>Cheque</option><option>Cash</option><option>Card</option><option>Bank transfer</option><option>Other</option></select></label>
+      <label>Reference<input name="ref" maxlength="80"></label><label>Date received<input name="paid" type="date" value="${todayStr()}"></label><button class="btn">Record payment</button></form>` : ''}
+      ${inv.status !== 'draft' ? `<div><small class="muted">Customer link</small><input readonly value="${esc(link)}" onclick="this.select()" style="width:100%;font-size:.8rem"></div>` : ''}</aside></div>`;
+  }
+  if (sub === 'invoices') {
+    const [ir, pr] = await Promise.all([sb.from('invoices').select('*').order('id', { ascending: false }).limit(500), sb.from('invoice_payments').select('amount_cents,paid_on').gte('paid_on', addDays(todayStr(), -30))]);
+    const all = ir.data || [], filter = q.get('status') || '', term = (q.get('search') || '').trim().toLowerCase();
+    const rows = all.filter((i) => (!filter || invEff(i) === filter) && (!term || i.number.toLowerCase().includes(term) || i.customer_name.toLowerCase().includes(term)));
+    const open = all.filter((i) => i.status === 'sent' && invBal(i) > 0), t0 = todayStr(), past = (i) => Math.floor((new Date(t0) - new Date(i.due_date)) / 864e5);
+    const bucket = (lo, hi) => open.filter((i) => past(i) >= lo && past(i) <= hi).reduce((a, i) => a + invBal(i), 0);
+    const aging = [['Current', open.filter((i) => past(i) <= 0).reduce((a, i) => a + invBal(i), 0)], ['1–30 days', bucket(1, 30)], ['31–60', bucket(31, 60)], ['61–90', bucket(61, 90)], ['90+', bucket(91, 99999)]];
+    const link = (st) => `#/admin/invoices${st ? '?status=' + st : ''}`;
+    return `<div class="dashhead"><h1 style="margin:0">Invoices</h1>${can('invoices.manage') ? '<a class="btn" href="#/admin/invoices/new">+ New invoice</a>' : ''}</div>
+    <div class="kpis"><div class="kpi"><span class="lbl">Outstanding</span><b>${money(open.reduce((a, i) => a + invBal(i), 0))}</b><small class="muted">${open.length} open invoice${open.length === 1 ? '' : 's'}</small></div><div class="kpi"><span class="lbl">Overdue</span><b class="${aging.slice(1).some((a) => a[1]) ? 'down' : ''}">${money(aging.slice(1).reduce((a, x) => a + x[1], 0))}</b></div>
+      <div class="kpi"><span class="lbl">Paid in last 30 days</span><b>${money((pr.data || []).reduce((a, x) => a + x.amount_cents, 0))}</b></div><div class="kpi"><span class="lbl">Drafts</span><b>${all.filter((i) => i.status === 'draft').length}</b></div></div>
+    <h2>Receivables aging</h2><table class="aging"><tr>${aging.map((a) => `<th>${a[0]}</th>`).join('')}</tr><tr>${aging.map((a) => `<td><b>${money(a[1])}</b></td>`).join('')}</tr></table>
+    <div class="chips" style="margin-top:14px">${[['', 'All'], ['draft', 'Draft'], ['sent', 'Sent'], ['overdue', 'Overdue'], ['paid', 'Paid'], ['void', 'Void']].map(([v, l]) => `<a class="chip ${filter === v ? 'on' : ''}" href="${link(v)}">${l}</a>`).join('')}</div>
+    <div class="row" style="margin-bottom:10px"><form id="invsearch" class="row" style="flex:1;flex-wrap:nowrap"><input name="search" value="${esc(q.get('search') || '')}" placeholder="Search by number or customer…" style="flex:1;min-width:0"><button class="btn ghost">Search</button></form><button class="btn ghost" id="invcsv" type="button">⬇ CSV</button></div>
+    ${rows.length ? `<table id="invtable"><tr><th>Number</th><th>Customer</th><th>Issued</th><th>Due</th><th>Total</th><th>Balance</th><th>Status</th></tr>${rows.map((i) => { const e = invEff(i); return `<tr data-csv='${esc(JSON.stringify([i.number, i.customer_name, i.issue_date, i.due_date, (i.total_cents / 100).toFixed(2), (invBal(i) / 100).toFixed(2), e]))}'><td><a href="#/admin/invoices/${i.id}"><b>${esc(i.number)}</b></a></td><td>${esc(i.customer_name)}</td><td>${esc(i.issue_date)}</td><td>${esc(i.due_date)}</td><td>${money(i.total_cents)}</td><td>${money(invBal(i))}</td><td><span class="status ${e === 'overdue' ? 'cancelled' : e}">${e}</span></td></tr>`; }).join('')}</table>` : '<p class="muted">No invoices match. Create your first invoice with “New invoice”.</p>'}`;
+  }
+  if (sub === 'suppliers') {
+    const sups = (await sb.from('suppliers').select('*').order('name')).data || [], mng = can('purchasing.manage');
+    const f = (s) => `<form class="supform stack" data-id="${s.id || ''}"><label>Name<input name="name" value="${esc(s.name || '')}" required maxlength="120"></label><div class="two2"><label>Contact<input name="contact_name" value="${esc(s.contact_name || '')}"></label><label>Phone<input name="phone" value="${esc(s.phone || '')}"></label></div>
+      <label>Email<input name="email" type="email" value="${esc(s.email || '')}"></label><label>Notes<textarea name="notes" rows="2">${esc(s.notes || '')}</textarea></label><label class="check"><input type="checkbox" name="active" ${s.active === false ? '' : 'checked'}> Active</label><button class="btn">${s.id ? 'Save' : 'Add supplier'}</button></form>`;
+    return `<h1>Suppliers</h1><p><a class="btn ghost" href="#/admin/purchasing">← Purchasing</a></p>${sups.map((s) => `<details class="cs" style="margin-bottom:10px"><summary><b>${esc(s.name)}</b>${s.active ? '' : ' <span class="muted">(inactive)</span>'} <small class="muted">${esc([s.contact_name, s.email, s.phone].filter(Boolean).join(' · '))}</small></summary>${mng ? f(s) : ''}</details>`).join('') || '<p class="muted">No suppliers yet.</p>'}${mng ? `<section class="cs"><h3>Add a supplier</h3>${f({})}</section>` : ''}`;
+  }
+  if (sub === 'purchasing' && id) {
+    const isNew = id === 'new';
+    const [sups, locs, prods, ex, exItems] = await Promise.all([sb.from('suppliers').select('id,name').eq('active', true).order('name'), sb.from('locations').select('id,name,is_default').eq('active', true).order('is_default', { ascending: false }), sb.from('products').select('id,name,cost_cents,stock,reorder_point,reorder_qty').order('name'),
+      isNew ? { data: null } : sb.from('purchase_orders').select('*').eq('id', id).single(), isNew ? { data: [] } : sb.from('purchase_order_items').select('*').eq('po_id', id)]);
+    const P = prods.data || []; let lines = (exItems.data || []).map((x) => ({ product_id: x.product_id, qty: x.qty, unit_cost: x.unit_cost_cents / 100 }));
+    if (isNew && q.get('from') === 'low') lines = P.filter((x) => x.stock <= x.reorder_point).map((x) => ({ product_id: x.id, qty: x.reorder_qty || Math.max(x.reorder_point * 2 - x.stock, 1), unit_cost: x.cost_cents / 100 }));
+    if (isNew && !lines.length) lines = [{ product_id: '', qty: 1, unit_cost: 0 }];
+    PO = { id: isNew ? null : Number(id), status: ex.data?.status || 'draft', supplier_id: ex.data?.supplier_id || '', location_id: ex.data?.location_id || (locs.data?.[0]?.id ?? ''), expected_at: ex.data?.expected_at || '', notes: ex.data?.notes || '', lines, prods: P };
+    const ro = !['draft', 'ordered'].includes(PO.status), sname = (sups.data || []).find((x) => x.id === PO.supplier_id)?.name, lname = (locs.data || []).find((x) => x.id === PO.location_id)?.name;
+    return `<h1>${isNew ? 'New purchase order' : `Purchase order PO-${id} <span class="status ${PO.status === 'received' ? 'paid' : PO.status === 'cancelled' ? 'cancelled' : 'pending'}">${PO.status}</span>`}</h1><p><a href="#/admin/purchasing">← All purchase orders</a></p>
+    ${ro ? `<section class="cs"><p>Supplier: <b>${esc(sname || '—')}</b> · Delivered to: <b>${esc(lname || '—')}</b>${PO.expected_at ? ` · Expected ${esc(PO.expected_at)}` : ''}${ex.data?.received_at ? ` · Received ${dateOf(ex.data.received_at)}` : ''}</p>
+      <table>${'<tr><th>Product</th><th>Qty</th><th>Unit cost</th><th>Line total</th></tr>'}${lines.map((l) => `<tr><td>${esc(P.find((x) => x.id === l.product_id)?.name || '')}</td><td>${l.qty}</td><td>${money(Math.round(l.unit_cost * 100))}</td><td>${money(Math.round(l.qty * l.unit_cost * 100))}</td></tr>`).join('')}</table>${PO.notes ? `<p class="muted">${esc(PO.notes)}</p>` : ''}</section>` : `<div class="invedit">
+    <section class="cs"><div class="two2"><label>Supplier<select id="po_sup"><option value="">— choose —</option>${(sups.data || []).map((x) => `<option value="${x.id}" ${x.id === PO.supplier_id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label><label>Deliver to (stock goes here)<select id="po_loc">${(locs.data || []).map((x) => `<option value="${x.id}" ${x.id === PO.location_id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label></div>
+      <div class="two2"><label>Expected on<input id="po_exp" type="date" value="${esc(PO.expected_at)}"></label><label>Notes<input id="po_notes" value="${esc(PO.notes)}" maxlength="500"></label></div></section>
+    <section class="cs"><h3>Items</h3><table class="invlines"><tr><th>Product</th><th>Qty</th><th>Unit cost ($)</th><th class="r">Line total</th><th></th></tr><tbody id="po_lines"></tbody></table><div class="row"><button type="button" class="btn ghost" id="po_add">+ Add line</button><span id="po_total" style="margin-left:auto;font-weight:700"></span></div></section>
+    <div class="row"><button class="btn" id="po_save" type="button">Save</button>${PO.id ? '<button class="btn ghost" id="po_order" type="button">Mark as ordered</button><button class="btn" id="po_receive" type="button" style="background:var(--ok)">✓ Receive stock</button><button class="btn ghost" id="po_cancel" type="button" style="color:var(--err)">Cancel PO</button>' : ''}</div></div>`}`;
+  }
+  if (sub === 'purchasing') {
+    const [pos, sups, locs, items, prods] = await Promise.all([sb.from('purchase_orders').select('*').order('id', { ascending: false }).limit(200), sb.from('suppliers').select('id,name'), sb.from('locations').select('id,name'), sb.from('purchase_order_items').select('po_id,qty,unit_cost_cents'), sb.from('products').select('id,name,stock,reorder_point,reorder_qty,cost_cents').eq('active', true).order('stock')]);
+    const sn = Object.fromEntries((sups.data || []).map((x) => [x.id, x.name])), ln = Object.fromEntries((locs.data || []).map((x) => [x.id, x.name])), tot = {}, cnt = {}; (items.data || []).forEach((x) => { tot[x.po_id] = (tot[x.po_id] || 0) + x.qty * x.unit_cost_cents; cnt[x.po_id] = (cnt[x.po_id] || 0) + 1; });
+    const low = (prods.data || []).filter((x) => x.stock <= x.reorder_point);
+    return `<div class="dashhead"><h1 style="margin:0">Purchasing</h1><div class="row"><a class="btn ghost" href="#/admin/suppliers">Suppliers</a>${can('purchasing.manage') ? '<a class="btn" href="#/admin/purchasing/new">+ New purchase order</a>' : ''}</div></div>
+    <section class="cs"><h3>Reorder suggestions ${low.length ? `<span class="dot">${low.length}</span>` : ''}</h3>${low.length ? `<table><tr><th>Product</th><th>In stock</th><th>Reorder at</th><th>Suggested qty</th></tr>${low.map((x) => `<tr><td><a href="#/admin/products/${x.id}">${esc(x.name)}</a></td><td class="${x.stock === 0 ? 'down' : ''}">${x.stock}</td><td>${x.reorder_point}</td><td>${x.reorder_qty || Math.max(x.reorder_point * 2 - x.stock, 1)}</td></tr>`).join('')}</table>${can('purchasing.manage') ? '<a class="btn" href="#/admin/purchasing/new?from=low">Create a purchase order from these</a>' : ''}` : '<p class="muted" style="margin:0">Nothing is below its reorder point. ✅ Set each product’s reorder point in the product editor.</p>'}</section>
+    <h2>Purchase orders</h2>${(pos.data || []).length ? `<table><tr><th>PO</th><th>Supplier</th><th>Deliver to</th><th>Items</th><th>Cost</th><th>Expected</th><th>Status</th></tr>${pos.data.map((x) => `<tr><td><a href="#/admin/purchasing/${x.id}"><b>PO-${x.id}</b></a></td><td>${esc(sn[x.supplier_id] || '—')}</td><td>${esc(ln[x.location_id] || '—')}</td><td>${cnt[x.id] || 0}</td><td>${money(Math.round(tot[x.id] || 0))}</td><td>${esc(x.expected_at || '')}</td><td><span class="status ${x.status === 'received' ? 'paid' : x.status === 'cancelled' ? 'cancelled' : 'pending'}">${x.status}</span></td></tr>`).join('')}</table>` : '<p class="muted">No purchase orders yet.</p>'}`;
+  }
   if (sub === 'codes') {
     const cs = (await sb.from('discount_codes').select('*').order('code')).data;
     return `<h1>Discount codes</h1><table><tr><th>Code</th><th>Off</th><th>Min order</th><th>Status</th><th></th></tr>${cs.map((c) => `<tr><td><b>${esc(c.code)}</b></td><td>${c.percent}%</td><td>${money(c.min_cents)}</td><td>${c.active ? 'Active' : 'Off'}</td><td><button class="btn ghost togcode" data-code="${esc(c.code)}" data-active="${c.active}">${c.active ? 'Disable' : 'Enable'}</button></td></tr>`).join('')}</table>
@@ -769,14 +917,32 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     return `<h1>Quote requests</h1>${qs.length ? qs.map((x) => `<aside style="margin:10px 0"><b>${esc(x.name)}</b> · <a href="mailto:${esc(x.email)}">${esc(x.email)}</a> ${esc(x.phone)} · <span class="muted">${dateOf(x.created_at)}</span><p style="white-space:pre-wrap">${esc(x.message)}</p></aside>`).join('') : '<p>No requests yet.</p>'}`;
   }
   if (sub === 'orders') {
-    const locs = (await sb.from('locations').select('id,name').order('name')).data || [], locF = q.get('loc') || '';
-    let oq = sb.from('orders').select('*').order('id', { ascending: false }); if (locF) oq = oq.eq('location_id', locF);
-    return `<h1>Orders</h1><div class="row" style="margin-bottom:10px"><button class="btn ghost" id="csv">⬇ Export CSV</button><select id="ordloc" aria-label="Filter by location"><option value="">All locations</option>${locs.map((l) => `<option value="${l.id}" ${String(l.id) === locF ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select><a class="btn" href="#/admin/pos">+ In-store sale</a></div>${ordersTable((await oq).data, '#/admin/orders', Object.fromEntries(locs.map((l) => [l.id, l.name])))}`;
+    const locs = (await sb.from('locations').select('id,name').order('name')).data || [], locF = q.get('loc') || '', statusF = q.get('status') || '', term = (q.get('search') || '').trim().replace(/[%,()]/g, '');
+    let oq = sb.from('orders').select('*').order('id', { ascending: false }).limit(300);
+    if (locF) oq = oq.eq('location_id', locF); if (statusF) oq = oq.eq('status', statusF);
+    if (term) oq = /^\d+$/.test(term) ? oq.or(`id.eq.${term},name.ilike.%${term}%,email.ilike.%${term}%`) : oq.or(`name.ilike.%${term}%,email.ilike.%${term}%`);
+    const os = (await oq).data || [], lnames = Object.fromEntries(locs.map((l) => [l.id, l.name]));
+    const link = (extra) => { const n = new URLSearchParams(q); Object.entries(extra).forEach(([k, v]) => (v ? n.set(k, v) : n.delete(k))); const t = n.toString(); return '#/admin/orders' + (t ? '?' + t : ''); };
+    return `<h1>Orders</h1><div class="row" style="margin-bottom:10px"><form id="ordsearch" class="row" style="flex:1;min-width:220px;flex-wrap:nowrap"><input name="search" value="${esc(term)}" placeholder="Search order #, name or email…" aria-label="Search orders" style="flex:1;min-width:0"><button class="btn ghost">Search</button></form>
+      <select id="ordloc" aria-label="Filter by location"><option value="">All locations</option>${locs.map((l) => `<option value="${l.id}" ${String(l.id) === locF ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select><button class="btn ghost" id="csv">⬇ CSV</button><a class="btn" href="#/admin/pos">+ In-store sale</a></div>
+    <div class="chips"><a class="chip ${!statusF ? 'on' : ''}" href="${link({ status: '' })}">All</a>${STATUSES.map((st) => `<a class="chip ${statusF === st ? 'on' : ''}" href="${link({ status: st })}">${st}</a>`).join('')}</div>
+    ${os.length ? `<div class="row bulk" style="margin-bottom:8px"><span class="muted"><span id="selcount">0</span> selected</span><select id="bulkstatus" aria-label="New status">${STATUSES.map((st) => `<option>${st}</option>`).join('')}</select><button class="btn ghost" id="bulkapply">Apply to selected</button></div>
+    <table id="ordtable"><tr><th><input type="checkbox" id="selall" aria-label="Select all"></th><th>Order</th><th>Date</th><th>Location</th><th>Status</th><th>Total</th></tr>${os.map((o) => `<tr><td><input type="checkbox" class="osel" value="${o.id}" aria-label="Select order ${o.id}"></td><td><a href="#/admin/orders/${o.id}">#${o.id}</a> · ${esc(o.name)}</td><td>${dateOf(o.created_at)}</td><td>${esc(lnames[o.location_id] || '')}${o.source === 'in_store' ? ' · in store' : o.fulfillment === 'pickup' ? ' · pickup' : ''}</td><td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}${o.refunded_cents ? `<br><small class="down">−${money(o.refunded_cents)} refunded</small>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">No orders match.</p>'}`;
+  }
+  if (sub === 'customers' && id) {
+    const [pr, ords, info] = await Promise.all([sb.from('profiles').select('*').eq('id', id).single(), sb.from('orders').select('*').eq('user_id', id).order('id', { ascending: false }), sb.from('customer_info').select('*').eq('user_id', id).maybeSingle()]);
+    const u = pr.data, os = ords.data || [], live = os.filter((o) => o.status !== 'cancelled'), spent = live.reduce((a, o) => a + net(o), 0), ci = info.data || { notes: '', tags: [] };
+    return `<p><a href="#/admin/customers">← All customers</a></p><div class="acchead">${avatar(u.name || u.email)}<div><h1 style="margin:0">${esc(u.name || u.email)}${u.is_admin ? ' <span class="status paid">admin</span>' : ''}</h1><span class="muted">${esc(u.email)} · joined ${new Date(u.created_at).toLocaleDateString()}</span></div>
+      <a class="btn ghost" href="#/messages/new?to=${u.id}" style="margin-left:auto">💬 Message</a></div>
+    <div class="kpis"><div class="kpi"><span class="lbl">Orders</span><b>${live.length}</b></div><div class="kpi"><span class="lbl">Lifetime spend</span><b>${money(spent)}</b></div><div class="kpi"><span class="lbl">Average order</span><b>${money(live.length ? Math.round(spent / live.length) : 0)}</b></div><div class="kpi"><span class="lbl">Last order</span><b style="font-size:1.1rem">${os[0] ? new Date(os[0].created_at).toLocaleDateString() : '—'}</b></div></div>
+    <section class="cs" style="margin-top:16px"><h3>Notes &amp; tags <small class="muted" style="font-weight:400">(private)</small></h3><form id="custform" class="stack" data-id="${u.id}"><label>Tags (comma separated)<input name="tags" value="${esc((ci.tags || []).join(', '))}" placeholder="contractor, wholesale, VIP"></label><label>Notes<textarea name="notes" rows="4" maxlength="5000">${esc(ci.notes)}</textarea></label><button class="btn">Save</button></form></section>
+    <section class="cs" style="margin-top:16px"><h3>Orders</h3>${ordersTable(os, '#/admin/orders')}</section>`;
   }
   if (sub === 'customers') {
     const us = (await sb.from('profiles').select('*').order('created_at', { ascending: false })).data;
-    const cst = {}; ((await sb.from('orders').select('user_id,total_cents,status')).data || []).forEach((o) => { if (!o.user_id || o.status === 'cancelled') return; const c = (cst[o.user_id] = cst[o.user_id] || { n: 0, spent: 0 }); c.n++; c.spent += o.total_cents; });
-    return `<h1>Customers</h1><table><tr><th>Name</th><th>Email</th><th>Orders</th><th>Spent</th><th>Joined</th><th></th></tr>${us.map((u) => `<tr><td>${esc(u.name)}${u.is_admin ? ' (admin)' : ''}</td><td>${esc(u.email)}</td><td>${cst[u.id]?.n || 0}</td><td>${money(cst[u.id]?.spent || 0)}</td><td>${dateOf(u.created_at)}</td><td>${u.is_admin ? '' : `<a href="#/messages/new?to=${u.id}">💬 Message</a>`}</td></tr>`).join('')}</table>`;
+    const cst = {}; ((await sb.from('orders').select('user_id,total_cents,tax_cents,refunded_cents,status')).data || []).forEach((o) => { if (!o.user_id || o.status === 'cancelled') return; const c = (cst[o.user_id] = cst[o.user_id] || { n: 0, spent: 0 }); c.n++; c.spent += net(o); });
+    const tagsBy = {}; ((await sb.from('customer_info').select('user_id,tags')).data || []).forEach((r) => (tagsBy[r.user_id] = r.tags || []));
+    return `<h1>Customers</h1><table><tr><th>Name</th><th>Email</th><th>Orders</th><th>Spent</th><th>Joined</th><th></th></tr>${us.map((u) => `<tr><td><a href="#/admin/customers/${u.id}">${esc(u.name || u.email)}</a>${u.is_admin ? ' (admin)' : ''}${(tagsBy[u.id] || []).map((t) => ` <span class="status">${esc(t)}</span>`).join('')}</td><td>${esc(u.email)}</td><td>${cst[u.id]?.n || 0}</td><td>${money(cst[u.id]?.spent || 0)}</td><td>${dateOf(u.created_at)}</td><td>${u.is_admin ? '' : `<a href="#/messages/new?to=${u.id}">💬 Message</a>`}</td></tr>`).join('')}</table>`;
   }
   if (sub === 'products' && (id === 'new' || id)) {
     const p = id === 'new' ? {} : (await sb.from('products').select('*').eq('id', id).single()).data;
@@ -788,7 +954,9 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     return `<h1>${p.id ? 'Edit product' : 'New product'}</h1><form id="pf" class="stack narrow" data-id="${p.id || ''}">${t('name', 'Name', 'required')}${t('category', 'Category', 'required')}
     <label>Description<textarea name="description" rows="5">${esc(p.description)}</textarea></label>
     <label>Price<input name="price" type="number" step="0.01" min="0" required value="${p.price_cents != null ? (p.price_cents / 100).toFixed(2) : ''}"></label>
-    ${t('unit', 'Unit (e.g. bundle, roll)', 'required')}${t('r_value', 'R-value')}${stockFields}
+    ${t('unit', 'Unit (e.g. bundle, roll)', 'required')}${t('r_value', 'R-value')}
+    <div class="two2"><label>Unit cost ($) <small class="muted">what you pay</small><input name="cost" type="number" step="0.01" min="0" value="${((p.cost_cents || 0) / 100).toFixed(2)}"></label><label>Reorder when stock ≤<input name="reorder_point" type="number" min="0" value="${p.reorder_point ?? 10}"></label></div>
+    <label>Usual reorder quantity<input name="reorder_qty" type="number" min="0" value="${p.reorder_qty ?? 0}"></label>${stockFields}
     ${p.image_url ? `<img src="${esc(safeUrl(p.image_url))}" alt="" style="max-width:160px;border-radius:10px">` : ''}
     <label>Photo (JPG, PNG, WebP, up to 5 MB)<input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif"></label>
     <input type="hidden" name="image_url" value="${esc(p.image_url || '')}">
@@ -802,42 +970,155 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   }
   // ---- dashboard ----
   const days = [7, 30, 90].includes(Number(q.get('days'))) ? Number(q.get('days')) : 30, now = Date.now(), cutCur = now - days * 864e5;
-  const [ordRes, itemRes, locRes, custRes, pendRes, formRes, lowRes, recentRes, quoteRes] = await Promise.all([
-    sb.from('orders').select('id,created_at,status,total_cents,location_id,source').neq('status', 'cancelled').gte('created_at', new Date(now - 2 * days * 864e5).toISOString()),
+  const [ordRes, itemRes, locRes, custRes, pendRes, formRes, lowRes, recentRes, quoteRes, invRes] = await Promise.all([
+    sb.from('orders').select('id,created_at,status,total_cents,tax_cents,refunded_cents,location_id,source').neq('status', 'cancelled').gte('created_at', new Date(now - 2 * days * 864e5).toISOString()),
     sb.from('order_items').select('name,qty,price_cents,orders!inner(created_at,status)').neq('orders.status', 'cancelled').gte('orders.created_at', new Date(cutCur).toISOString()),
     sb.from('locations').select('id,name'), sb.from('profiles').select('created_at').eq('is_admin', false).gte('created_at', new Date(now - 2 * days * 864e5).toISOString()),
     sb.from('orders').select('id', { count: 'exact', head: true }).eq('status', 'pending'), sb.from('form_submissions').select('id', { count: 'exact', head: true }).eq('status', 'new'),
     sb.from('products').select('id,name,stock').lte('stock', 10).eq('active', true).order('stock').limit(8),
     sb.from('orders').select('id,name,created_at,status,total_cents,source').order('id', { ascending: false }).limit(8),
-    sb.from('quotes').select('id', { count: 'exact', head: true }).gte('created_at', new Date(now - 7 * 864e5).toISOString())]);
+    sb.from('quotes').select('id', { count: 'exact', head: true }).gte('created_at', new Date(now - 7 * 864e5).toISOString()),
+    sb.from('invoices').select('id,total_cents,paid_cents,due_date').eq('status', 'sent')]);
   const all = ordRes.data || [], cur = all.filter((o) => new Date(o.created_at) >= cutCur), prev = all.filter((o) => new Date(o.created_at) < cutCur);
-  const sum = (a) => a.reduce((x, o) => x + o.total_cents, 0), revCur = sum(cur), revPrev = sum(prev);
+  const sum = (a) => a.reduce((x, o) => x + net(o), 0), revCur = sum(cur), revPrev = sum(prev);
   const custCur = (custRes.data || []).filter((u) => new Date(u.created_at) >= cutCur).length, custPrev = (custRes.data || []).length - custCur;
   const todayRev = sum(all.filter((o) => sameDay(o.created_at, now)));
   const delta = (c, p) => (p ? `<small class="${c >= p ? 'up' : 'down'}">${c >= p ? '▲' : '▼'} ${Math.abs(Math.round((c - p) / p * 100))}% vs previous ${days} days</small>` : `<small class="muted">${c ? 'New activity' : 'No data yet'}</small>`);
   const kpi = (label, value, d) => `<div class="kpi"><span class="lbl">${label}</span><b>${value}</b>${d}</div>`;
   const lname = Object.fromEntries((locRes.data || []).map((l) => [l.id, l.name]));
-  const byLoc = {}; cur.forEach((o) => { const k = o.location_id || 0; byLoc[k] = (byLoc[k] || 0) + o.total_cents; });
+  const byLoc = {}; cur.forEach((o) => { const k = o.location_id || 0; byLoc[k] = (byLoc[k] || 0) + net(o); });
   const locRows = Object.entries(byLoc).sort((a, b) => b[1] - a[1]), maxLoc = Math.max(...locRows.map((r) => r[1]), 1);
   const top = {}; (itemRes.data || []).forEach((i) => { const t = (top[i.name] = top[i.name] || { u: 0, r: 0 }); t.u += i.qty; t.r += i.qty * i.price_cents; });
   const topRows = Object.entries(top).sort((a, b) => b[1].r - a[1].r).slice(0, 5);
   const hr = new Date().getHours(), first = (profile?.name || '').split(' ')[0];
-  const attn = [['🧾', pendRes.count || 0, 'pending orders', '#/admin/orders'], ['💬', unread.msg, 'unread messages', '#/messages'], ['📝', formRes.count || 0, 'new form responses', '#/admin/forms'], ['📦', (lowRes.data || []).length, 'low-stock products', '#/admin/inventory'], ['📋', quoteRes.count || 0, 'quote requests this week', '#/admin/quotes']];
+  const today0 = new Date().toISOString().slice(0, 10), overdue = (invRes.data || []).filter((i) => i.due_date < today0 && i.total_cents > i.paid_cents), rep = can('reports.view');
+  const attn = [['🧾', pendRes.count || 0, 'pending orders', '#/admin/orders', 'orders.view'], ['💬', unread.msg, 'unread messages', '#/messages', 'messages'], ['📝', formRes.count || 0, 'new form responses', '#/admin/forms', 'content.manage'], ['📦', (lowRes.data || []).length, 'low-stock products', '#/admin/inventory', 'inventory.view'],
+    ['📋', quoteRes.count || 0, 'quote requests this week', '#/admin/quotes', 'customers.view'], ['💳', overdue.length, 'overdue invoices', '#/admin/invoices', 'invoices.view']].filter((a) => can(a[4]));
   const links = [['🧾', 'Orders', '#/admin/orders'], ['🛍️', 'Products', '#/admin/products'], ['📦', 'Inventory', '#/admin/inventory'], ['📍', 'Locations', '#/admin/locations'], ['📈', 'Sales', '#/admin/sales'], ['🏪', 'Point of sale', '#/admin/pos'],
-    ['👥', 'Customers', '#/admin/customers'], ['💬', 'Messages', '#/messages'], ['📝', 'Forms', '#/admin/forms'], ['📄', 'Pages', '#/admin/pages'], ['💲', 'Price compare', '#/admin/compare'], ['🏷️', 'Discount codes', '#/admin/codes'], ['📋', 'Quotes', '#/admin/quotes']];
+    ['🧾', 'Invoices', '#/admin/invoices'], ['🚚', 'Purchasing', '#/admin/purchasing'], ['🏭', 'Suppliers', '#/admin/suppliers'], ['🔐', 'Team & roles', '#/admin/team'], ['🕘', 'Activity log', '#/admin/activity'],
+    ['👥', 'Customers', '#/admin/customers'], ['💬', 'Messages', '#/messages'], ['📝', 'Forms', '#/admin/forms'], ['📄', 'Pages', '#/admin/pages'], ['💲', 'Price compare', '#/admin/compare'], ['🏷️', 'Discount codes', '#/admin/codes'], ['⚙️', 'Settings', '#/admin/settings'], ['📋', 'Quotes', '#/admin/quotes']];
   return `<div class="dashhead"><div><h1 style="margin:0">Good ${hr < 12 ? 'morning' : hr < 18 ? 'afternoon' : 'evening'}${first ? ', ' + esc(first) : ''} 👋</h1><p class="muted" style="margin:2px 0 0">${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })} · ${money(todayRev)} sold today</p></div>
     <div class="row"><a class="btn" href="#/admin/pos">+ In-store sale</a><a class="btn ghost" href="#/admin/products/new">+ Product</a></div></div>
   <div class="attn">${attn.map(([i, n, l, h]) => `<a class="attnc ${n ? 'on' : ''}" href="${h}"><span>${i}</span><b>${n}</b><small>${l}</small></a>`).join('')}</div>
-  <div class="chips">${[7, 30, 90].map((d) => `<a class="chip ${d === days ? 'on' : ''}" href="#/admin?days=${d}">Last ${d} days</a>`).join('')}</div>
+  ${rep ? `  <div class="chips">${[7, 30, 90].map((d) => `<a class="chip ${d === days ? 'on' : ''}" href="#/admin?days=${d}">Last ${d} days</a>`).join('')}</div>
   <div class="kpis">${kpi('Revenue', money(revCur), delta(revCur, revPrev))}${kpi('Orders', cur.length, delta(cur.length, prev.length))}${kpi('Average order', money(cur.length ? Math.round(revCur / cur.length) : 0), delta(cur.length ? revCur / cur.length : 0, prev.length ? revPrev / prev.length : 0))}${kpi('New customers', custCur, delta(custCur, custPrev))}</div>
   <h2>Revenue</h2>${barChart(bucketize(cur, days))}
-  <div class="two" style="margin-top:6px"><div><h2>By location</h2>${locRows.length ? locRows.map(([k, v]) => `<div class="locbar"><span>${esc(lname[k] || 'Unassigned')}</span><div class="progress"><i style="width:${v / maxLoc * 100}%"></i></div><b>${money(v)}</b></div>`).join('') : '<p class="muted">No sales in this period.</p>'}
-    <h2>Top products</h2>${topRows.length ? `<table><tr><th>Product</th><th>Units</th><th>Revenue</th></tr>${topRows.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.u}</td><td>${money(v.r)}</td></tr>`).join('')}</table>` : '<p class="muted">No sales in this period.</p>'}</div>
-  <div><h2>Recent orders</h2>${(recentRes.data || []).length ? `<table><tr><th>Order</th><th>Status</th><th>Total</th></tr>${recentRes.data.map((o) => `<tr><td><a href="#/admin/orders/${o.id}">#${o.id}</a> · ${esc(o.name)}${o.source === 'in_store' ? ' 🏪' : ''}<br><small class="muted">${ago(o.created_at)}</small></td><td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}</td></tr>`).join('')}</table>` : '<p class="muted">No orders yet.</p>'}
-    <h2>Low stock</h2>${(lowRes.data || []).length ? `<ul class="plain">${lowRes.data.map((x) => `<li><a href="#/admin/products/${x.id}">${esc(x.name)}</a> <b class="${x.stock === 0 ? 'down' : ''}">${x.stock === 0 ? 'out of stock' : x.stock + ' left'}</b></li>`).join('')}</ul>` : '<p class="muted">Everything is well stocked. ✅</p>'}</div></div>
-  <h2>Manage</h2><div class="qlinks">${links.map(([i, l, h]) => `<a href="${h}"><span>${i}</span>${l}</a>`).join('')}</div>`;
+` : ''}
+  <div class="two" style="margin-top:6px"><div>${rep ? `<h2>By location</h2>${locRows.length ? locRows.map(([k, v]) => `<div class="locbar"><span>${esc(lname[k] || 'Unassigned')}</span><div class="progress"><i style="width:${v / maxLoc * 100}%"></i></div><b>${money(v)}</b></div>`).join('') : '<p class="muted">No sales in this period.</p>'}
+    <h2>Top products</h2>${topRows.length ? `<table><tr><th>Product</th><th>Units</th><th>Revenue</th></tr>${topRows.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.u}</td><td>${money(v.r)}</td></tr>`).join('')}</table>` : '<p class="muted">No sales in this period.</p>'}` : ''}</div>
+  <div>${can('orders.view') ? `<h2>Recent orders</h2>${(recentRes.data || []).length ? `<table><tr><th>Order</th><th>Status</th><th>Total</th></tr>${recentRes.data.map((o) => `<tr><td><a href="#/admin/orders/${o.id}">#${o.id}</a> · ${esc(o.name)}${o.source === 'in_store' ? ' 🏪' : ''}<br><small class="muted">${ago(o.created_at)}</small></td><td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}</td></tr>`).join('')}</table>` : '<p class="muted">No orders yet.</p>'}
+` : ''}${can('inventory.view') ? `    <h2>Low stock</h2>${(lowRes.data || []).length ? `<ul class="plain">${lowRes.data.map((x) => `<li><a href="#/admin/products/${x.id}">${esc(x.name)}</a> <b class="${x.stock === 0 ? 'down' : ''}">${x.stock === 0 ? 'out of stock' : x.stock + ' left'}</b></li>`).join('')}</ul>` : '<p class="muted">Everything is well stocked. ✅</p>'}` : ''}</div></div>
+  <h2>Manage</h2><div class="qlinks">${links.filter(([, , h]) => { const sec = h.split('/')[2]; return h.startsWith('#/messages') ? can('messages') : !SECTION_PERM[sec] || can(SECTION_PERM[sec]); }).map(([i, l, h]) => `<a href="${h}"><span>${i}</span>${l}</a>`).join('')}</div>`;
 };
 pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
+  // team
+  document.getElementById('teamsearch')?.addEventListener('submit', (e) => { e.preventDefault(); const v = new FormData(e.target).get('search').trim(); location.hash = '#/admin/team' + (v ? '?search=' + encodeURIComponent(v) : ''); });
+  document.querySelectorAll('.rolesel').forEach((el) => el.addEventListener('change', async () => {
+    const { error } = await sb.rpc('set_role', { uid: el.dataset.id, new_role: el.value }); if (error) fail(error); else flash('Role updated.'); route();
+  }));
+  // invoices (list + detail)
+  document.getElementById('invsearch')?.addEventListener('submit', (e) => { e.preventDefault(); const n = new URLSearchParams(q); const v = new FormData(e.target).get('search').trim(); v ? n.set('search', v) : n.delete('search'); location.hash = '#/admin/invoices?' + n; });
+  document.getElementById('invcsv')?.addEventListener('click', () => download('invoices.csv', [['Number', 'Customer', 'Issued', 'Due', 'Total', 'Balance', 'Status'], ...[...document.querySelectorAll('#invtable tr[data-csv]')].map((r) => JSON.parse(r.dataset.csv))]));
+  document.querySelectorAll('[data-invact]').forEach((b) => b.addEventListener('click', async () => {
+    const act = b.dataset.invact; if (act === 'void' && !confirm('Void this invoice?')) return;
+    const { error } = await sb.rpc('set_invoice_status', { iid: Number(id), new_status: act }); error ? fail(error) : (flash(act === 'sent' ? 'Invoice marked as sent — the customer has been emailed if email is set up.' : 'Invoice updated.'), route());
+  }));
+  document.getElementById('invdel')?.addEventListener('click', async () => { if (!confirm('Delete this invoice permanently?')) return; const { error } = await sb.rpc('delete_invoice', { iid: Number(id) }); error ? fail(error) : (flash('Invoice deleted.'), (location.hash = '#/admin/invoices')); });
+  document.getElementById('payform')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+    const { error } = await sb.rpc('record_invoice_payment', { iid: Number(id), amount: Math.round(parseFloat(f.amount) * 100), pay_method: f.method, ref: f.ref || '', paid: f.paid || todayStr(), memo: '' }); error ? fail(error) : (flash('Payment recorded.'), route());
+  });
+  document.querySelectorAll('.delpay').forEach((b) => b.addEventListener('click', async () => { if (!confirm('Remove this payment?')) return; const { error } = await sb.rpc('delete_invoice_payment', { pid: Number(b.dataset.id) }); error ? fail(error) : route(); }));
+  // invoice editor
+  const ivl = document.getElementById('ivlines');
+  if (ivl && INV) {
+    const blank = () => ({ description: '', qty: 1, unit_price_cents: 0, taxable: true, product_id: null });
+    const retot = () => { document.getElementById('iv_totals').innerHTML = invTotalsHtml(); ivl.querySelectorAll('tr').forEach((tr, i) => { tr.querySelector('.amt').textContent = money(Math.round(INV.items[i].qty * INV.items[i].unit_price_cents)); }); };
+    const redraw = () => { ivl.innerHTML = INV.items.map(invLineRow).join(''); retot(); };
+    ivl.addEventListener('input', (e) => { const tr = e.target.closest('tr'), k = e.target.dataset.k; if (!tr || !k) return; const l = INV.items[Number(tr.dataset.i)];
+      if (k === 'description') l.description = e.target.value; else if (k === 'qty') l.qty = parseFloat(e.target.value) || 0; else if (k === 'price') l.unit_price_cents = Math.round((parseFloat(e.target.value) || 0) * 100); else if (k === 'taxable') l.taxable = e.target.checked; retot(); });
+    ivl.addEventListener('click', (e) => { const d = e.target.closest('[data-del]'); if (!d) return; INV.items.splice(Number(d.dataset.del), 1); if (!INV.items.length) INV.items.push(blank()); redraw(); });
+    document.getElementById('iv_add').addEventListener('click', () => { INV.items.push(blank()); redraw(); });
+    document.getElementById('iv_prod').addEventListener('change', (e) => { const pr = INV.prods.find((x) => String(x.id) === e.target.value); if (pr) { INV.items = INV.items.filter((l) => l.description.trim() || l.unit_price_cents); INV.items.push({ description: pr.name, qty: 1, unit_price_cents: pr.price_cents, taxable: true, product_id: pr.id }); redraw(); } e.target.value = ''; });
+    document.getElementById('iv_disc').addEventListener('input', (e) => { INV.discount_cents = Math.round((parseFloat(e.target.value) || 0) * 100); retot(); });
+    document.getElementById('iv_trate').addEventListener('input', (e) => { INV.tax_rate = parseFloat(e.target.value) || 0; retot(); });
+    document.getElementById('iv_tlabel').addEventListener('input', (e) => { INV.tax_label = e.target.value; retot(); });
+    document.getElementById('iv_name').addEventListener('input', (e) => { const c = INV.custs.find((x) => (x.name || x.email) === e.target.value); INV.customer_id = c ? c.id : ''; if (c) document.getElementById('iv_email').value = c.email; });
+    document.querySelectorAll('.duebtn').forEach((b) => b.addEventListener('click', () => { document.getElementById('iv_due').value = addDays(document.getElementById('iv_issue').value || todayStr(), Number(b.dataset.n)); }));
+    const save = async (send) => {
+      const v = (i) => document.getElementById(i).value, items = INV.items.filter((l) => l.description.trim()).map((l) => ({ description: l.description.trim(), qty: l.qty, unit_price_cents: l.unit_price_cents, taxable: l.taxable, product_id: l.product_id }));
+      if (!v('iv_name').trim()) return fail(new Error('Enter the customer name.')); if (!items.length) return fail(new Error('Add at least one line item with a description.')); if (items.some((l) => !(l.qty > 0))) return fail(new Error('Quantities must be above zero.'));
+      const inv = { id: INV.id, customer_id: INV.customer_id || null, customer_name: v('iv_name').trim(), customer_email: v('iv_email').trim(), customer_address: v('iv_addr'), issue_date: v('iv_issue'), due_date: v('iv_due'), notes: v('iv_notes'), terms: v('iv_terms'), discount_cents: INV.discount_cents, tax_rate: Number(INV.tax_rate) || 0, tax_label: INV.tax_label };
+      const { data, error } = await sb.rpc('save_invoice', { inv, items }); if (error) return fail(error);
+      if (send) { const r = await sb.rpc('set_invoice_status', { iid: data, new_status: 'sent' }); if (r.error) return fail(r.error); }
+      flash(send ? 'Invoice saved and marked as sent.' : 'Invoice saved.'); location.hash = `#/admin/invoices/${data}`;
+    };
+    document.getElementById('iv_save').addEventListener('click', () => save(false)); document.getElementById('iv_send').addEventListener('click', () => save(true));
+  }
+  // suppliers
+  document.querySelectorAll('.supform').forEach((fm) => fm.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = new FormData(fm), row = { name: f.get('name').trim(), contact_name: f.get('contact_name').trim(), phone: f.get('phone').trim(), email: f.get('email').trim(), notes: f.get('notes').trim(), active: f.has('active') };
+    const r = fm.dataset.id ? await sb.from('suppliers').update(row).eq('id', fm.dataset.id) : await sb.from('suppliers').insert(row);
+    r.error ? fail(r.error.code === '23505' ? new Error('A supplier with that name already exists.') : r.error) : (flash('Supplier saved.'), route());
+  }));
+  // purchase orders
+  const pol = document.getElementById('po_lines');
+  if (pol && PO) {
+    const tot = () => (document.getElementById('po_total').textContent = 'Total ' + money(Math.round(PO.lines.reduce((a, l) => a + (Number(l.qty) || 0) * (Number(l.unit_cost) || 0) * 100, 0))));
+    const draw = () => { pol.innerHTML = PO.lines.map((l, i) => `<tr data-i="${i}"><td><select data-k="product"><option value="">— choose a product —</option>${PO.prods.map((x) => `<option value="${x.id}" ${x.id === l.product_id ? 'selected' : ''}>${esc(x.name)} (${x.stock} in stock)</option>`).join('')}</select></td><td><input data-k="qty" type="number" min="1" value="${l.qty}" style="width:90px"></td><td><input data-k="cost" type="number" step="0.01" min="0" value="${Number(l.unit_cost).toFixed(2)}" style="width:104px"></td><td class="r amt">${money(Math.round((Number(l.qty) || 0) * (Number(l.unit_cost) || 0) * 100))}</td><td><button type="button" class="crm" data-del="${i}" aria-label="Remove line">✕</button></td></tr>`).join(''); tot(); };
+    draw();
+    pol.addEventListener('input', (e) => { const tr = e.target.closest('tr'), k = e.target.dataset.k; if (!tr || !k) return; const l = PO.lines[Number(tr.dataset.i)];
+      if (k === 'product') { l.product_id = Number(e.target.value) || ''; const pr = PO.prods.find((x) => x.id === l.product_id); if (pr && !Number(l.unit_cost)) l.unit_cost = pr.cost_cents / 100; draw(); return; }
+      if (k === 'qty') l.qty = parseInt(e.target.value, 10) || 0; else l.unit_cost = parseFloat(e.target.value) || 0; tr.querySelector('.amt').textContent = money(Math.round((Number(l.qty) || 0) * (Number(l.unit_cost) || 0) * 100)); tot(); });
+    pol.addEventListener('click', (e) => { const d = e.target.closest('[data-del]'); if (!d) return; PO.lines.splice(Number(d.dataset.del), 1); if (!PO.lines.length) PO.lines.push({ product_id: '', qty: 1, unit_cost: 0 }); draw(); });
+    document.getElementById('po_add').addEventListener('click', () => { PO.lines.push({ product_id: '', qty: 1, unit_cost: 0 }); draw(); });
+    const savePO = async () => {
+      const lines = PO.lines.filter((l) => l.product_id && l.qty > 0); if (!lines.length) { fail(new Error('Add at least one product.')); return null; }
+      const row = { supplier_id: Number(document.getElementById('po_sup').value) || null, location_id: Number(document.getElementById('po_loc').value) || null, expected_at: document.getElementById('po_exp').value || null, notes: document.getElementById('po_notes').value };
+      const r = PO.id ? await sb.from('purchase_orders').update(row).eq('id', PO.id).select('id').single() : await sb.from('purchase_orders').insert(row).select('id').single(); if (r.error) { fail(r.error); return null; }
+      const pid = r.data.id; await sb.from('purchase_order_items').delete().eq('po_id', pid);
+      const ins = await sb.from('purchase_order_items').insert(lines.map((l) => ({ po_id: pid, product_id: l.product_id, qty: l.qty, unit_cost_cents: Math.round(Number(l.unit_cost) * 100) }))); if (ins.error) { fail(ins.error); return null; }
+      PO.id = pid; return pid;
+    };
+    document.getElementById('po_save').addEventListener('click', async () => { const pid = await savePO(); if (pid) { flash('Purchase order saved.'); location.hash = `#/admin/purchasing/${pid}`; } });
+    document.getElementById('po_order')?.addEventListener('click', async () => { const pid = await savePO(); if (!pid) return; const { error } = await sb.from('purchase_orders').update({ status: 'ordered' }).eq('id', pid); error ? fail(error) : (flash('Marked as ordered.'), route()); });
+    document.getElementById('po_receive')?.addEventListener('click', async () => {
+      if (!confirm('Receive this order? The quantities will be added to stock at the delivery location and unit costs update your product costs.')) return;
+      const pid = await savePO(); if (!pid) return; const { error } = await sb.rpc('receive_purchase_order', { poid: pid }); error ? fail(error) : (flash('Stock received.'), route());
+    });
+    document.getElementById('po_cancel')?.addEventListener('click', async () => { if (!confirm('Cancel this purchase order?')) return; const { error } = await sb.from('purchase_orders').update({ status: 'cancelled' }).eq('id', PO.id); error ? fail(error) : route(); });
+  }
+  document.getElementById('ordsearch')?.addEventListener('submit', (e) => { e.preventDefault(); const n = new URLSearchParams(q); const v = new FormData(e.target).get('search').trim(); v ? n.set('search', v) : n.delete('search'); location.hash = '#/admin/orders?' + n; });
+  const upd = () => { const c = document.querySelectorAll('.osel:checked').length; const el = document.getElementById('selcount'); if (el) el.textContent = c; };
+  document.getElementById('selall')?.addEventListener('change', (e) => { document.querySelectorAll('.osel').forEach((x) => (x.checked = e.target.checked)); upd(); });
+  document.querySelectorAll('.osel').forEach((x) => x.addEventListener('change', upd));
+  document.getElementById('bulkapply')?.addEventListener('click', async () => {
+    const ids = [...document.querySelectorAll('.osel:checked')].map((x) => Number(x.value)), st = document.getElementById('bulkstatus').value;
+    if (!ids.length) return fail(new Error('Select at least one order.')); if (!confirm(`Mark ${ids.length} order${ids.length === 1 ? '' : 's'} as ${st}?`)) return;
+    let bad = 0; for (const oid of ids) { const { error } = await sb.rpc('set_order_status', { oid, new_status: st }); if (error) bad++; }
+    flash(bad ? `${ids.length - bad} updated, ${bad} failed.` : `${ids.length} order${ids.length === 1 ? '' : 's'} updated.`, bad ? 'error' : 'ok'); route();
+  });
+  document.getElementById('printbtn')?.addEventListener('click', () => window.print());
+  document.getElementById('noteform')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const { error } = await sb.from('order_notes').insert({ order_id: Number(id), note: new FormData(e.target).get('note').trim(), author: profile?.name || '' }); error ? fail(error) : route();
+  });
+  document.getElementById('refundform')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), amount = Math.round(parseFloat(f.amount) * 100);
+    if (!confirm(`Record a refund of ${money(amount)}?`)) return;
+    const { error } = await sb.rpc('refund_order', { oid: Number(id), amount, why: f.reason || '' }); error ? fail(error) : (flash('Refund recorded.'), route());
+  });
+  document.getElementById('custform')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), tags = f.tags.split(',').map((t) => t.trim()).filter(Boolean).slice(0, 12);
+    const { error } = await sb.from('customer_info').upsert({ user_id: e.target.dataset.id, notes: f.notes, tags, updated_at: new Date().toISOString() }); error ? fail(error) : flash('Saved.');
+  });
+  document.getElementById('setf')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), cents = (v) => Math.max(0, Math.round((parseFloat(v) || 0) * 100));
+    const value = { ship_flat_cents: cents(f.ship), free_over_cents: cents(f.free), tax_rate: Math.min(50, Math.max(0, parseFloat(f.tax_rate) || 0)), tax_label: (f.tax_label || 'Tax').trim().slice(0, 30),
+      biz: { legal_name: f.legal_name.trim(), address: f.address.trim(), phone: f.phone.trim(), email: f.email.trim(), tax_number: f.tax_number.trim() },
+      invoice_prefix: (f.invoice_prefix || 'INV').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10) || 'INV', invoice_due_days: Math.min(365, Math.max(0, parseInt(f.invoice_due_days, 10) || 14)), invoice_terms: f.invoice_terms.trim(), invoice_pay_info: f.invoice_pay_info.trim() };
+    const { error } = await sb.from('site_settings').upsert({ key: 'store', value, updated_at: new Date().toISOString() }); if (error) return fail(error);
+    applyStoreCfg(value); flash('Settings saved.'); route();
+  });
   document.getElementById('trackform')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
     const { error } = await sb.rpc('set_order_tracking', { oid: Number(id), carrier: f.carrier, number: f.number }); error ? fail(error) : (flash('Tracking saved.'), route());
@@ -1065,7 +1346,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       f.image_url = sb.storage.from('product-images').getPublicUrl(path).data.publicUrl;
     }
     const row = { name: f.name.trim(), category: f.category.trim(), description: f.description, price_cents: Math.round(parseFloat(f.price) * 100), unit: f.unit.trim(),
-      r_value: f.r_value.trim(), image_url: safeUrl(f.image_url.trim()), active: !!f.active };
+      r_value: f.r_value.trim(), image_url: safeUrl(f.image_url.trim()), active: !!f.active, cost_cents: Math.round((parseFloat(f.cost) || 0) * 100), reorder_point: parseInt(f.reorder_point, 10) || 0, reorder_qty: parseInt(f.reorder_qty, 10) || 0 };
     if (!pid) row.slug = (row.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'product') + '-' + Math.floor(Math.random() * 1000);
     const res = pid ? await sb.from('products').update(row).eq('id', pid).select('id').single() : await sb.from('products').insert(row).select('id').single();
     if (res.error) return fail(res.error);
@@ -1186,7 +1467,7 @@ const listHtml = (inbox, selected, filter = '') => {
 };
 pages.messages = async ([id], q) => {
   if (!session) { location.hash = '#/login'; return ''; }
-  const isAdmin = !!profile?.is_admin;
+  const isAdmin = can('messages');
   if (id === 'new') { // find or create the DM with a customer, then open it
     const to = isAdmin ? q.get('to') : session.user.id; if (!to) { location.hash = '#/messages'; return ''; }
     let c = (await sb.from('conversations').select('id').eq('customer_id', to).order('id', { ascending: false }).limit(1).maybeSingle()).data;
@@ -1294,6 +1575,7 @@ pages.page = async ([slug]) => {
 };
 
 // ---- locations, inventory, sales, point of sale (admin) ----
+const net = (o) => o.total_cents - (o.tax_cents || 0) - (o.refunded_cents || 0);
 const KINDS = { warehouse: 'Warehouse', store: 'Store', showroom: 'Showroom', other: 'Other' };
 let LOC = null, POS = null, SALES_ROWS = [], CMPP = null;
 const download = (name, rows) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map((r) => r.map(csvCell).join(',')).join('\n')], { type: 'text/csv' })); a.download = name; a.click(); };
@@ -1306,7 +1588,7 @@ function bucketize(orders, days) {
     bs.push({ d, v: 0, label: mode === 'month' ? d.toLocaleDateString(undefined, { month: 'short' }) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) });
   }
   const keyOf = (d) => { const t = new Date(d); if (mode === 'day') return isoDay(t); if (mode === 'month') return t.getFullYear() * 12 + t.getMonth(); return Math.floor((t - bs[0].d) / (7 * 864e5)); };
-  orders.forEach((o) => { const k = keyOf(o.created_at); const idx = mode === 'week' ? Math.min(Math.max(k, 0), n - 1) : bs.findIndex((b) => keyOf(b.d) === k); if (idx >= 0) bs[idx].v += o.total_cents; });
+  orders.forEach((o) => { const k = keyOf(o.created_at); const idx = mode === 'week' ? Math.min(Math.max(k, 0), n - 1) : bs.findIndex((b) => keyOf(b.d) === k); if (idx >= 0) bs[idx].v += net(o); });
   return bs;
 }
 function barChart(bs) {
@@ -1315,6 +1597,55 @@ function barChart(bs) {
     return `<g><title>${b.label}: ${money(b.v)}</title><rect x="${x + 2}" y="${175 - h}" width="${Math.max(w - 4, 2)}" height="${Math.max(h, 2)}" rx="3" fill="var(--brand)" opacity="${b.v ? 1 : .25}"/>${i % step === 0 ? `<text x="${x + w / 2}" y="200" font-size="12" text-anchor="middle" fill="var(--muted)">${b.label}</text>` : ''}</g>`; }).join('')}</svg>`;
 }
 const rangeChips = (base, q) => `<div class="chips">${[['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', '12 months'], ['all', 'All time']].map(([v, l]) => { const n = new URLSearchParams(q); n.set('days', v); return `<a class="chip ${(q.get('days') || '30') === v ? 'on' : ''}" href="${base}?${n}">${l}</a>`; }).join('')}</div>`;
+
+// ---- invoicing, purchasing, team, activity ----
+let INV = null, PO = null;
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const addDays = (d, n) => { const t = new Date(d + 'T12:00:00'); t.setDate(t.getDate() + n); return t.toISOString().slice(0, 10); };
+const invBal = (i) => i.total_cents - i.paid_cents;
+const invEff = (i) => (i.status === 'sent' && invBal(i) > 0 && i.due_date < todayStr() ? 'overdue' : i.status);
+const calcInv = (lines, discCents, rate) => {
+  let sub = 0, tsub = 0; lines.forEach((l) => { const amt = Math.round((Number(l.qty) || 0) * (Number(l.unit_price_cents) || 0)); sub += amt; if (l.taxable) tsub += amt; });
+  const disc = Math.min(Math.max(discCents || 0, 0), sub), taxable = sub ? tsub - Math.round(disc * tsub / sub) : 0, tax = Math.round(taxable * (Number(rate) || 0) / 100);
+  return { sub, disc, tax, total: sub - disc + tax };
+};
+const invDoc = (inv, items, pays) => {
+  const b = STORE.biz || {}, bal = invBal(inv), eff = invEff(inv);
+  return `<div class="invdoc"><div class="invtop"><div><h2 style="margin:0">${esc(b.legal_name || theme.name || 'Gomi Insulation')}</h2><p class="muted" style="margin:4px 0 0">${[b.address, b.phone, b.email].filter(Boolean).map(esc).join('<br>')}${b.tax_number ? `<br>${esc(inv.tax_label || STORE.tax_label || 'Tax')} no. ${esc(b.tax_number)}` : ''}</p></div>
+    <div class="invmeta"><h1 style="margin:0">INVOICE</h1><table><tr><td>Number</td><td><b>${esc(inv.number)}</b></td></tr><tr><td>Issued</td><td>${esc(inv.issue_date)}</td></tr><tr><td>Due</td><td>${esc(inv.due_date)}</td></tr><tr><td>Status</td><td><span class="status ${eff === 'overdue' ? 'cancelled' : eff}">${eff}</span></td></tr></table></div></div>
+    <div class="billto"><small class="muted">BILL TO</small><br><b>${esc(inv.customer_name)}</b>${inv.customer_address ? '<br>' + esc(inv.customer_address).replace(/\n/g, '<br>') : ''}${inv.customer_email ? '<br>' + esc(inv.customer_email) : ''}</div>
+    <table class="invitems"><tr><th>Description</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr>${items.map((i) => `<tr><td>${esc(i.description)}${i.taxable ? '' : ' <small class="muted">(no tax)</small>'}</td><td class="r">${Number(i.qty)}</td><td class="r">${money(i.unit_price_cents)}</td><td class="r">${money(Math.round(Number(i.qty) * i.unit_price_cents))}</td></tr>`).join('')}</table>
+    <dl class="totals" style="margin-left:auto"><dt>Subtotal</dt><dd>${money(inv.subtotal_cents)}</dd>${inv.discount_cents ? `<dt>Discount</dt><dd>−${money(inv.discount_cents)}</dd>` : ''}${inv.tax_cents ? `<dt>${esc(inv.tax_label || 'Tax')} (${Number(inv.tax_rate)}%)</dt><dd>${money(inv.tax_cents)}</dd>` : ''}<dt>Total</dt><dd><b>${money(inv.total_cents)}</b></dd>${inv.paid_cents ? `<dt>Paid</dt><dd>−${money(inv.paid_cents)}</dd>` : ''}<dt><b>Balance due</b></dt><dd><b style="font-size:1.2rem">${money(bal)}</b></dd></dl>
+    ${(pays || []).length ? `<h3 style="margin-bottom:6px">Payments received</h3><table class="invitems">${pays.map((p) => `<tr><td>${esc(p.paid_on)}</td><td>${esc(p.method || 'Payment')}</td><td class="r">${money(p.amount_cents)}</td></tr>`).join('')}</table>` : ''}
+    ${inv.notes ? `<p style="white-space:pre-wrap"><b>Notes</b><br>${esc(inv.notes)}</p>` : ''}${inv.terms ? `<p class="muted" style="white-space:pre-wrap"><b>Terms</b><br>${esc(inv.terms)}</p>` : ''}${bal > 0 && STORE.invoice_pay_info ? `<div class="trackbox"><span style="white-space:pre-wrap"><b>How to pay</b><br>${esc(STORE.invoice_pay_info)}</span></div>` : ''}</div>`;
+};
+pages.invoice = async ([id], q) => {
+  let inv, items, pays;
+  if (q.get('k')) { const { data } = await sb.rpc('get_invoice_public', { iid: Number(id), k: q.get('k') }); if (data) { inv = data; items = data.items; pays = data.payments; } }
+  else if (session) { inv = (await sb.from('invoices').select('*').eq('id', id).maybeSingle()).data; if (inv) { items = (await sb.from('invoice_items').select('*').eq('invoice_id', id).order('sort')).data || []; pays = (await sb.from('invoice_payments').select('*').eq('invoice_id', id).order('id')).data || []; } }
+  if (!inv) return '<h1>Invoice not found</h1><p class="muted">The link may be wrong, or you may need to <a href="#/login">log in</a>.</p>';
+  document.title = `Invoice ${inv.number}`;
+  return `<div class="row noprint" style="justify-content:flex-end;margin-bottom:10px"><button class="btn ghost" id="printbtn" type="button">🖨 Print / save as PDF</button></div>${invDoc(inv, items, pays)}`;
+};
+pages.invoice.after = () => document.getElementById('printbtn')?.addEventListener('click', () => window.print());
+
+const invLineRow = (l, i) => `<tr data-i="${i}"><td><input data-k="description" value="${esc(l.description)}" placeholder="Description" maxlength="500" required></td><td><input data-k="qty" type="number" step="0.001" min="0.001" value="${l.qty}" style="width:84px"></td>
+  <td><input data-k="price" type="number" step="0.01" min="0" value="${(l.unit_price_cents / 100).toFixed(2)}" style="width:104px"></td><td class="c"><input data-k="taxable" type="checkbox" ${l.taxable ? 'checked' : ''} aria-label="Taxable"></td><td class="r amt">${money(Math.round(l.qty * l.unit_price_cents))}</td><td><button type="button" class="crm" data-del="${i}" aria-label="Remove line">✕</button></td></tr>`;
+const invTotalsHtml = () => { const t = calcInv(INV.items, INV.discount_cents, INV.tax_rate); return `<dl class="totals" style="margin-left:auto"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>${esc(INV.tax_label || 'Tax')} (${Number(INV.tax_rate) || 0}%)</dt><dd>${money(t.tax)}</dd><dt><b>Total</b></dt><dd><b>${money(t.total)}</b></dd></dl>`; };
+
+const fmtAudit = (a) => {
+  const d = a.detail || {}, mv = (x) => (Array.isArray(x) ? `${typeof x[0] === 'number' ? money(x[0]) : esc(x[0])} → ${typeof x[1] === 'number' ? money(x[1]) : esc(x[1])}` : esc(x));
+  switch (a.action) {
+    case 'order.status': return `Order #${esc(a.entity_id)}: ${esc(d.from)} → ${esc(d.to)}`;
+    case 'order.refund': return `Refunded ${money(d.amount_cents)} on order #${esc(a.entity_id)}${d.reason ? ' — ' + esc(d.reason) : ''}`;
+    case 'product.updated': return `Product “${esc(d.product || '')}”: ${Object.entries(d).filter(([k]) => k !== 'product').map(([k, v]) => `${k} ${mv(v)}`).join(', ')}`;
+    case 'product.created': return `Product created: ${esc(d.name)}`; case 'product.deleted': return `Product deleted: ${esc(d.name)}`;
+    case 'team.role_changed': return `${esc(d.email)}: ${esc(d.from)} → ${esc(d.to)}`;
+    case 'invoice.payment': return `Payment ${money(d.amount_cents)} on invoice #${esc(a.entity_id)}${d.method ? ' (' + esc(d.method) + ')' : ''}`;
+    case 'purchase.received': return `Received purchase order #${esc(a.entity_id)} into stock`;
+    default: return esc(a.action.replace('.', ' ')) + (a.entity_id ? ` #${esc(a.entity_id)}` : '');
+  }
+};
 
 // ---- router ----
 async function route() {
@@ -1339,5 +1670,4 @@ sb.auth.onAuthStateChange((ev) => {
   if (ev === 'SIGNED_OUT') { session = null; profile = null; unread = { all: 0, msg: 0 }; if (notifChan) { sb.removeChannel(notifChan); notifChan = null; } renderNav(); }
 });
 applyBranding();
-loadSiteTheme(); loadPages();
-loadSession().then(route);
+Promise.allSettled([loadSiteTheme(), loadPages(), loadSession()]).then(route);

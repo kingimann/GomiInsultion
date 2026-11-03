@@ -174,10 +174,13 @@ const packRow = (k, i, p) => { const u = su(p?.unit) || 'bag', tot = k.unit_pric
 const packCalc = (row, single) => { const u = parseInt(row.querySelector('[data-f=units]').value, 10), t = parseFloat(row.querySelector('[data-f=price]').value), out = row.querySelector('.packcalc'); if (!(u >= 2) || !(t >= 0)) { out.textContent = ''; return; }
   const per = Math.round(t * 100 / u), real = per * u, alone = single * u, diff = alone - real; out.innerHTML = `= <b>${money(per)}</b> per bag${real !== Math.round(t * 100) ? ` (bundle will be ${money(real)})` : ''} · ${u} single bags cost ${money(alone)} → ${diff > 0 ? `<b style="color:var(--ok)">customer saves ${money(diff)} (${Math.round(diff / alone * 100)}%)</b>` : diff < 0 ? '<b style="color:var(--err)">bundle costs MORE than buying bags separately</b>' : 'same price'}`; };
 const packName = (k, p) => k.label || `Bundle of ${k.units} ${su(p.unit)}s`;
-const packTable = (p) => { const ks = (p.packs || []).filter((k) => k.unit_price_cents < p.price_cents); if (!ks.length) return ''; const u = su(p.unit);
-  return `<div class="packs"><h3>Choose your size</h3><div class="packrow"><div><b>Single ${esc(u)}</b><small class="muted">${money(p.price_cents)} each</small></div><span></span>${p.stock > 0 ? `<button type="button" class="btn ghost" data-addqty="1">Add 1</button>` : ''}</div>
-    ${ks.map((k) => { const alone = p.price_cents * k.units, tot = k.unit_price_cents * k.units; return `<div class="packrow best"><div><b>${esc(packName(k, p))}</b><small class="muted"><b>${money(tot)}</b> for ${k.units} ${esc(u)}s · ${money(k.unit_price_cents)} per ${esc(u)}</small><small class="muted">${k.units} single ${esc(u)}s would be ${money(alone)} — you save ${money(alone - tot)}</small></div><span class="savepill">Save ${packSave(p, k)}%</span>${p.stock >= k.units ? `<button type="button" class="btn" data-addqty="${k.units}">Add bundle</button>` : '<small class="muted">Not enough stock</small>'}</div>`; }).join('')}
-    <small class="muted">Mix and match — buy several bundles, or a bundle plus extra ${esc(u)}s. The cart works out the best price.</small></div>`; };
+const bundleOptions = (p) => { const ks = (p.packs || []).filter((k) => k.unit_price_cents < p.price_cents).map((k) => ({ ...k })); const n = p.bags_per_bundle;
+  if (n && !(p.packs || []).some((k) => k.units === n)) ks.push({ units: n, unit_price_cents: p.price_cents, label: `Bundle of ${n} ${su(p.unit)}s`, same: true }); return ks.sort((a, b) => a.units - b.units); };
+const stepper = (cls, max) => `<div class="qty sm"><button type="button" data-step="-1" aria-label="Less">−</button><input class="${cls}" type="number" value="1" min="1" max="${max}" aria-label="Quantity"><button type="button" data-step="1" aria-label="More">+</button></div>`;
+const packTable = (p) => { const ks = bundleOptions(p); if (!ks.length) return ''; const u = su(p.unit);
+  return `<div class="packs"><h3>Buy by the ${esc(u)} or by the bundle</h3><div class="packrow"><div><b>1 ${esc(u)}</b><small class="muted">${money(p.price_cents)} each</small></div><span></span>${p.stock > 0 ? `${stepper('packqty', p.stock)}<button type="button" class="btn ghost" data-addqty="1">Add ${esc(u)}</button>` : ''}</div>
+    ${ks.map((k) => { const alone = p.price_cents * k.units, tot = k.unit_price_cents * k.units, maxb = Math.floor(p.stock / k.units); return `<div class="packrow ${k.same ? '' : 'best'}"><div><b>1 ${esc(packName(k, p).replace(/^Bundle of \d+ .*$/i, 'bundle'))} <span class="muted">(${k.units} ${esc(u)}s)</span></b><small class="muted"><b>${money(tot)}</b> per bundle${k.same ? '' : ` · ${money(k.unit_price_cents)} per ${esc(u)}`}</small>${k.same ? '' : `<small class="muted">${k.units} single ${esc(u)}s would be ${money(alone)} — you save ${money(alone - tot)}</small>`}</div>${k.same ? '' : `<span class="savepill">Save ${packSave(p, k)}%</span>`}${maxb >= 1 ? `${stepper('packqty', maxb)}<button type="button" class="btn" data-addqty="${k.units}">Add bundle</button>` : '<small class="muted">Not enough stock for a bundle</small>'}</div>`; }).join('')}
+    <small class="muted">Mix and match — bundles and loose ${esc(u)}s can be in the same order${bundleOptions(p).some((k) => !k.same) ? '; the cart works out the best price' : ''}.</small></div>`; };
 const packHint = (p) => { const ks = (p.packs || []).filter((k) => k.unit_price_cents < p.price_cents).sort((a, b) => a.unit_price_cents - b.unit_price_cents); return ks.length ? `<small class="packhint">${esc(packName(ks[0], p))}: ${money(ks[0].unit_price_cents * ks[0].units)} (${money(ks[0].unit_price_cents)} each · save ${packSave(p, ks[0])}%)</small>` : ''; };
 const onSale = (p) => p.compare_at_cents > p.price_cents;
 const salePct = (p) => Math.round((1 - p.price_cents / p.compare_at_cents) * 100);
@@ -309,7 +312,7 @@ pages.product = async ([slug]) => {
   <div class="detail"><div>${gallery}</div><div><span class="tag">${esc(p.category)}</span>${p.brand ? ` <a class="brandtag" href="#/shop?brand=${encodeURIComponent(p.brand)}">${esc(p.brand)}</a>` : ''}<h1>${esc(p.name)}</h1>
   <p class="price big">${priceHtml(p)} <small>per ${esc(p.unit)}</small>${onSale(p) ? ` <span class="savepill">Save ${salePct(p)}%</span>` : ''}</p>${p.r_value ? `<p><strong>R-value:</strong> ${esc(p.r_value)}</p>` : ''}<p>${esc(p.description)}</p>
   ${packTable(p)}
-  ${p.stock > 0 ? `<form class="row" id="add"><div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="qty" value="1" min="1" max="${p.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div><button class="btn">Add to cart</button></form>
+  ${p.stock > 0 && !bundleOptions(p).length ? `<form class="row" id="add"><div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="qty" value="1" min="1" max="${p.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div><button class="btn">Add to cart</button></form>
   <p class="stockpill ${p.stock <= 10 ? 'low' : ''}"><i></i>${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : `<p class="flash error" style="margin-bottom:8px">Out of stock</p><form id="alertform" class="row" data-id="${p.id}" style="flex-wrap:nowrap"><input name="email" type="email" required placeholder="Email me when it's back" value="${esc(session?.user.email || '')}" aria-label="Email"><button class="btn">:ic-bell: Notify me</button></form>`}
   <ul class="trust"><li>:ic-truck: ${FREE_SHIP > 0 ? `Free shipping on orders over ${money(FREE_SHIP)}` : `Flat ${money(SHIP)} delivery`}</li><li>:ic-chat: Questions? <a href="#/messages">Message us</a> or <a href="#/quote">request a quote</a></li></ul>
   ${compareHtml(p)}
@@ -320,10 +323,10 @@ pages.product = async ([slug]) => {
 };
 const coverageOf = (p) => { const m = /(\d+)\s*sq\s*ft/i.exec(p.unit); return m ? Number(m[1]) : 0; };
 pages.product.after = ([slug]) => {
-  const buy = document.getElementById('add'); if (buy && window.IntersectionObserver) {
+  const buy = document.getElementById('add') || document.querySelector('.packs'); if (buy && window.IntersectionObserver) {
     const bar = document.createElement('div'); bar.className = 'buybar'; bar.hidden = true;
     bar.innerHTML = `<span><b>${esc(document.querySelector('h1')?.textContent || '')}</b><small>${document.querySelector('.price.big')?.textContent.replace(/\s+/g, ' ').trim() || ''}</small></span><button class="btn" type="button">Add to cart</button>`;
-    document.body.appendChild(bar); bar.querySelector('button').addEventListener('click', () => buy.requestSubmit());
+    document.body.appendChild(bar); bar.querySelector('button').addEventListener('click', () => (buy.requestSubmit ? buy.requestSubmit() : buy.scrollIntoView({ behavior: 'smooth', block: 'center' })));
     const io = new IntersectionObserver(([en]) => { bar.hidden = en.isIntersecting; }, { threshold: 0 }); io.observe(buy);
     const gone = () => { bar.remove(); io.disconnect(); window.removeEventListener('hashchange', gone); }; window.addEventListener('hashchange', gone);
   }
@@ -349,9 +352,10 @@ pages.product.after = ([slug]) => {
       area.addEventListener('input', upd); document.getElementById('waste').addEventListener('input', upd); upd();
     });
   }
+  document.querySelectorAll('.packs [data-step]').forEach((b) => b.addEventListener('click', () => { const inp = b.closest('.qty').querySelector('input'), max = Number(inp.max) || 9999; inp.value = Math.min(max, Math.max(1, (parseInt(inp.value, 10) || 1) + Number(b.dataset.step))); }));
   document.querySelectorAll('[data-addqty]').forEach((b) => b.addEventListener('click', async () => {
-    const { data: p } = await sb.from('products').select('id,stock,name').eq('slug', slug).single(); const cart = getCart();
-    cart[p.id] = Math.min((cart[p.id] || 0) + Number(b.dataset.addqty), p.stock); setCart(cart); flash(`Added to your cart: ${b.textContent.replace(/^Add\s*/, '') || '1'} of ${p.name}.`); location.hash = '#/cart';
+    const { data: p } = await sb.from('products').select('id,stock,name').eq('slug', slug).single(); const cart = getCart(), n = Math.max(1, parseInt(b.closest('.packrow')?.querySelector('.packqty')?.value, 10) || 1), mult = Number(b.dataset.addqty);
+    cart[p.id] = Math.min((cart[p.id] || 0) + n * mult, p.stock); setCart(cart); flash(`Added to your cart: ${n} × ${b.textContent.replace(/^Add\s*/, '')} of ${p.name}.`); location.hash = '#/cart';
   }));
   document.getElementById('add')?.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -378,9 +382,9 @@ pages.cart = async () => {
   const t = totals(lines.reduce((a, l) => a + lineTotal(l), 0));
   const left = FREE_SHIP > 0 ? FREE_SHIP - (t.sub - t.disc) : 0;
   return `<h1>Your cart</h1><div class="cartwrap"><form id="cartform"><div class="citems">${lines.map((l) => `<div class="citem"><a href="#/product/${esc(l.slug)}" class="cthumb">${img(l)}</a>
-    <div class="cinfo"><a class="cname" href="#/product/${esc(l.slug)}">${esc(l.name)}</a><small class="muted">${packSplit(l, l.qty).map((r) => `${r.qty} × ${money(r.price)}${r.label ? ' (' + esc(r.label) + ')' : ''}`).join(' + ')} per ${esc(l.unit)}</small>${(l.packs || []).some((k) => k.units > l.qty && k.unit_price_cents < l.price_cents) ? (() => { const k = l.packs.filter((x) => x.units > l.qty && x.unit_price_cents < l.price_cents).sort((a, b) => a.units - b.units)[0]; return `<small class="packnudge">Add ${k.units - l.qty} more to get the ${esc(packName(k, l))} price (save ${packSave(l, k)}% per ${esc(su(l.unit))})</small>`; })() : ''}</div>
+    <div class="cinfo"><a class="cname" href="#/product/${esc(l.slug)}">${esc(l.name)}</a>${(() => { const N = l.bags_per_bundle || (l.packs || []).map((k) => k.units).sort((a, b) => a - b)[0]; return N ? `<small class="muted">${Math.floor(l.qty / N)} bundle${Math.floor(l.qty / N) === 1 ? '' : 's'} + ${l.qty % N} ${esc(su(l.unit))}${l.qty % N === 1 ? '' : 's'} (${N} per bundle)</small>` : ''; })()}<small class="muted">${packSplit(l, l.qty).map((r) => `${r.qty} × ${money(r.price)}${r.label ? ' (' + esc(r.label) + ')' : ''}`).join(' + ')} per ${esc(l.unit)}</small>${(l.packs || []).some((k) => k.units > l.qty && k.unit_price_cents < l.price_cents) ? (() => { const k = l.packs.filter((x) => x.units > l.qty && x.unit_price_cents < l.price_cents).sort((a, b) => a.units - b.units)[0]; return `<small class="packnudge">Add ${k.units - l.qty} more to get the ${esc(packName(k, l))} price (save ${packSave(l, k)}% per ${esc(su(l.unit))})</small>`; })() : ''}</div>
     <div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="${l.id}" value="${l.qty}" min="0" max="${l.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div>
-    <b class="ctotal">${money(lineTotal(l))}</b><button type="button" class="crm" data-id="${l.id}" aria-label="Remove ${esc(l.name)}">:ic-x:</button></div>`).join('')}</div></form>
+    <b class="ctotal">${money(lineTotal(l))}</b>${(l.bags_per_bundle || (l.packs || []).length) ? `<span class="bundlectl"><button type="button" class="link" data-bd="-1" data-id="${l.id}" data-n="${l.bags_per_bundle || [...l.packs].sort((a, b) => a.units - b.units)[0].units}">− bundle</button><button type="button" class="link" data-bd="1" data-id="${l.id}" data-n="${l.bags_per_bundle || [...l.packs].sort((a, b) => a.units - b.units)[0].units}">+ bundle</button></span>` : ''}<button type="button" class="crm" data-id="${l.id}" aria-label="Remove ${esc(l.name)}">:ic-x:</button></div>`).join('')}</div></form>
   <aside class="summary"><h3>Order summary</h3>${FREE_SHIP > 0 ? `<p class="muted" style="margin:0">${left > 0 ? `Add <b>${money(left)}</b> more for free shipping` : ':ic-award: You qualify for free shipping!'}</p><div class="progress"><i style="width:${Math.min(100, (t.sub - t.disc) / FREE_SHIP * 100)}%"></i></div>` : ''}
   <form id="promo" class="row" style="flex-wrap:nowrap"><input name="code" placeholder="Discount code" value="${esc(getPromo()?.code || '')}" aria-label="Discount code" style="flex:1;min-width:0"><button class="btn ghost">Apply</button></form>
   ${totalsHtml(t)}<a class="btn block" href="#/checkout">Checkout</a><a class="muted" href="#/shop" style="text-align:center;display:block;margin-top:10px">← Continue shopping</a></aside></div>`;
@@ -396,7 +400,7 @@ pages.cart.after = () => {
   });
   const cf = document.getElementById('cartform'); let tm = null;
   cf?.addEventListener('change', () => { clearTimeout(tm); tm = setTimeout(() => cf.requestSubmit(), 350); });
-  cf?.addEventListener('click', (e) => { const r = e.target.closest('.crm'); if (r) { cf.querySelector(`input[name="${r.dataset.id}"]`).value = 0; cf.requestSubmit(); } });
+  cf?.addEventListener('click', (e) => { const bd = e.target.closest('[data-bd]'); if (bd) { const inp = cf.querySelector(`input[name="${bd.dataset.id}"]`), max = Number(inp.max) || 9999; inp.value = Math.max(0, Math.min(max, (parseInt(inp.value, 10) || 0) + Number(bd.dataset.bd) * Number(bd.dataset.n))); cf.requestSubmit(); return; } const r = e.target.closest('.crm'); if (r) { cf.querySelector(`input[name="${r.dataset.id}"]`).value = 0; cf.requestSubmit(); } });
   document.getElementById('cartform')?.addEventListener('submit', (e) => {
   e.preventDefault(); const cart = {};
   for (const [id, v] of new FormData(e.target)) { const q = parseInt(v, 10); if (q > 0) cart[id] = q; }
@@ -1271,7 +1275,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
       <div id="packrows">${packs.map((k, i) => packRow(k, i, p)).join('')}</div><button type="button" class="btn ghost" id="addpack">+ Add a bundle size</button></fieldset>
     <label>Usual reorder quantity<input name="reorder_qty" type="number" min="0" value="${p.reorder_qty ?? 0}"></label>${stockFields}
     ${p.image_url ? `<img src="${esc(safeUrl(p.image_url))}" alt="" style="max-width:160px;border-radius:10px">` : ''}
-    <label>Photo (JPG, PNG, WebP, up to 5 MB)<input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif"></label>
+    <label>Photo (JPG, PNG or WebP — big photos are resized automatically)<input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif"></label>
     <input type="hidden" name="image_url" value="${esc(p.image_url || '')}">
     ${extras.length ? `<div class="extras">${extras.map((x) => `<figure><img src="${esc(x.url)}" alt=""><button type="button" class="link delimg" data-id="${x.id}" style="color:var(--err)">Remove</button></figure>`).join('')}</div>` : ''}
     <label>More photos for the gallery (optional, you can pick several)<input type="file" name="extras" accept="image/jpeg,image/png,image/webp,image/gif" multiple></label><label>Photo description (alt text) <small class="muted">for accessibility and image search</small><input name="image_alt" maxlength="200" value="${esc(p.image_alt || '')}" placeholder="e.g. Roll of R-13 fiberglass batt insulation"></label>${seoFields(p, p.name, '/product/' + (p.slug || 'your-product') + '/')}<label class="check"><input type="checkbox" name="active" ${p.id && !p.active ? '' : 'checked'}> Visible in store</label><button class="btn">Save</button></form>`;
@@ -1697,7 +1701,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       else if (b.dataset.ins) insert(b.dataset.ins);
     });
     document.getElementById('pg_img')?.addEventListener('change', async (e) => {
-      const file = e.target.files[0]; if (!file) return; if (file.size > 5 * 1024 * 1024) return fail(new Error('Image must be under 5 MB.'));
+      let file = e.target.files[0]; if (!file) return; if (file.size > 30 * 1024 * 1024) return fail(new Error('Image must be under 30 MB.')); file = await prepImage(file); if (file.size > 5 * 1024 * 1024) return fail(new Error('Image is still over 5 MB after resizing.'));
       const path = `pages/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-60)}`;
       const up = await sb.storage.from('product-images').upload(path, file, { contentType: file.type }); if (up.error) return fail(up.error);
       insert(`![${file.name.replace(/\.[^.]+$/, '')}](${sb.storage.from('product-images').getPublicUrl(path).data.publicUrl})`); e.target.value = '';
@@ -1818,10 +1822,10 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   document.querySelectorAll('.delimg').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.from('product_images').delete().eq('id', b.dataset.id); error ? fail(error) : route(); }));
   document.getElementById('pf')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), pid = e.target.dataset.id;
-    const file = f.image; delete f.image; delete f.extras;
+    let file = f.image; delete f.image; delete f.extras;
     const extraFiles = new FormData(e.target).getAll('extras').filter((x) => x && x.size);
     if (file && file.size) {
-      if (file.size > 5 * 1024 * 1024) return fail(new Error('Photo must be under 5 MB.'));
+      if (file.size > 30 * 1024 * 1024) return fail(new Error('Photo must be under 30 MB.')); file = await prepImage(file); if (file.size > 5 * 1024 * 1024) return fail(new Error('Photo is still over 5 MB after resizing.'));
       const path = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-60)}`;
       const up = await sb.storage.from('product-images').upload(path, file, { contentType: file.type });
       if (up.error) return fail(up.error);
@@ -1843,8 +1847,8 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       if (el.value === el.dataset.orig && pid) continue; const v = parseInt(el.value, 10); if (!(v >= 0) || (!pid && v === 0)) continue;
       const r = await sb.rpc('set_inventory', { pid: res.data.id, lid: Number(el.name.slice(4)), new_qty: v, note: pid ? 'Set from product editor' : 'Initial stock' }); if (r.error) return fail(r.error);
     }
-    for (const [n, xf] of extraFiles.entries()) {
-      if (xf.size > 5 * 1024 * 1024) { flash('A gallery photo was over 5 MB and was skipped.', 'error'); continue; }
+    for (let [n, xf] of extraFiles.entries()) {
+      if (xf.size > 30 * 1024 * 1024) { flash('A gallery photo was over 30 MB and was skipped.', 'error'); continue; } xf = await prepImage(xf); if (xf.size > 5 * 1024 * 1024) { flash('A gallery photo was still over 5 MB after resizing and was skipped.', 'error'); continue; }
       const path = `${Date.now()}-${n}-${xf.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-60)}`;
       const up = await sb.storage.from('product-images').upload(path, xf, { contentType: xf.type });
       if (up.error) return fail(up.error);
@@ -2093,7 +2097,8 @@ pages.messages.after = () => {
     try {
       if (!DM.conv) { const r = await sb.from('conversations').insert({ customer_id: session.user.id, subject: 'Direct message' }).select('*').single(); if (r.error) throw r.error; DM.conv = r.data; joinChannel(); }
       const attachments = [];
-      for (const f of DM.pending) {
+      for (let f of DM.pending) {
+        f = await prepImage(f);
         const path = `conv_${DM.conv.id}/${crypto.randomUUID()}-${f.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-70)}`;
         const up = await sb.storage.from('message-files').upload(path, f, { contentType: f.type || 'application/octet-stream' }); if (up.error) throw up.error;
         attachments.push({ path, name: f.name, type: f.type || 'application/octet-stream', size: f.size });
@@ -2205,6 +2210,18 @@ const calcInv = (lines, discCents, rate) => {
 };
 let LASTDOC = null;
 function loadScript(src) { return new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res(); const sc = document.createElement('script'); sc.src = src; sc.onload = res; sc.onerror = () => rej(new Error('Could not load the PDF tools (' + src + '). Refresh the page and try again.')); document.head.appendChild(sc); }); }
+// Shrinks big photos before upload (max 1600px on the longest side, WebP). GIFs/SVGs and already-small images are left alone.
+async function prepImage(file, max = 1600, quality = 0.85) {
+  if (!file || !/^image\/(jpeg|png|webp)$/.test(file.type)) return file;
+  try {
+    const bmp = await createImageBitmap(file), scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    if (scale === 1 && file.size < 400 * 1024) { bmp.close?.(); return file; }
+    const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale)), cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+    const cx = cv.getContext('2d'); cx.imageSmoothingQuality = 'high'; cx.drawImage(bmp, 0, 0, w, h); bmp.close?.();
+    const blob = await new Promise((res) => cv.toBlob(res, 'image/webp', quality)); if (!blob || blob.size >= file.size && scale === 1) return file;
+    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.webp', { type: 'image/webp' });
+  } catch { return file; }
+}
 async function buildPdf() {
   if (!LASTDOC) return null; const { inv, items, pays } = LASTDOC, est = 'expires_on' in inv, b = STORE.biz || {};
   await loadScript('vendor/jspdf.umd.min.js'); await loadScript('vendor/jspdf.plugin.autotable.min.js');

@@ -191,3 +191,7 @@ The shop now has a filter sidebar (category and brand with product counts, price
 ## Bundles + bags in inventory
 
 Stock is stored in bags. Each product can have **Bags / bundle** (it varies, e.g. 2–6) — set it right in **Admin → Inventory**. The table then shows every total as "3 bundles + 5 bags", and the **Bundles + bags** switch lets you count stock as bundles plus loose bags (the app converts to bags and records the change in the activity log). Changing a product's bundle size also updates its selling bundle (price per bag stays the same, so the bundle total changes). Products sold only as bags just leave it empty. Warehouse and catalog staff can edit it.
+
+## Buy one bag or one bundle · automatic photo resizing
+
+Products with a bundle size now show **Buy by the bag or by the bundle** on the product page — a separate quantity box and Add button for bags and for bundles (a bundle with no special price is simply N × the bag price, with a discounted bundle price used when one is set). The cart shows "2 bundles + 1 bag" with **− bundle / + bundle** buttons. Product photos can no longer break the page layout (they fit their box), and photos you upload (products, gallery, pages, chat) are **resized automatically** to at most 1600px and converted to WebP before upload (small images, GIFs and non-photos are left alone), so a 20 MB camera photo is fine.

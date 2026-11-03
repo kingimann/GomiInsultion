@@ -592,3 +592,16 @@ kbd{font:inherit;font-size:.72rem;border:1px solid var(--line);border-radius:6px
 .invcell{min-width:118px}.invbags,.invbund{display:flex;gap:4px;align-items:center;flex-wrap:wrap}.invbund input,.invbags input{width:64px}
 #invtable:not(.bymode) .invbund,#invtable:not(.bymode) .invsub{display:none}#invtable.bymode tr:not([data-n='']) .invbags{display:none}
 .invsub,.invtotsub{display:block;font-size:.76rem}.invn{width:70px}
+
+/* buy a bag or a bundle */
+.packrow .qty.sm{flex:none}.packrow .qty.sm input{width:46px}.packrow .btn{white-space:nowrap}
+.bundlectl{display:flex;gap:10px;grid-column:1/-1}.bundlectl .link{font-size:.82rem}
+
+/* product images never overflow their column */
+.detail{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.detail>div{min-width:0}
+.gallery{min-width:0}.gallery img.big{width:100%;height:auto;max-width:100%;aspect-ratio:1;object-fit:contain;background:#fff;border:1px solid var(--line)}
+.detail img,.prose img,.card img{max-width:100%}
+.card>a img{width:100%;object-fit:cover}
+@media(max-width:760px){.detail{grid-template-columns:minmax(0,1fr)}}
+.packrow .qty.sm{display:inline-flex;flex-direction:row;align-items:center}.packrow .qty.sm button{width:34px;height:38px}.packrow .qty.sm input{width:46px;text-align:center;border:0;background:transparent}
+.packrow{justify-content:space-between}

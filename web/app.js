@@ -230,7 +230,7 @@ const card = (p) => `<article class="card">${p.stock <= 0 ? '<span class="badge"
 const getPromo = () => { try { return JSON.parse(localStorage.getItem('promo') || 'null'); } catch { return null; } };
 const zoneFee = (pc) => { const n = String(pc || '').toUpperCase().replace(/\s+/g, ''); let best = -1, fee = null; (STORE.ship_zones || []).forEach((z) => (z.prefixes || []).forEach((x) => { const pre = String(x).toUpperCase().replace(/\s+/g, ''); if (pre && n.startsWith(pre) && pre.length > best) { best = pre.length; fee = Math.max(0, Number(z.fee_cents) || 0); } })); return fee === null ? SHIP : fee; };
 const zoneLabel = (pc) => { const n = String(pc || '').toUpperCase().replace(/\s+/g, ''); let best = -1, lab = ''; (STORE.ship_zones || []).forEach((z) => (z.prefixes || []).forEach((x) => { const pre = String(x).toUpperCase().replace(/\s+/g, ''); if (pre && n.startsWith(pre) && pre.length > best) { best = pre.length; lab = z.label || ''; } })); return lab; };
-const totals = (sub, pickup = false, fee = SHIP) => { const pr = getPromo(), disc = pr && sub ? Math.floor(sub * pr.percent / 100) : 0; const ship = pickup || !sub || (FREE_SHIP > 0 && sub - disc >= FREE_SHIP) ? 0 : fee; const base = sub - disc + ship, tax = Math.round(base * (Number(STORE.tax_rate) || 0) / 100); return { sub, disc, code: disc ? pr.code : '', ship, tax, taxLabel: STORE.tax_label || 'Tax', total: base + tax }; };
+const totals = (sub, pickup = false, fee = SHIP) => { const pr = getPromo(), disc = pr && sub ? (pr.amount ? Math.min(pr.amount, sub) : Math.floor(sub * pr.percent / 100)) : 0; const ship = pickup || !sub || (FREE_SHIP > 0 && sub - disc >= FREE_SHIP) ? 0 : fee; const base = sub - disc + ship, tax = Math.round(base * (Number(STORE.tax_rate) || 0) / 100); return { sub, disc, code: disc ? pr.code : '', ship, tax, taxLabel: STORE.tax_label || 'Tax', total: base + tax }; };
 const totalsHtml = (t) => `<dl class="totals"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount${t.code ? ' (' + esc(t.code) + ')' : ''}</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>Shipping</dt><dd>${t.ship ? money(t.ship) : 'Free'}</dd>${t.tax ? `<dt>${esc(t.taxLabel || 'Tax')}</dt><dd>${money(t.tax)}</dd>` : ''}<dt>Total</dt><dd><strong>${money(t.total)}</strong></dd>${t.refunded ? `<dt>Refunded</dt><dd>−${money(t.refunded)}</dd>` : ''}</dl>`;
 const fail = (e) => { console.error(e); flash(e.message || 'Something went wrong', 'error'); };
 const dateOf = (s) => new Date(s).toLocaleString();
@@ -629,9 +629,9 @@ pages.cart.after = () => {
     e.preventDefault(); const code = new FormData(e.target).get('code').trim().toUpperCase();
     if (!code) { localStorage.removeItem('promo'); return route(); }
     const sub = (await cartLines()).reduce((a, l) => a + lineTotal(l), 0);
-    const { data } = await sb.rpc('check_code', { c: code, subtotal: sub });
+    const { data } = await sb.rpc('check_code2', { c: code, subtotal: sub });
     if (!data) { localStorage.removeItem('promo'); flash('That code is not valid for this order.', 'error'); return route(); }
-    localStorage.setItem('promo', JSON.stringify({ code, percent: data })); flash(`Code ${code} applied: ${data}% off.`); route();
+    localStorage.setItem('promo', JSON.stringify({ code, percent: data.percent, amount: data.amount_cents })); flash(`Code ${code} applied: ${data.amount_cents ? money(data.amount_cents) : data.percent + '%'} off.`); route();
   });
   const cf = document.getElementById('cartform'); let tm = null;
   cf?.addEventListener('change', () => { clearTimeout(tm); tm = setTimeout(() => cf.requestSubmit(), 350); });
@@ -1557,8 +1557,8 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const cs = (await sb.from('discount_codes').select('*').order('code')).data || [];
     const state = (c) => !c.active ? ['Off', ''] : c.expires_at && new Date(c.expires_at) < new Date() ? ['Expired', 'cancelled'] : c.max_uses && c.uses >= c.max_uses ? ['Used up', 'cancelled'] : ['Active', 'paid'];
     return `<div class="sechead"><h1 style="margin:0">Discount codes</h1><span class="muted">${cs.filter((c) => state(c)[0] === 'Active').length} active</span></div>
-    <div class="tablewrap"><table><tr><th>Code</th><th>Off</th><th>Min order</th><th>Used</th><th>Expires</th><th>Status</th><th></th></tr>${cs.map((c) => { const [lab, cls] = state(c); return `<tr><td><b>${esc(c.code)}</b></td><td>${c.percent}%</td><td>${money(c.min_cents)}</td><td>${c.uses}${c.max_uses ? ' / ' + c.max_uses : ''}</td><td>${c.expires_at ? dateOf(c.expires_at) : '—'}</td><td><span class="status ${cls}">${lab}</span></td><td><button class="link togcode" data-code="${esc(c.code)}" data-active="${c.active}">${c.active ? 'Disable' : 'Enable'}</button> · <button class="link delcode" data-code="${esc(c.code)}" style="color:var(--err)">Delete</button></td></tr>`; }).join('')}</table></div>
-    <section class="cs"><h3 style="margin-top:0">New code</h3><form id="cf" class="stack narrow"><div class="two2"><label>Code<input name="code" placeholder="SUMMER15" required maxlength="30" style="text-transform:uppercase"></label><label>% off<input name="percent" type="number" min="1" max="100" required></label></div>
+    <div class="tablewrap"><table><tr><th>Code</th><th>Off</th><th>Min order</th><th>Used</th><th>Expires</th><th>Status</th><th></th></tr>${cs.map((c) => { const [lab, cls] = state(c); return `<tr><td><b>${esc(c.code)}</b></td><td>${c.amount_cents ? money(c.amount_cents) : c.percent + '%'}</td><td>${money(c.min_cents)}</td><td>${c.uses}${c.max_uses ? ' / ' + c.max_uses : ''}</td><td>${c.expires_at ? dateOf(c.expires_at) : '—'}</td><td><span class="status ${cls}">${lab}</span></td><td><button class="link togcode" data-code="${esc(c.code)}" data-active="${c.active}">${c.active ? 'Disable' : 'Enable'}</button> · <button class="link delcode" data-code="${esc(c.code)}" style="color:var(--err)">Delete</button></td></tr>`; }).join('')}</table></div>
+    <section class="cs"><h3 style="margin-top:0">New code</h3><form id="cf" class="stack narrow"><div class="two2"><label>Code<input name="code" placeholder="SUMMER15" required maxlength="30" style="text-transform:uppercase"></label><label>Discount<input name="percent" type="number" min="0.01" step="0.01" required></label></div><label>Type<select name="dtype"><option value="%">% off the order</option><option value="$">$ off the order</option></select></label>
     <div class="two2"><label>Minimum order ($)<input name="min" type="number" min="0" step="0.01" value="0"></label><label>Usage limit <small class="muted">0 = unlimited</small><input name="max_uses" type="number" min="0" value="0"></label></div>
     <label>Expires <small class="muted">optional — last day it works</small><input name="expires" type="date"></label><button class="btn">Add code</button></form></section>`;
   }
@@ -2371,7 +2371,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   }));
   document.getElementById('cf')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
-    const { error } = await sb.from('discount_codes').insert({ code: f.code.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, ''), percent: Number(f.percent), min_cents: Math.round(Number(f.min || 0) * 100), max_uses: Math.max(0, parseInt(f.max_uses, 10) || 0), expires_at: f.expires ? new Date(f.expires + 'T23:59:59').toISOString() : null });
+    const { error } = await sb.from('discount_codes').insert({ code: f.code.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, ''), percent: f.dtype === '$' ? 0 : Math.min(100, Math.max(1, Math.round(Number(f.percent)))), amount_cents: f.dtype === '$' ? Math.round(Number(f.percent) * 100) : 0, min_cents: Math.round(Number(f.min || 0) * 100), max_uses: Math.max(0, parseInt(f.max_uses, 10) || 0), expires_at: f.expires ? new Date(f.expires + 'T23:59:59').toISOString() : null });
     error ? fail(error) : (flash('Code added.'), route());
   });
   document.querySelectorAll('.togcode').forEach((b) => b.addEventListener('click', async () => {

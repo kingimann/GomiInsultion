@@ -2854,3 +2854,71 @@ end $function$
 -- Blog: pages can be posts
 alter table public.pages add column if not exists kind text not null default 'page';
 do $$ begin alter table public.pages add constraint pages_kind_chk check (kind in ('page','post')); exception when duplicate_object then null; end $$;
+
+-- Discount codes: fixed-amount codes
+alter table public.discount_codes add column if not exists amount_cents int not null default 0;
+create or replace function public.code_discount(c text, subtotal int) returns int language sql stable security definer set search_path = public as $$
+  select case when amount_cents > 0 then least(amount_cents, subtotal) else subtotal * percent / 100 end from discount_codes
+  where code = upper(trim(c)) and active and subtotal >= min_cents and (expires_at is null or expires_at > now()) and (max_uses = 0 or uses < max_uses) $$;
+create or replace function public.check_code2(c text, subtotal int) returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('percent', percent, 'amount_cents', amount_cents) from discount_codes
+  where code = upper(trim(c)) and active and subtotal >= min_cents and (expires_at is null or expires_at > now()) and (max_uses = 0 or uses < max_uses) $$;
+grant execute on function public.check_code2(text, int), public.code_discount(text, int) to anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.place_order(items jsonb, customer jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare pk record; it jsonb; p public.products; q int; sub int := 0; ship int; oid bigint; gk uuid; item_id bigint;
+  disc int := 0; pct int; code text := nullif(upper(trim(coalesce(customer->>'code',''))), '');
+  free_over int := public.store_cfg('free_over_cents', 50000)::int; flat int := public.store_cfg('ship_flat_cents', 1500)::int;
+  rate numeric := public.store_cfg('tax_rate', 0); tax int; tlabel text := public.store_cfg_text('tax_label', 'Tax');
+  pickup boolean := coalesce(customer->>'fulfillment', 'delivery') = 'pickup'; loc public.locations; pref bigint;
+  addr text; city text; pc text; avail int;
+begin
+  perform public.rate_check('order', 8, interval '1 hour');
+  if jsonb_array_length(items) = 0 then raise exception 'Cart is empty'; end if;
+  if pickup then
+    select * into loc from locations where id = nullif(customer->>'location_id', '')::bigint and active and pickup_enabled;
+    if not found then raise exception 'Please choose a pickup location'; end if;
+    pref := loc.id;
+    addr := 'Pickup: ' || loc.name || case when loc.address <> '' then ', ' || loc.address else '' end; city := coalesce(nullif(loc.city, ''), '-'); pc := coalesce(nullif(loc.postcode, ''), '-');
+  else
+    pref := (select id from locations where is_default);
+    addr := customer->>'address'; city := customer->>'city'; pc := customer->>'postcode';
+    if coalesce(btrim(addr), '') = '' or coalesce(btrim(city), '') = '' or coalesce(btrim(pc), '') = '' then raise exception 'Please enter your delivery address'; end if;
+  end if;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint and active for update;
+    if not found or q < 1 then raise exception 'Not enough stock for %', coalesce(p.name, 'an item'); end if;
+    if pickup then select coalesce(qty, 0) into avail from inventory where product_id = p.id and location_id = loc.id;
+    else select coalesce(sum(i.qty), 0) into avail from inventory i join locations l on l.id = i.location_id where i.product_id = p.id and l.active; end if;
+    if coalesce(avail, 0) < q then raise exception 'Not enough stock for %', p.name; end if;
+    sub := sub + public.pack_total(p.id, p.price_cents, q);
+  end loop;
+  if code is not null then
+    disc := public.code_discount(code, sub);
+    if disc is null then raise exception 'That discount code is not valid'; end if;
+  end if;
+  ship := case when pickup or (free_over > 0 and sub - disc >= free_over) then 0 else public.ship_fee_for(pc) end;
+  tax := round((sub - disc + ship) * rate / 100.0)::int;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents, discount_cents, promo_code, location_id, fulfillment, source, tax_cents, tax_label)
+  values (auth.uid(), customer->>'email', customer->>'name', coalesce(customer->>'phone',''), addr, city, pc, coalesce(customer->>'notes',''), sub, ship, sub - disc + ship + tax, disc, code, pref,
+          case when pickup then 'pickup' else 'delivery' end, 'online', tax, case when tax > 0 then tlabel else '' end)
+  returning id, guest_key into oid, gk;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint;
+    for pk in select * from public.pack_split(p.id, p.price_cents, q) loop
+      insert into order_items (order_id, product_id, name, price_cents, qty, pack_units, bundle_size) values (oid, p.id, p.name || case when pk.label <> '' then ' (' || pk.label || ' price)' else '' end, pk.price, pk.qty, pk.units, coalesce(p.bags_per_bundle, (select min(k.units) from product_packs k where k.product_id = p.id))) returning id into item_id;
+      perform public.allocate_stock(item_id, p.id, pk.qty, pref, pickup, oid);
+    end loop;
+  end loop;
+  return jsonb_build_object('id', oid, 'key', gk);
+end $function$
+;
+alter table public.discount_codes drop constraint if exists discount_codes_percent_check;
+alter table public.discount_codes add constraint discount_codes_percent_check check (percent between 0 and 100 and (percent > 0 or amount_cents > 0));

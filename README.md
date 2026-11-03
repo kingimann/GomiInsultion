@@ -288,3 +288,7 @@ Customers can add up to 4 photos to a review (resized automatically). Photos sho
 
 ## Point of sale v2
 Barcode/SKU scanning (type or scan, press Enter), category chips, search, quantity badges on products, one-tap **+ bundle**, editable quantities, in-store **discount** ($ or %), **cash received → change due** with quick-tender buttons, tax shown live, and the screen stays ready for the next sale (with a receipt link) instead of leaving the page. Phones get a sticky total bar.
+
+## Blog & fixed-amount discount codes
+- **Blog:** in Admin → Pages choose "+ New blog post" (or set a page's Type to Blog post). Posts appear on `#/blog` (newest first, read time, related posts), get a Blog link in the menu automatically, and include BlogPosting structured data + sitemap entry.
+- **Discount codes** can now be "$ off" as well as "% off" (still with minimum order, usage limit and expiry).

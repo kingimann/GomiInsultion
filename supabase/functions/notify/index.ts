@@ -7,12 +7,13 @@ const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '
 const money = (c: number) => `$${(c / 100).toFixed(2)}`;
 
 type Res = { ok: boolean; detail: string };
-async function sendEmail(to: string, subject: string, html: string, replyTo?: string): Promise<Res> {
+type Att = { filename: string; content: string };
+async function sendEmail(to: string, subject: string, html: string, replyTo?: string, attachments?: Att[]): Promise<Res> {
   const key = Deno.env.get('RESEND_API_KEY'), from = Deno.env.get('FROM_EMAIL');
   if (!key || !from) return { ok: false, detail: 'Email is not connected yet: add the RESEND_API_KEY and FROM_EMAIL secrets' };
   if (!to) return { ok: false, detail: 'No email address' };
   try {
-    const r = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from, to, subject, html, ...(replyTo ? { reply_to: replyTo } : {}) }) });
+    const r = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from, to, subject, html, ...(replyTo ? { reply_to: replyTo } : {}), ...(attachments?.length ? { attachments } : {}) }) });
     if (r.ok) return { ok: true, detail: 'Delivered to the email service' };
     const t = await r.text(); console.error('resend', r.status, t); let m = t; try { m = JSON.parse(t).message || t; } catch { /* keep text */ }
     return { ok: false, detail: `Email service said: ${String(m).slice(0, 220)}` };
@@ -41,6 +42,16 @@ Deno.serve(async (req) => {
   const body = await req.json();
   const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
   const site = (Deno.env.get('SITE_URL') || '').replace(/\/$/, '');
+  // The admin's browser builds the PDF when they press Send and stores it as doc-pdfs/<kind>/<id>.pdf; attach it if it is fresh.
+  const pdfFor = async (kind: string, id: number, name: string): Promise<Att[]> => {
+    try {
+      const path = `${kind}/${id}.pdf`, dir = await admin.storage.from('doc-pdfs').list(kind, { search: `${id}.pdf` }), f = (dir.data || []).find((x: any) => x.name === `${id}.pdf`);
+      if (!f || Date.now() - new Date((f as any).updated_at || (f as any).created_at).getTime() > 5 * 60 * 1000) return [];
+      const dl = await admin.storage.from('doc-pdfs').download(path); if (dl.error || !dl.data) return [];
+      const buf = new Uint8Array(await dl.data.arrayBuffer()); let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+      return [{ filename: name, content: btoa(bin) }];
+    } catch (e) { console.error('pdf attach', e); return []; }
+  };
   const owner = Deno.env.get('ADMIN_EMAIL')!;
 
   if (body.kind === 'low_stock') {
@@ -83,7 +94,7 @@ Deno.serve(async (req) => {
       const rows = est.estimate_items.sort((x: any, y: any) => x.sort - y.sort).map((i: any) => `<tr><td>${esc(i.description)}</td><td align="right">${Number(i.qty)}</td><td align="right">${money(Math.round(Number(i.qty) * i.unit_price_cents))}</td></tr>`).join('');
       await setLog(ids.email ?? await mkLog('estimate', est.id, 'email', est.customer_email), await sendEmail(est.customer_email, `Estimate ${est.number} — ${money(est.total_cents)}`,
         `<h2>Estimate ${esc(est.number)}</h2><p>Hello ${esc(est.customer_name)}, here is the estimate ${esc(bizName)} prepared for you.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left">Description</th><th>Qty</th><th align="right">Amount</th></tr>${rows}</table>
-         ${est.tax_cents ? `<p>${esc(est.tax_label || 'Tax')}: ${money(est.tax_cents)}</p>` : ''}<p><b>Total: ${money(est.total_cents)}</b></p><p>Valid until ${esc(est.expires_on)}.</p><p><a href="${link}">Review, accept or decline this estimate</a></p>`));
+         ${est.tax_cents ? `<p>${esc(est.tax_label || 'Tax')}: ${money(est.tax_cents)}</p>` : ''}<p><b>Total: ${money(est.total_cents)}</b></p><p>Valid until ${esc(est.expires_on)}.</p><p><a href="${link}">Review, accept or decline this estimate</a></p>`, undefined, await pdfFor('estimate', est.id, `Estimate-${est.number}.pdf`)));
     }
     if (ch.sms) await setLog(ids.sms ?? await mkLog('estimate', est.id, 'sms', est.customer_phone), await sendSms(est.customer_phone, `${bizName}: Estimate ${est.number} for ${money(est.total_cents)} (valid until ${est.expires_on}). Review & accept: ${link}`));
     return new Response('ok');
@@ -100,7 +111,7 @@ Deno.serve(async (req) => {
         await setLog(ids.email ?? await mkLog('invoice', inv.id, 'email', inv.customer_email), await sendEmail(inv.customer_email, `Invoice ${inv.number}${balance > 0 ? ` — ${money(balance)} due ${inv.due_date}` : ''} from ${bizName}`,
           `<h2>Invoice ${esc(inv.number)}</h2><p>Hello ${esc(inv.customer_name)}, here is your invoice from ${esc(bizName)}.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left">Description</th><th>Qty</th><th align="right">Amount</th></tr>${rows}</table>
            ${inv.discount_cents ? `<p>Discount: −${money(inv.discount_cents)}</p>` : ''}${inv.tax_cents ? `<p>${esc(inv.tax_label || 'Tax')}: ${money(inv.tax_cents)}</p>` : ''}<p><b>Total: ${money(inv.total_cents)}</b>${inv.paid_cents ? `<br>Paid: ${money(inv.paid_cents)}<br><b>Balance due: ${money(balance)}</b>` : ''}</p><p>Due date: ${esc(inv.due_date)}</p>
-           ${inv.terms ? `<p style="white-space:pre-wrap">${esc(inv.terms)}</p>` : ''}<p><a href="${link}">View, print or pay this invoice</a></p>`));
+           ${inv.terms ? `<p style="white-space:pre-wrap">${esc(inv.terms)}</p>` : ''}<p><a href="${link}">View, print or pay this invoice</a></p>`, undefined, await pdfFor('invoice', inv.id, `Invoice-${inv.number}.pdf`)));
       }
     }
     if (ch.sms) await setLog(ids.sms ?? await mkLog('invoice', inv.id, 'sms', inv.customer_phone), await sendSms(inv.customer_phone, `${bizName}: Invoice ${inv.number} for ${money(balance)}${balance > 0 ? ` is due ${inv.due_date}` : ' (paid)'}. View${balance > 0 ? ' & pay' : ''}: ${link}`));

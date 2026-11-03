@@ -1305,10 +1305,12 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     const sendNow = async () => {
       const em = $('sd_email').checked, sm = $('sd_sms').checked; if (!em && !sm) return fail(new Error('Tick email, text, or both — or use the buttons below to send it yourself.'));
       const btn = $('sd_go'); btn.disabled = true;
+      let attached = false;
+      if (em) { try { const r = await buildPdf(); if (r) { const up = await sb.storage.from('doc-pdfs').upload(`${r.kind}/${r.id}.pdf`, r.doc.output('blob'), { contentType: 'application/pdf', upsert: true }); attached = !up.error; if (up.error) console.warn('PDF not attached:', up.error.message); } } catch (err) { console.warn('PDF not attached:', err); } }
       const args = { via_email: em, via_sms: sm, base: location.origin + location.pathname, to_email: $('sd_to').value.trim() || null, to_phone: $('sd_phone').value.trim() || null };
       const { data, error } = await sb.rpc(kind === 'invoice' ? 'send_invoice' : 'send_estimate', kind === 'invoice' ? { iid: docId, ...args } : { eid: docId, ...args }); btn.disabled = false;
       if (error) return fail(error);
-      flash(data.ready ? 'Sending… the delivery log below will show the result.' : 'Marked as sent, but sending isn’t connected yet — use the buttons below to send it yourself, or connect it in Settings.', data.ready ? 'ok' : 'error'); route();
+      flash(data.ready ? `Sending${attached ? ' with the PDF attached' : ''}… the delivery log below will show the result.` : 'Marked as sent, but sending isn’t connected yet — use the buttons below to send it yourself, or connect it in Settings.', data.ready ? 'ok' : 'error'); route();
       if (data.ready) setTimeout(() => { if (location.hash.includes(`/${kind === 'invoice' ? 'invoices' : 'estimates'}/${docId}`)) route(); }, 4000);
     };
     $('sd_go').addEventListener('click', sendNow);
@@ -2058,8 +2060,8 @@ const calcInv = (lines, discCents, rate) => {
 };
 let LASTDOC = null;
 function loadScript(src) { return new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res(); const sc = document.createElement('script'); sc.src = src; sc.onload = res; sc.onerror = () => rej(new Error('Could not load the PDF library. Check your connection.')); document.head.appendChild(sc); }); }
-async function downloadPdf() {
-  if (!LASTDOC) return; const { inv, items, pays } = LASTDOC, est = 'expires_on' in inv, b = STORE.biz || {};
+async function buildPdf() {
+  if (!LASTDOC) return null; const { inv, items, pays } = LASTDOC, est = 'expires_on' in inv, b = STORE.biz || {};
   await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'); await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js');
   const { jsPDF } = window.jspdf, doc = new jsPDF({ unit: 'pt', format: 'a4' }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 44;
   const hex = (getComputedStyle(document.documentElement).getPropertyValue('--brand') || '#ea580c').trim(), rgb = /^#[0-9a-f]{6}$/i.test(hex) ? [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) : [234, 88, 12];
@@ -2085,8 +2087,9 @@ async function downloadPdf() {
   block('Notes', inv.notes); block('Terms', inv.terms); if (!est && bal > 0) block('How to pay', STORE.invoice_pay_info);
   const pages = doc.getNumberOfPages(); for (let i = 1; i <= pages; i++) { doc.setPage(i); doc.setFontSize(8).setTextColor(150).text(`${inv.number} · Page ${i} of ${pages}`, W / 2, H - 24, { align: 'center' });
     if (paidFull && i === 1) { doc.setTextColor(22, 163, 74).setFont('helvetica', 'bold').setFontSize(40); doc.saveGraphicsState(); doc.setGState(new doc.GState({ opacity: 0.25 })); doc.text('PAID', W - M - 10, 130, { align: 'right', angle: 12 }); doc.restoreGraphicsState(); } }
-  doc.save(`${est ? 'Estimate' : 'Invoice'}-${inv.number}.pdf`);
+  return { doc, filename: `${est ? 'Estimate' : 'Invoice'}-${inv.number}.pdf`, kind: est ? 'estimate' : 'invoice', id: inv.id };
 }
+async function downloadPdf() { const r = await buildPdf(); if (r) r.doc.save(r.filename); }
 document.addEventListener('click', async (e) => { if (!e.target.closest('.pdfbtn')) return; const btn = e.target.closest('.pdfbtn'); btn.disabled = true; try { await downloadPdf(); } catch (err) { fail(err); } finally { btn.disabled = false; } });
 function addPdfButtons() { document.querySelectorAll('#printbtn').forEach((p) => { if (!p.previousElementSibling?.classList.contains('pdfbtn') && document.querySelector('.invdoc')) p.insertAdjacentHTML('beforebegin', '<button class="btn ghost pdfbtn noprint" type="button">:ic-download: Download PDF</button>'); }); }
 const invDoc = (inv, items, pays) => {

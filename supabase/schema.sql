@@ -1977,3 +1977,12 @@ begin
 end $$;
 drop trigger if exists orders_count_code on public.orders;
 create trigger orders_count_code after insert on public.orders for each row execute function public.trg_count_code();
+
+-- ===== PDF attachments on sent invoices/estimates =====
+insert into storage.buckets (id, name, public) values ('doc-pdfs', 'doc-pdfs', false) on conflict (id) do nothing;
+drop policy if exists "staff write doc pdfs" on storage.objects;
+create policy "staff write doc pdfs" on storage.objects for insert to authenticated with check (bucket_id = 'doc-pdfs' and public.has_perm('invoices.manage'));
+drop policy if exists "staff update doc pdfs" on storage.objects;
+create policy "staff update doc pdfs" on storage.objects for update to authenticated using (bucket_id = 'doc-pdfs' and public.has_perm('invoices.manage'));
+drop policy if exists "staff read doc pdfs" on storage.objects;
+create policy "staff read doc pdfs" on storage.objects for select to authenticated using (bucket_id = 'doc-pdfs' and public.has_perm('invoices.view'));

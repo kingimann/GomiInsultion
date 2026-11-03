@@ -159,3 +159,7 @@ Discount codes can now have a **usage limit** and an **expiry date** (enforced b
 ## Invoice & estimate PDFs
 
 Every invoice and estimate page (admin view and the customer's public link) has a **Download PDF** button that builds a clean A4 PDF in the browser — business details, bill-to, line items, discount/tax/totals, payments received, notes, terms, how-to-pay, page numbers and a PAID stamp when settled. Admins can also **Duplicate** an invoice into a new draft.
+
+## PDF attached to emailed invoices
+
+When an admin sends an invoice or estimate by email from the send panel, the browser builds the PDF, stores it in the private `doc-pdfs` bucket and the `notify` function attaches it to the email (only if it was created in the last 5 minutes, so an old file can never go out). Texts still send the link. Recurring invoices that send automatically (no admin browser involved) go out with the link only. Requires the Resend setup described above; redeploy `supabase/functions/notify` if you change it.

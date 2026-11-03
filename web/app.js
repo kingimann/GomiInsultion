@@ -131,6 +131,14 @@ const compareHtml = (p) => {
   return `<div class="compare"><h3>💲 Price comparison</h3><table><tr><th>Retailer</th><th>Price</th><th>Difference</th><th>Checked</th></tr><tr class="us"><td><b>${esc(theme.name || 'Gomi Insulation')}</b></td><td><b>${money(p.price_cents)}</b></td><td></td><td></td></tr>${rows}</table>
   <p class="muted" style="font-size:.8rem;margin:6px 0 0">Other retailers' prices were checked by us on the dates shown and may have changed. Sizes, brands and pack contents can differ, so compare the item listed. Retailer names belong to their owners; we are not affiliated with them.</p></div>`;
 };
+const getRV = () => { try { return JSON.parse(localStorage.getItem('rv') || '[]'); } catch { return []; } };
+const pushRV = (id) => { try { localStorage.setItem('rv', JSON.stringify([id, ...getRV().filter((x) => x !== id)].slice(0, 10))); } catch {} };
+async function recentHtml(excludeId) {
+  const ids = getRV().filter((x) => x !== excludeId).slice(0, 4); if (!ids.length) return '';
+  const { data } = await sb.from('products').select('*').in('id', ids).eq('active', true); if (!data?.length) return '';
+  data.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+  return `<div class="sect"><h2>Recently viewed</h2></div><div class="grid">${data.map(card).join('')}</div>`;
+}
 const getWish = () => { try { return JSON.parse(localStorage.getItem('wish') || '[]'); } catch { return []; } };
 document.addEventListener('click', (e) => {
   const ab = e.target.closest('.addbtn');
@@ -167,6 +175,17 @@ function renderNav() {
 const setMenu = (open) => { document.body.classList.toggle('menu-open', open); document.getElementById('menubtn').setAttribute('aria-expanded', String(open)); document.getElementById('menubtn').textContent = open ? '✕' : '☰'; };
 document.getElementById('menubtn').addEventListener('click', () => setMenu(!document.body.classList.contains('menu-open')));
 document.getElementById('nav').addEventListener('click', (e) => { if (e.target.closest('a,button.link')) setMenu(false); });
+const sugg = document.getElementById('sugg'), sinput = document.querySelector('#search input[name=q]'); let stm = null;
+sinput.addEventListener('input', () => {
+  clearTimeout(stm); const t = sinput.value.trim().replace(/[%,()]/g, ''); if (t.length < 2) { sugg.hidden = true; return; }
+  stm = setTimeout(async () => {
+    const { data } = await sb.from('products').select('slug,name,price_cents,category').eq('active', true).or(`name.ilike.%${t}%,category.ilike.%${t}%`).order('name').limit(6);
+    sugg.innerHTML = (data || []).length ? data.map((x) => `<a href="#/product/${esc(x.slug)}"><span>${esc(x.name)}<small>${esc(x.category)}</small></span><b>${money(x.price_cents)}</b></a>`).join('') + `<a class="all" href="#/shop?q=${encodeURIComponent(t)}">See all results for “${esc(t)}” →</a>` : '<p class="muted" style="padding:10px 14px;margin:0">No matches</p>';
+    sugg.hidden = false;
+  }, 180);
+});
+sinput.addEventListener('keydown', (e) => { if (e.key === 'Escape') sugg.hidden = true; });
+document.addEventListener('click', (e) => { if (!e.target.closest('#search') || e.target.closest('#sugg a')) sugg.hidden = true; });
 document.getElementById('search').addEventListener('submit', (e) => { e.preventDefault(); location.hash = `#/shop?q=${encodeURIComponent(new FormData(e.target).get('q'))}`; });
 
 // ---- pages ----
@@ -180,7 +199,7 @@ pages.home = async () => {
   <div><a class="btn" href="#/shop">Shop all products</a><a class="btn ghost" href="#/quote">Request a quote</a></div><p class="hero-note">✓ Free shipping over ${money(FREE_SHIP)} &nbsp;·&nbsp; ✓ Trade pricing on request</p></section>
   <div class="perks"><div class="perk"><span class="pi">🚚</span><div><b>Free shipping</b><small>On orders over ${money(FREE_SHIP)}</small></div></div><div class="perk"><span class="pi">📐</span><div><b>Coverage calculator</b><small>Know exactly how much you need</small></div></div><div class="perk"><span class="pi">🏗️</span><div><b>Bulk &amp; trade pricing</b><small>Ask for a custom quote</small></div></div></div>
   <div class="sect"><h2>Shop by category</h2><a href="#/shop">All products →</a></div><div class="tiles">${cats.map((c) => `<a class="tile" href="#/shop?category=${encodeURIComponent(c)}"><b>${esc(c)}</b><small>${catCount[c]} product${catCount[c] === 1 ? '' : 's'}</small><span aria-hidden="true">→</span></a>`).join('')}</div>
-  <div class="sect"><h2>Featured</h2><a href="#/shop">View all →</a></div><div class="grid">${data.map(card).join('')}</div>`;
+  <div class="sect"><h2>Featured</h2><a href="#/shop">View all →</a></div><div class="grid">${data.map(card).join('')}</div>${await recentHtml(0)}`;
 };
 pages.shop = async (_, q) => {
   await loadRatings();
@@ -218,6 +237,7 @@ pages.product = async ([slug]) => {
     .sort((a, b) => (b.category === p.category) - (a.category === p.category)).slice(0, 4);
   const extra = (await sb.from('product_images').select('url').eq('product_id', p.id).order('position')).data || [];
   const pics = [p.image_url, ...extra.map((x) => x.url)].filter((u) => safeUrl(u));
+  const recent = await recentHtml(p.id); pushRV(p.id); document.title = `${p.name} · ${theme.name || 'Gomi Insulation'}`;
   const gallery = pics.length ? `<div class="gallery"><img class="big" id="mainpic" src="${esc(pics[0])}" alt="${esc(p.name)}">${pics.length > 1 ? `<div class="thumbs">${pics.map((u, i) => `<img src="${esc(u)}" alt="Photo ${i + 1}" class="${i ? '' : 'on'}">`).join('')}</div>` : ''}</div>` : img(p, true);
   return `<div class="crumbs" role="navigation" aria-label="Breadcrumb"><a href="#/shop">Shop</a> › <a href="#/shop?category=${encodeURIComponent(p.category)}">${esc(p.category)}</a> › <span>${esc(p.name)}</span></div>
   <div class="detail"><div>${gallery}</div><div><span class="tag">${esc(p.category)}</span><h1>${esc(p.name)}</h1>
@@ -229,7 +249,7 @@ pages.product = async ([slug]) => {
   ${coverageOf(p) ? `<div class="calc"><h3>📐 How many do I need?</h3><div class="row"><label>Area (sq ft) <input type="number" id="area" min="1" value="200"></label>
   <label>Waste % <input type="number" id="waste" min="0" max="30" value="10"></label></div><p class="out" id="calcout"></p></div>` : ''}</div></div>
   <h2>Customer reviews</h2>${reviewsHtml}
-  ${related.length ? `<h2>You might also need</h2><div class="grid">${related.map(card).join('')}</div>` : ''}`;
+  ${related.length ? `<h2>You might also need</h2><div class="grid">${related.map(card).join('')}</div>` : ''}${recent}`;
 };
 const coverageOf = (p) => { const m = /(\d+)\s*sq\s*ft/i.exec(p.unit); return m ? Number(m[1]) : 0; };
 pages.product.after = ([slug]) => {
@@ -309,15 +329,20 @@ pages.checkout = async () => {
   const pk = (await sb.rpc('pickup_locations', { items: lines.map((l) => ({ id: l.id, qty: l.qty })) })).data || [];
   CHK = { lines, t, pk };
   const f = (n, l, v = '', x = '') => `<label>${l}<input name="${n}" value="${esc(v)}" ${x}></label>`;
-  return `<h1>Checkout</h1><div class="two"><form id="co" class="stack">
-  ${SAVED.length ? `<label>Use a saved address<select id="savedaddr">${SAVED.map((a, i) => `<option value="${i}">${esc(a.label)} — ${esc(a.address)}, ${esc(a.city)}</option>`).join('')}<option value="">Enter a new address</option></select></label>` : ''}
-  ${f('name', 'Full name', d.name || profile?.name, 'required')}${f('email', 'Email', session?.user.email, 'type="email" required')}${f('phone', 'Phone', d.phone)}
-  ${pk.length ? `<fieldset class="choices"><legend>How would you like to get your order?</legend><label class="check"><input type="radio" name="fulfillment" value="delivery" checked> Delivery</label><label class="check"><input type="radio" name="fulfillment" value="pickup"> Pickup (free)</label></fieldset>
+  const hasPk = pk.length > 0;
+  return `<h1>Checkout</h1><ol class="steps2"><li class="done">Cart</li><li class="on">Your details</li><li>Confirmation</li></ol>
+  <div class="cartwrap"><form id="co" class="stack">
+  <section class="cs"><h3><span class="num">1</span> Contact</h3>
+    ${f('name', 'Full name', d.name || profile?.name, 'required')}${f('email', 'Email', session?.user.email, 'type="email" required')}${f('phone', 'Phone', d.phone)}</section>
+  <section class="cs"><h3><span class="num">2</span> ${hasPk ? 'Delivery or pickup' : 'Delivery'}</h3>
+  ${hasPk ? `<div class="choicecards"><label class="cc"><input type="radio" name="fulfillment" value="delivery" checked><span><b>🚚 Delivery</b><small>To your address</small></span></label><label class="cc"><input type="radio" name="fulfillment" value="pickup"><span><b>🏪 Pickup</b><small>Free · collect in store</small></span></label></div>
   <div id="pickbox" hidden class="stack">${pk.map((l, i) => `<label class="check pk ${l.available ? '' : 'na'}"><input type="radio" name="location_id" value="${l.id}" ${l.available ? '' : 'disabled'} ${l.available && !pk.slice(0, i).some((x) => x.available) ? 'checked' : ''}> <span><b>${esc(l.name)}</b>${l.available ? '' : ' — not enough stock here'}<br><small class="muted">${esc([l.address, l.city].filter(Boolean).join(', '))}${l.hours ? ' · ' + esc(l.hours) : ''}${l.phone ? ' · ' + esc(l.phone) : ''}</small></span></label>`).join('')}</div>` : ''}
-  <div id="addrbox" class="stack">${f('address', 'Delivery address', d.address, 'required')}${f('city', 'City', d.city, 'required')}${f('postcode', 'Postal / ZIP code', d.postcode, 'required')}</div>
-  <label>Order notes<textarea name="notes"></textarea></label>
-  <p class="muted">${C.PAYMENTS ? 'You will be taken to a secure Stripe page to pay by card.' : "Payment: we'll email you an invoice and payment options once your order is confirmed."}</p><button class="btn">${C.PAYMENTS ? 'Continue to payment' : 'Place order'}</button></form>
-  <aside><h3>Order summary</h3><ul>${lines.map((l) => `<li>${l.qty} × ${esc(l.name)} <span>${money(l.qty * l.price_cents)}</span></li>`).join('')}</ul>${totalsHtml(t)}</aside></div>`;
+  <div id="addrbox" class="stack">${SAVED.length ? `<label>Use a saved address<select id="savedaddr">${SAVED.map((a, i) => `<option value="${i}">${esc(a.label)} — ${esc(a.address)}, ${esc(a.city)}</option>`).join('')}<option value="">Enter a new address</option></select></label>` : ''}
+  ${f('address', 'Delivery address', d.address, 'required')}<div class="two2">${f('city', 'City', d.city, 'required')}${f('postcode', 'Postal / ZIP code', d.postcode, 'required')}</div></div></section>
+  <section class="cs"><h3><span class="num">3</span> Notes &amp; payment</h3><label>Order notes (optional)<textarea name="notes" rows="3" placeholder="Gate code, delivery instructions…"></textarea></label>
+  <p class="muted" style="margin:0">${C.PAYMENTS ? '🔒 You will be taken to a secure Stripe page to pay by card.' : "Payment: we'll email you an invoice and payment options once your order is confirmed."}</p>
+  <button class="btn block">${C.PAYMENTS ? 'Continue to payment' : 'Place order'}</button></section></form>
+  <aside class="summary"><h3>Order summary</h3><ul class="olist">${lines.map((l) => `<li><span class="cthumb sm">${img(l)}</span><span>${l.qty} × ${esc(l.name)}</span><b>${money(l.qty * l.price_cents)}</b></li>`).join('')}</ul>${totalsHtml(t)}<a class="muted" href="#/cart" style="text-align:center;display:block">← Edit cart</a></aside></div>`;
 };
 pages.checkout.after = () => {
   document.getElementById('savedaddr')?.addEventListener('change', (e) => {
@@ -348,12 +373,27 @@ pages.checkout.after = () => {
   });
 };
 
-const orderHtml = (o, items, admin) => `<h1>Order #${o.id}</h1><p><span class="status ${esc(o.status)}">${esc(o.status)}</span> · placed ${dateOf(o.created_at)}</p>
-  ${o.status === 'cancelled' ? '' : `<div class="steps">${['pending', 'paid', 'shipped', 'delivered'].map((st, i) => `<span class="${i <= ['pending', 'paid', 'shipped', 'delivered'].indexOf(o.status) ? 'done' : ''}">${st}</span>`).join('')}</div>`}
-  <table><tr><th>Item</th><th>Price</th><th>Qty</th><th>Total</th></tr>${items.map((i) => `<tr><td>${esc(i.name)}</td><td>${money(i.price_cents)}</td><td>${i.qty}</td><td>${money(i.price_cents * i.qty)}</td></tr>`).join('')}</table>
-  ${totalsHtml({ sub: o.subtotal_cents, disc: o.discount_cents, code: o.promo_code, ship: o.shipping_cents, total: o.total_cents })}
-  <h3>${o.source === 'in_store' ? 'In-store sale' : o.fulfillment === 'pickup' ? 'Pickup' : 'Delivery'}</h3>${o.payment_method ? `<p class="muted">Paid by ${esc(o.payment_method)}</p>` : ''}<p>${esc(o.name)}<br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br>${esc(o.email)} ${esc(o.phone)}</p>${o.notes ? `<p><em>${esc(o.notes)}</em></p>` : ''}
-  ${admin ? `<form class="row" id="status"><select name="status">${STATUSES.map((s) => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select><button class="btn alt">Update status</button></form>` : ''}`;
+const CARRIERS = {
+  'Canada Post': (n) => `https://www.canadapost-postescanada.ca/track-reperage/en#/search?searchFor=${n}`, UPS: (n) => `https://www.ups.com/track?tracknum=${n}`,
+  FedEx: (n) => `https://www.fedex.com/fedextrack/?trknbr=${n}`, Purolator: (n) => `https://www.purolator.com/en/shipping/tracker?pin=${n}`,
+  DHL: (n) => `https://www.dhl.com/en/express/tracking.html?AWB=${n}`, USPS: (n) => `https://tools.usps.com/go/TrackConfirmAction?tLabels=${n}` };
+const trackLink = (c, n) => (CARRIERS[c] ? CARRIERS[c](encodeURIComponent(n)) : '');
+const orderHtml = (o, items, admin) => {
+  const steps = ['pending', 'paid', 'shipped', 'delivered'], idx = steps.indexOf(o.status);
+  const kind = o.source === 'in_store' ? 'In-store sale' : o.fulfillment === 'pickup' ? 'Pickup' : 'Delivery';
+  const link = o.tracking_number ? trackLink(o.tracking_carrier, o.tracking_number) : '';
+  return `<div class="printonly"><h2>${esc(theme.name || 'Gomi Insulation')}</h2><p>Invoice for order #${o.id} · ${dateOf(o.created_at)}</p></div>
+  <div class="ohead"><div><h1 style="margin:0">Order #${o.id}</h1><p class="muted" style="margin:2px 0 0">Placed ${dateOf(o.created_at)} · ${kind}</p></div><span class="status big ${esc(o.status)}">${esc(o.status)}</span></div>
+  ${o.status === 'cancelled' ? '' : `<ol class="timeline">${steps.map((st, i) => `<li class="${i < idx ? 'done' : i === idx ? 'on' : ''}"><i></i><span>${st}</span></li>`).join('')}</ol>`}
+  ${o.tracking_number ? `<div class="trackbox">📦 <span><b>${esc(o.tracking_carrier || 'Tracking number')}</b> · ${esc(o.tracking_number)}</span>${link ? `<a class="btn ghost noprint" href="${esc(link)}" target="_blank" rel="noopener nofollow">Track package ↗</a>` : ''}</div>` : ''}
+  <div class="cartwrap"><div><div class="citems">${items.map((i) => `<div class="citem oi"><div class="cinfo"><b>${esc(i.name)}</b><small class="muted">${money(i.price_cents)} × ${i.qty}</small></div><b class="ctotal">${money(i.price_cents * i.qty)}</b></div>`).join('')}</div>
+  ${o.notes ? `<p class="muted"><em>Notes: ${esc(o.notes)}</em></p>` : ''}</div>
+  <aside class="summary">${totalsHtml({ sub: o.subtotal_cents, disc: o.discount_cents, code: o.promo_code, ship: o.shipping_cents, total: o.total_cents })}
+    <div><h3 style="margin:0 0 4px">${kind === 'Delivery' ? 'Delivering to' : kind === 'Pickup' ? 'Pickup' : 'Sold at'}</h3><p style="margin:0">${esc(o.name)}<br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br><span class="muted">${esc(o.email)} ${esc(o.phone)}</span></p>${o.payment_method ? `<p class="muted" style="margin:6px 0 0">Paid by ${esc(o.payment_method)}</p>` : ''}</div>
+    ${admin ? `<form class="stack" id="status"><label>Status<select name="status">${STATUSES.map((s) => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select></label><button class="btn alt">Update status</button></form>
+    <form class="stack" id="trackform"><label>Carrier<select name="carrier">${['', ...Object.keys(CARRIERS), 'Other'].map((c) => `<option value="${c}" ${c === (o.tracking_carrier || '') ? 'selected' : ''}>${c || '— none —'}</option>`).join('')}</select></label><label>Tracking number<input name="number" maxlength="60" value="${esc(o.tracking_number || '')}"></label><button class="btn ghost">Save tracking</button></form>`
+      : `<div class="row noprint"><button class="btn ghost" id="printbtn" type="button">🖨 Print invoice</button><button class="btn" id="reorder" type="button" data-items="${esc(JSON.stringify(items.filter((i) => i.product_id).map((i) => [i.product_id, i.qty])))}">↻ Order again</button></div>`}</aside></div>`;
+};
 pages.order = async ([id], q) => {
   if (q.get('paid')) flash('Payment received. Thank you! Your order will update to "paid" in a moment.');
   let o, items;
@@ -361,13 +401,31 @@ pages.order = async ([id], q) => {
   else { o = (await sb.from('orders').select('*').eq('id', id).maybeSingle()).data; if (o) items = (await sb.from('order_items').select('*').eq('order_id', id)).data; }
   return o ? orderHtml(o, items, false) : '<h1>Order not found</h1>';
 };
+pages.order.after = () => {
+  document.getElementById('printbtn')?.addEventListener('click', () => window.print());
+  document.getElementById('reorder')?.addEventListener('click', async (e) => {
+    const ids = JSON.parse(e.currentTarget.dataset.items || '[]'); if (!ids.length) return;
+    const { data } = await sb.from('products').select('id,stock').in('id', ids.map((x) => x[0])).eq('active', true);
+    const cart = getCart(); let added = 0, skipped = 0;
+    ids.forEach(([pid, qty]) => { const pr = (data || []).find((x) => x.id === pid); if (!pr || pr.stock < 1) { skipped++; return; } cart[pid] = Math.min((cart[pid] || 0) + qty, pr.stock); added++; });
+    setCart(cart); flash(added ? `Added ${added} item${added === 1 ? '' : 's'} to your cart${skipped ? ` (${skipped} no longer available)` : ''}.` : 'Those items are no longer available.', added ? 'ok' : 'error'); if (added) location.hash = '#/cart';
+  });
+};
+pages.track = (a, q) => `<div class="authcard"><div class="authicon">📦</div><h1>Track your order</h1><p class="muted">Enter your order number and the email you used when ordering.</p>
+  <form id="trk" class="stack"><label>Order number<input name="oid" inputmode="numeric" required placeholder="e.g. 1042" value="${esc(q.get('order') || '')}"></label><label>Email<input name="email" type="email" required autocomplete="email"></label><button class="btn block">Find my order</button></form></div><div id="trkout" style="margin-top:24px"></div>`;
+pages.track.after = () => document.getElementById('trk')?.addEventListener('submit', async (e) => {
+  e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const out = document.getElementById('trkout');
+  const { data } = await sb.rpc('track_order', { oid: Number(String(f.oid).replace(/\D/g, '')) || 0, mail: f.email });
+  if (!data) { out.innerHTML = '<p class="flash error">We couldn\'t find an order with that number and email. Check both and try again.</p>'; return; }
+  out.innerHTML = orderHtml(data, data.items, false); pages.order.after();
+});
 
-const authForm = (reg) => `<div class="narrow"><h1>${reg ? 'Create account' : 'Log in'}</h1><form id="auth" class="stack">
+const authForm = (reg) => `<div class="authcard"><div class="authicon">${reg ? '✨' : '👋'}</div><h1>${reg ? 'Create your account' : 'Welcome back'}</h1><p class="muted" style="margin-top:-6px">${reg ? 'Track orders, save addresses and message our team.' : 'Log in to see your orders and messages.'}</p><form id="auth" class="stack">
   ${reg ? '<label>Name<input name="name" required></label>' : ''}<label>Email<input type="email" name="email" required></label>
-  <label>Password<input type="password" name="password" required minlength="${reg ? 8 : 1}"></label><button class="btn">${reg ? 'Sign up' : 'Log in'}</button></form>
+  <label>Password<input type="password" name="password" required minlength="${reg ? 8 : 1}"></label><button class="btn block">${reg ? 'Sign up' : 'Log in'}</button></form>
   ${reg ? '' : '<p><a href="#/forgot">Forgot your password?</a></p>'}
   <p>${reg ? 'Have an account? <a href="#/login">Log in</a>' : 'New here? <a href="#/register">Create an account</a>'}</p></div>`;
-pages.forgot = () => `<div class="narrow"><h1>Reset your password</h1><p class="muted">Enter your email and we'll send you a link to choose a new password.</p>
+pages.forgot = () => `<div class="authcard"><div class="authicon">🔑</div><h1>Reset your password</h1><p class="muted">Enter your email and we'll send you a link to choose a new password.</p>
   <form id="ff" class="stack"><label>Email<input type="email" name="email" required autocomplete="email"></label><button class="btn">Send reset link</button></form><p><a href="#/login">Back to log in</a></p></div>`;
 pages.forgot.after = () => document.getElementById('ff')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const email = new FormData(e.target).get('email').trim();
@@ -401,13 +459,16 @@ pages.account = async () => {
   if (!session) { location.hash = '#/login'; return ''; }
   const { data } = await sb.from('orders').select('*').eq('user_id', session.user.id).order('id', { ascending: false });
   const addrs = (await sb.from('addresses').select('*').order('is_default', { ascending: false }).order('id')).data;
-  return `<h1>My account</h1><p>${esc(profile?.name)} · ${esc(session.user.email)}</p><p><a class="btn ghost" href="#/messages">💬 My messages</a> <a class="btn ghost" href="#/notifications">🔔 Notifications</a></p><h2>Order history</h2>${ordersTable(data, '#/order')}
-  <h2>Password</h2><form id="cpw" class="row"><input type="password" name="password" minlength="8" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn ghost">Change password</button></form>
-  <h2>Saved addresses</h2>${addrs.length ? addrs.map((a) => `<div class="addr"><b>${esc(a.label)}</b>${a.is_default ? ' <span class="status paid">default</span>' : ''}<br>${esc(a.name)}<br>${esc(a.address)}, ${esc(a.city)} ${esc(a.postcode)}${a.phone ? '<br>' + esc(a.phone) : ''}<br>
+  const wl = getWish().length;
+  return `<div class="acchead">${avatar(profile?.name || 'U')}<div><h1 style="margin:0">${esc(profile?.name || 'My account')}</h1><span class="muted">${esc(session.user.email)}</span></div></div>
+  <div class="attn"><a class="attnc" href="#/account"><span>🧾</span><b>${data.length}</b><small>orders</small></a><a class="attnc ${unread.msg ? 'on' : ''}" href="#/messages"><span>💬</span><b>${unread.msg}</b><small>unread messages</small></a><a class="attnc ${unread.all ? 'on' : ''}" href="#/notifications"><span>🔔</span><b>${unread.all}</b><small>notifications</small></a><a class="attnc" href="#/wishlist"><span>♡</span><b>${wl}</b><small>saved items</small></a></div>
+  <section class="cs"><h3>Order history</h3>${ordersTable(data, '#/order')}</section>
+  <section class="cs"><h3>Saved addresses</h3>${addrs.length ? addrs.map((a) => `<div class="addr"><b>${esc(a.label)}</b>${a.is_default ? ' <span class="status paid">default</span>' : ''}<br>${esc(a.name)}<br>${esc(a.address)}, ${esc(a.city)} ${esc(a.postcode)}${a.phone ? '<br>' + esc(a.phone) : ''}<br>
   ${a.is_default ? '' : `<button class="link defaddr" data-id="${a.id}" style="color:var(--brand)">Make default</button> · `}<button class="link deladdr" data-id="${a.id}" style="color:var(--err)">Delete</button></div>`).join('') : '<p class="muted">No saved addresses yet.</p>'}
-  <h3>Add an address</h3><form id="af" class="stack narrow"><label>Label<input name="label" value="Home" maxlength="60"></label><label>Full name<input name="name" required value="${esc(profile?.name || '')}"></label><label>Phone<input name="phone"></label>
+  <details class="more"><summary>+ Add an address</summary><form id="af" class="stack narrow" style="margin-top:10px"><label>Label<input name="label" value="Home" maxlength="60"></label><label>Full name<input name="name" required value="${esc(profile?.name || '')}"></label><label>Phone<input name="phone"></label>
   <label>Address<input name="address" required></label><label>City<input name="city" required></label><label>Postal / ZIP code<input name="postcode" required></label>
-  <label class="check"><input type="checkbox" name="is_default" ${addrs.length ? '' : 'checked'}> Make this my default</label><button class="btn">Save address</button></form>`;
+  <label class="check"><input type="checkbox" name="is_default" ${addrs.length ? '' : 'checked'}> Make this my default</label><button class="btn">Save address</button></form></details></section>
+  <section class="cs"><h3>Password</h3><form id="cpw" class="row"><input type="password" name="password" minlength="8" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn ghost">Change password</button></form></section>`;
 };
 
 const FIELD_TYPES = { text: 'Short text', textarea: 'Long text', email: 'Email', tel: 'Phone', url: 'Website link', number: 'Number', date: 'Date', time: 'Time', select: 'Dropdown', radio: 'Single choice (radio buttons)', multi: 'Multiple choice (checkboxes)', checkbox: 'Checkbox (yes/no)', rating: 'Rating (1–5 stars)', file: 'File upload', heading: 'Heading (display only)', paragraph: 'Text block (display only)', divider: 'Divider (display only)' };
@@ -714,7 +775,8 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   }
   if (sub === 'customers') {
     const us = (await sb.from('profiles').select('*').order('created_at', { ascending: false })).data;
-    return `<h1>Customers</h1><table><tr><th>Name</th><th>Email</th><th>Joined</th><th></th></tr>${us.map((u) => `<tr><td>${esc(u.name)}${u.is_admin ? ' (admin)' : ''}</td><td>${esc(u.email)}</td><td>${dateOf(u.created_at)}</td><td>${u.is_admin ? '' : `<a href="#/messages/new?to=${u.id}">💬 Message</a>`}</td></tr>`).join('')}</table>`;
+    const cst = {}; ((await sb.from('orders').select('user_id,total_cents,status')).data || []).forEach((o) => { if (!o.user_id || o.status === 'cancelled') return; const c = (cst[o.user_id] = cst[o.user_id] || { n: 0, spent: 0 }); c.n++; c.spent += o.total_cents; });
+    return `<h1>Customers</h1><table><tr><th>Name</th><th>Email</th><th>Orders</th><th>Spent</th><th>Joined</th><th></th></tr>${us.map((u) => `<tr><td>${esc(u.name)}${u.is_admin ? ' (admin)' : ''}</td><td>${esc(u.email)}</td><td>${cst[u.id]?.n || 0}</td><td>${money(cst[u.id]?.spent || 0)}</td><td>${dateOf(u.created_at)}</td><td>${u.is_admin ? '' : `<a href="#/messages/new?to=${u.id}">💬 Message</a>`}</td></tr>`).join('')}</table>`;
   }
   if (sub === 'products' && (id === 'new' || id)) {
     const p = id === 'new' ? {} : (await sb.from('products').select('*').eq('id', id).single()).data;
@@ -776,6 +838,10 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   <h2>Manage</h2><div class="qlinks">${links.map(([i, l, h]) => `<a href="${h}"><span>${i}</span>${l}</a>`).join('')}</div>`;
 };
 pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
+  document.getElementById('trackform')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+    const { error } = await sb.rpc('set_order_tracking', { oid: Number(id), carrier: f.carrier, number: f.number }); error ? fail(error) : (flash('Tracking saved.'), route());
+  });
   document.getElementById('ordloc')?.addEventListener('change', (e) => { location.hash = e.target.value ? `#/admin/orders?loc=${e.target.value}` : '#/admin/orders'; });
   // competitor prices
   document.getElementById('cmpsearch')?.addEventListener('input', (e) => { const t = e.target.value.toLowerCase(); document.querySelectorAll('#cmptable tr[data-name]').forEach((r) => (r.hidden = !r.dataset.name.includes(t))); });
@@ -1256,6 +1322,8 @@ async function route() {
   let h = location.hash.slice(1); if (!h.startsWith('/')) h = '/'; // e.g. #access_token=… after email confirmation
   const [path, qs] = h.split('?'); const q = new URLSearchParams(qs || '');
   const [name = 'home', ...args] = path.split('/').filter(Boolean); const page = pages[name === '' ? 'home' : name];
+  const TITLES = { shop: 'Shop', cart: 'Cart', checkout: 'Checkout', account: 'My account', messages: 'Messages', notifications: 'Notifications', login: 'Log in', register: 'Sign up', quote: 'Request a quote', wishlist: 'Wishlist', track: 'Track an order', admin: 'Admin', forgot: 'Reset password', reset: 'New password' };
+  document.title = TITLES[name] ? `${TITLES[name]} · ${theme.name || 'Gomi Insulation'}` : (theme.name || 'Gomi Insulation');
   if (!page) { $app.innerHTML = '<h1>Not found</h1>'; return; }
   try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); setMenu(false);
     $app.querySelectorAll('table').forEach((t) => { // label cells so tables can stack into cards on phones

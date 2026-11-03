@@ -863,3 +863,26 @@ create policy "view competitor prices" on public.competitor_prices for select us
 drop policy if exists "admin competitor prices" on public.competitor_prices;
 create policy "admin competitor prices" on public.competitor_prices for all using (public.is_admin()) with check (public.is_admin());
 insert into public.competitors (name, sort) values ('Home Depot', 1), ('Réno-Dépôt', 2), ('Home Hardware', 3) on conflict (name) do nothing;
+
+-- ===== Shipment tracking + guest order lookup =====
+alter table public.orders add column if not exists tracking_carrier text not null default '' check (length(tracking_carrier) <= 40);
+alter table public.orders add column if not exists tracking_number text not null default '' check (length(tracking_number) <= 60);
+
+create or replace function public.set_order_tracking(oid bigint, carrier text, number text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'Not allowed'; end if;
+  update orders set tracking_carrier = left(btrim(coalesce(carrier, '')), 40), tracking_number = left(btrim(coalesce(number, '')), 60) where id = oid;
+  if not found then raise exception 'No such order'; end if;
+  perform notify_user((select user_id from orders where id = oid), 'order', 'Tracking added for order #' || oid, coalesce(nullif(btrim(carrier), ''), 'Carrier') || ' ' || coalesce(number, ''), '#/order/' || oid);
+end $$;
+revoke all on function public.set_order_tracking(bigint, text, text) from public, anon;
+grant execute on function public.set_order_tracking(bigint, text, text) to authenticated;
+
+-- Guests look an order up with its number AND the email it was placed with.
+create or replace function public.track_order(oid bigint, mail text) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select to_jsonb(o) - 'guest_key' - 'user_id' - 'phone' - 'notes' || jsonb_build_object('items',
+    (select coalesce(jsonb_agg(jsonb_build_object('name', i.name, 'qty', i.qty, 'price_cents', i.price_cents, 'product_id', i.product_id)), '[]') from order_items i where i.order_id = o.id))
+  from orders o where o.id = oid and lower(btrim(o.email)) = lower(btrim(mail)) and o.email <> '' $$;
+grant execute on function public.track_order(bigint, text) to anon, authenticated;

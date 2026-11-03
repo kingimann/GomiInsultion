@@ -982,3 +982,11 @@ footer{background:#1c1b19;color:#d8d3c9;border-top:0;margin-top:40px}footer a{co
   .posbar div{display:flex;flex-direction:column;line-height:1.1}.posbar b{font:700 1.5rem var(--fh)}.posbar .btn{flex:1;max-width:220px}
   #app:has(.posbar.on){padding-bottom:90px}}
 @media(min-width:901px){.posbar{display:none!important}}
+
+/* blog */
+.blogGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin:16px 0}
+.blogcard{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);color:var(--fg);text-decoration:none}
+.blogcard img,.blogph{width:100%;aspect-ratio:16/9;object-fit:cover;background:var(--brand-soft);display:flex;align-items:center;justify-content:center;font-size:2rem;color:var(--muted)}
+.blogcard .pad{padding:14px;display:grid;gap:6px}.blogcard h3{margin:0;font-size:1.25rem}.blogcard p{margin:0;color:var(--muted);font-size:.95rem}
+.blogcard:hover{border-color:var(--brand)}
+.postmeta{margin:0 0 14px}

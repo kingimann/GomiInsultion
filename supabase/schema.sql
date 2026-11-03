@@ -2850,3 +2850,7 @@ begin
   return oid;
 end $function$
 ;
+
+-- Blog: pages can be posts
+alter table public.pages add column if not exists kind text not null default 'page';
+do $$ begin alter table public.pages add constraint pages_kind_chk check (kind in ('page','post')); exception when duplicate_object then null; end $$;

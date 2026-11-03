@@ -39,7 +39,7 @@ const shell = ({ title, desc, image, type, path, ld, body, hash }) => `<!doctype
 <script>location.replace(${JSON.stringify(pre + hash)});</script></body></html>`;
 const out = (rel, html) => { const f = join(root, rel, 'index.html'); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, html); };
 
-const urls = [{ loc: '/', pr: '1.0' }, { loc: '/#/shop', pr: '0.8' }];
+const urls = [{ loc: '/', pr: '1.0' }, { loc: '/#/shop', pr: '0.8' }, ...(pages.some((g) => g.kind === 'post') ? [{ loc: '/#/blog', pr: '0.6' }] : [])];
 for (const p of products) {
   const path = `/product/${p.slug}/`, img = safe(p.image_url), desc = p.seo_description || clip(p.description, 160) || `${p.name} — ${p.category}`;
   out(`product/${p.slug}`, shell({ title: p.seo_title || p.name, desc, image: img, type: 'product', path, hash: `#/product/${p.slug}`,

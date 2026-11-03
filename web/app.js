@@ -121,7 +121,19 @@ let unread = { all: 0, msg: 0 }, notifChan = null, threadChan = [], perms = [];
 const can = (p) => !!profile && profile.role !== 'customer' && (profile.role === 'owner' || perms.includes('*') || perms.includes(p));
 const isStaff = () => !!profile && profile.role && profile.role !== 'customer';
 const getCart = () => { try { return JSON.parse(localStorage.getItem('cart') || '{}'); } catch { return {}; } };
-const setCart = (c) => { localStorage.setItem('cart', JSON.stringify(c)); renderNav(); };
+const setCart = (c) => { localStorage.setItem('cart', JSON.stringify(c)); renderNav(); syncCart(); };
+// Keep a server copy of carts we can contact (logged-in customers, or guests who typed an email at checkout) so the team hears about abandoned carts.
+const cartKey = () => { let k = localStorage.getItem('cart_key'); if (!k) { k = crypto.randomUUID(); localStorage.setItem('cart_key', k); } return k; };
+let cartSyncT = null;
+function syncCart() {
+  clearTimeout(cartSyncT);
+  cartSyncT = setTimeout(async () => { try {
+    const items = Object.entries(getCart()).map(([id, qty]) => ({ id: Number(id), qty })), email = session?.user.email || localStorage.getItem('cart_email') || '';
+    if (!items.length) { if (localStorage.getItem('cart_key')) await sb.rpc('clear_cart', { skey: cartKey() }); return; }
+    if (!email) return;
+    await sb.rpc('save_cart', { skey: cartKey(), items, contact: { email, name: profile?.name || localStorage.getItem('cart_name') || '', phone: localStorage.getItem('cart_phone') || '' } });
+  } catch { /* never get in the way of shopping */ } }, 4000);
+}
 function flash(msg, type = 'ok') {
   const f = document.getElementById('flash'); f.textContent = msg; f.className = `flash ${type}`; f.hidden = false;
   clearTimeout(flash.t); flash.t = setTimeout(() => (f.hidden = true), 5000);
@@ -503,6 +515,7 @@ pages.checkout.after = () => {
     const note = document.getElementById('zonenote'); if (note) note.textContent = !pick && (STORE.ship_zones || []).length ? (pc.trim() ? `Delivery to ${pc.toUpperCase()}${zoneLabel(pc) ? ' (' + zoneLabel(pc) + ')' : ''}: ${money(fee)}` : 'Enter your postal code to see your delivery fee.') : '';
   };
   document.querySelectorAll('#co input[name=fulfillment]').forEach((r) => r.addEventListener('change', setFulfil));
+  ['email', 'name', 'phone'].forEach((k) => document.querySelector(`#co [name=${k}]`)?.addEventListener('change', (e) => { try { localStorage.setItem('cart_' + k, e.target.value.trim()); } catch {} syncCart(); }));
   document.querySelector('#co [name=postcode]')?.addEventListener('input', setFulfil); document.getElementById('savedaddr')?.addEventListener('change', setFulfil); setFulfil();
   document.getElementById('co')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const btn = e.target.querySelector('button'); btn.disabled = true;
@@ -568,6 +581,9 @@ pages.track.after = () => document.getElementById('trk')?.addEventListener('subm
   out.innerHTML = orderHtml(data, data.items, false); pages.order.after();
 });
 
+// Anti-bot: a hidden field real people never see, plus the time the form appeared (bots submit instantly)
+const honeypot = () => `<div class="hpfield" aria-hidden="true"><label>Leave this empty<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>`;
+const FORM_SHOWN = {}; const markShown = (k) => { FORM_SHOWN[k] = Date.now(); };
 const authForm = (reg) => {
   const perks = [[':ic-receipt:', 'Track every order', 'See status, tracking and past invoices.'], [':ic-package:', 'Reorder in one click', 'Repeat a previous job without searching.'], [':ic-map-pin:', 'Saved delivery addresses', 'Check out faster next time.'], [':ic-chat:', 'Message our team', 'Questions about a product or delivery.']];
   const cart = Object.keys(getCart()).length;
@@ -580,7 +596,7 @@ const authForm = (reg) => {
       <label>Email<input type="email" name="email" required autocomplete="email" inputmode="email"></label>` : `<label>Email or username<input name="email" required autocomplete="username" autocapitalize="none" spellcheck="false" autofocus></label>`}
     <label class="pwlabel"><span class="pwtop">Password${reg ? '' : '<a href="#/forgot" class="forgot">Forgot password?</a>'}</span><span class="pwfield"><input type="password" name="password" id="pw" required minlength="${reg ? 8 : 1}" autocomplete="${reg ? 'new-password' : 'current-password'}"><button type="button" class="pwtoggle" id="pwtoggle" aria-label="Show password" aria-pressed="false">:ic-eye:</button></span>
       ${reg ? '<span class="meter" id="pwmeter" aria-hidden="true"><i></i><i></i><i></i><i></i></span><small class="muted" id="pwhint">At least 8 characters. A mix of letters and numbers is stronger.</small>' : ''}</label>
-    <p class="autherr" id="autherr" role="alert" hidden></p>
+    ${reg ? honeypot() : ''}<p class="autherr" id="autherr" role="alert" hidden></p>
     <button class="btn block" id="authgo">${reg ? 'Create my account' : 'Log in'}</button>
   </form>
   ${reg ? '<p class="muted authfine">We only use your details to process orders and contact you about them.</p>' : (cart ? '<p class="authguest">In a hurry? <a href="#/checkout">Check out as a guest</a> — no account needed.</p>' : '')}
@@ -622,6 +638,7 @@ const authAfter = (reg) => () => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), btn = e.target.querySelector('button'); if (!e.target.checkValidity()) { e.target.reportValidity(); return; } btn.disabled = true; btn.textContent = reg ? 'Creating account…' : 'Logging in…'; show(''); let r;
     try {
       if (reg) {
+        if (f.website || Date.now() - (FORM_SHOWN.signup || 0) < 2500) { await new Promise((r) => setTimeout(r, 1200)); return show('Please take a moment to check your details and try again.'); }
         if (!(await checkUsername(f.username.trim(), hint))) return show('Please choose a different username.');
         r = await sb.auth.signUp({ email: f.email.trim(), password: f.password, options: { data: { name: f.name, username: f.username.trim() } } });
       } else if (f.email.includes('@')) r = await sb.auth.signInWithPassword({ email: f.email.trim(), password: f.password });
@@ -630,13 +647,13 @@ const authAfter = (reg) => () => {
         if (!data?.access_token) return show(await edgeError(error, data));
         r = await sb.auth.setSession({ access_token: data.access_token, refresh_token: data.refresh_token });
       }
-      if (r.error) return show(/invalid login/i.test(r.error.message) ? 'That email/username and password do not match.' : r.error.message);
+      if (r.error) return show(/invalid login/i.test(r.error.message) ? 'That email/username and password do not match.' : /database error|saving new user/i.test(r.error.message) ? 'We could not create that account. Please use a permanent email address (not a temporary/disposable one) and try again.' : /rate limit|too many/i.test(r.error.message) ? 'Too many attempts. Please wait a few minutes and try again.' : r.error.message);
       if (reg && !r.data.session) { flash('Check your email to confirm your account, then log in with your email or username.'); return (location.hash = '#/login'); }
       await loadSession(); flash(reg ? 'Welcome! Your account is ready.' : 'Logged in.'); location.hash = /^#\/(checkout|cart|messages|account|order|admin|wishlist)/.test(PREV_HASH) ? PREV_HASH : '#/account';
     } catch (err) { show(err.message || 'Something went wrong. Please try again.'); } finally { btn.disabled = false; btn.textContent = label0; }
   });
 };
-pages.login.after = authAfter(false); pages.register.after = authAfter(true);
+pages.login.after = authAfter(false); pages.register.after = () => { markShown('signup'); authAfter(true)(); };
 
 const ordersTable = (os, base, locNames) => os.length ? `<table><tr><th>Order</th><th>Date</th>${locNames ? '<th>Location</th>' : ''}<th>Status</th><th>Total</th></tr>${os.map((o) => `<tr><td><a href="${base}/${o.id}">#${o.id}</a>${base.includes('admin') ? ' · ' + esc(o.name) : ''}</td><td>${dateOf(o.created_at)}</td>${locNames ? `<td>${esc(locNames[o.location_id] || '')}${o.source === 'in_store' ? ' · in store' : o.fulfillment === 'pickup' ? ' · pickup' : ''}</td>` : ''}<td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}</td></tr>`).join('')}</table>` : '<p>No orders yet.</p>';
 const setDefault = async (id) => { await sb.from('addresses').update({ is_default: false }).neq('id', id); await sb.from('addresses').update({ is_default: true }).eq('id', id); };
@@ -698,7 +715,7 @@ pages.form = async ([slug]) => {
   if (!st.open) return `<div class="formcard">${head}<p class="flash error" style="margin:0">${st.reason === 'full' ? 'This form has reached its response limit.' : 'This form is closed and is no longer accepting responses.'}</p></div>`;
   if (f.require_login && !session) return `<div class="formcard">${head}<p style="margin:0">Please <a href="#/login">log in</a> or <a href="#/register">create an account</a> to fill in this form.</p></div>`;
   CURFORM = f;
-  return `<div class="formcard">${head}<form id="cf2" class="stack" data-slug="${esc(f.slug)}" data-ok="${esc(f.success_message)}">${f.fields.map(fieldHtml).join('')}<button class="btn block">${esc(f.submit_label || 'Submit')}</button></form></div>`;
+  return `<div class="formcard">${head}<form id="cf2" class="stack" data-shown="${Date.now()}" data-slug="${esc(f.slug)}" data-ok="${esc(f.success_message)}">${f.fields.map(fieldHtml).join('')}${honeypot()}<button class="btn block">${esc(f.submit_label || 'Submit')}</button></form></div>`;
 };
 pages.form.after = () => document.getElementById('cf2')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const form = e.target, answers = {}; const btn = form.querySelector('button'); btn.disabled = true;
@@ -720,6 +737,7 @@ pages.form.after = () => document.getElementById('cf2')?.addEventListener('submi
     else if (fl.type === 'checkbox') answers[fl.id] = form.querySelector(q).checked;
     else answers[fl.id] = form.querySelector(q).value;
   }
+  answers._hp = form.querySelector('[name=website]')?.value || ''; answers._t = Number(form.dataset.shown) || 0;
   const { error } = await sb.rpc('submit_form', { form_slug: form.dataset.slug, answers });
   btn.disabled = false; if (error) return fail(error);
   form.outerHTML = `<div class="fdone"><div class="authicon">:ic-check-circle:</div><h2 style="margin:0">${esc(form.dataset.ok)}</h2><p class="muted" style="margin:0">Your response has been received.</p></div>`;
@@ -733,12 +751,13 @@ pages.wishlist = async () => {
 pages.quote = () => `<div class="narrow"><h1>Request a quote</h1><p class="muted">Big project or trade order? Tell us what you need and we'll get back to you with pricing.</p>
   <form id="qf" class="stack"><label>Name<input name="name" required value="${esc(profile?.name || '')}"></label>
   <label>Email<input type="email" name="email" required value="${esc(session?.user.email || '')}"></label><label>Phone<input name="phone"></label>
-  <label>What do you need?<textarea name="message" rows="6" required placeholder="e.g. 1,500 sq ft attic, R-38, delivery to Austin TX"></textarea></label><button class="btn">Send request</button></form></div>`;
-pages.quote.after = () => document.getElementById('qf')?.addEventListener('submit', async (e) => {
+  <label>What do you need?<textarea name="message" rows="6" required maxlength="4000" placeholder="e.g. 1,500 sq ft attic, R-38, delivery to Austin TX"></textarea></label>${honeypot()}<button class="btn">Send request</button></form></div>`;
+pages.quote.after = () => { markShown('quote'); document.getElementById('qf')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
-  const { error } = await sb.from('quotes').insert({ ...f, user_id: session?.user.id ?? null });
+  if (f.website || Date.now() - (FORM_SHOWN.quote || 0) < 2500) { flash("Thanks! We'll be in touch soon."); location.hash = '#/'; return; }   // looks like a bot: act as if sent, send nothing
+  delete f.website; const { error } = await sb.from('quotes').insert({ ...f, user_id: session?.user.id ?? null });
   if (error) return fail(error); flash("Thanks! We'll be in touch soon."); location.hash = '#/';
-});
+}); };
 
 pages.account.after = () => {
   const un = document.querySelector('#unform [name=username]'), hint = document.getElementById('unhint'); let ut = null;
@@ -762,7 +781,7 @@ pages.account.after = () => {
 
 
 // ---- admin command palette (Ctrl/Cmd+K) ----
-const CMD_LINKS = [['Dashboard', '#/admin', 'orders.view'], ['Orders', '#/admin/orders', 'orders.view'], ['Point of sale', '#/admin/pos', 'pos'], ['Products', '#/admin/products', 'catalog.manage'], ['New product', '#/admin/products/new', 'catalog.manage'], ['Inventory', '#/admin/inventory', 'inventory.view'], ['Customers', '#/admin/customers', 'customers.view'], ['Invoices', '#/admin/invoices', 'invoices.view'], ['New invoice', '#/admin/invoices/new', 'invoices.manage'], ['Estimates', '#/admin/estimates', 'invoices.view'], ['Expenses', '#/admin/expenses', 'expenses.view'], ['Profit & loss', '#/admin/profit', 'expenses.view'], ['Purchasing', '#/admin/purchasing', 'purchasing.view'], ['Messages', '#/messages', 'messages'], ['Forms', '#/admin/forms', 'content.manage'], ['Pages', '#/admin/pages', 'content.manage'], ['SEO', '#/admin/seo', 'content.manage'], ['Discount codes', '#/admin/codes', 'content.manage'], ['Quotes', '#/admin/quotes', 'customers.view'], ['Settings', '#/admin/settings', 'team.manage'], ['Team & roles', '#/admin/team', 'team.manage'], ['Activity log', '#/admin/activity', 'team.manage']];
+const CMD_LINKS = [['Dashboard', '#/admin', 'orders.view'], ['Orders', '#/admin/orders', 'orders.view'], ['Point of sale', '#/admin/pos', 'pos'], ['Products', '#/admin/products', 'catalog.manage'], ['New product', '#/admin/products/new', 'catalog.manage'], ['Inventory', '#/admin/inventory', 'inventory.view'], ['Customers', '#/admin/customers', 'customers.view'], ['Invoices', '#/admin/invoices', 'invoices.view'], ['New invoice', '#/admin/invoices/new', 'invoices.manage'], ['Estimates', '#/admin/estimates', 'invoices.view'], ['Expenses', '#/admin/expenses', 'expenses.view'], ['Profit & loss', '#/admin/profit', 'expenses.view'], ['Purchasing', '#/admin/purchasing', 'purchasing.view'], ['Messages', '#/messages', 'messages'], ['Forms', '#/admin/forms', 'content.manage'], ['Pages', '#/admin/pages', 'content.manage'], ['SEO', '#/admin/seo', 'content.manage'], ['Discount codes', '#/admin/codes', 'content.manage'], ['Quotes', '#/admin/quotes', 'customers.view'], ['Abandoned carts', '#/admin/carts', 'orders.view'], ['Spam & safety', '#/admin/spam', 'team.manage'], ['Settings', '#/admin/settings', 'team.manage'], ['Team & roles', '#/admin/team', 'team.manage'], ['Activity log', '#/admin/activity', 'team.manage']];
 function openPalette() {
   if (!isStaff() || document.getElementById('cmdk')) return;
   const el = document.createElement('div'); el.id = 'cmdk'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Quick search');
@@ -816,7 +835,7 @@ const salesChart = (orders) => {
 const RESP_STATUS = { new: 'New', in_progress: 'In progress', done: 'Done' };
 let FB = null, PG = null;
 const SECTION_PERM = { orders: 'orders.view', products: 'catalog.manage', inventory: 'inventory.view', locations: 'inventory.view', sales: 'reports.view', pos: 'pos', customers: 'customers.view', forms: 'content.manage', pages: 'content.manage', codes: 'content.manage',
-  compare: 'catalog.manage', purchasing: 'purchasing.view', suppliers: 'purchasing.view', invoices: 'invoices.view', team: 'team.manage', settings: 'team.manage', activity: 'team.manage', quotes: 'customers.view', estimates: 'invoices.view', seo: 'content.manage', statements: 'invoices.view', expenses: 'expenses.view', profit: 'expenses.view' };
+  compare: 'catalog.manage', purchasing: 'purchasing.view', suppliers: 'purchasing.view', invoices: 'invoices.view', team: 'team.manage', settings: 'team.manage', activity: 'team.manage', quotes: 'customers.view', estimates: 'invoices.view', seo: 'content.manage', carts: 'orders.view', spam: 'team.manage', statements: 'invoices.view', expenses: 'expenses.view', profit: 'expenses.view' };
 const ROLES = { owner: 'Owner — full access, including who is an admin', admin: 'Admin — full access (cannot change owners/admins)', manager: 'Manager — orders, refunds, products, inventory, purchasing, content, customers, reports',
   staff: 'Staff — in-store sales (POS), view orders, customers and stock, messages', warehouse: 'Warehouse — pick & ship orders, manage stock and purchase orders', accountant: 'Accountant — invoicing, reports, view orders and customers',
   support: 'Support — messages, view orders and customers', customer: 'Customer — no admin access' }; // form being edited in the builder
@@ -1339,6 +1358,33 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <div class="two2"><label>Minimum order ($)<input name="min" type="number" min="0" step="0.01" value="0"></label><label>Usage limit <small class="muted">0 = unlimited</small><input name="max_uses" type="number" min="0" value="0"></label></div>
     <label>Expires <small class="muted">optional — last day it works</small><input name="expires" type="date"></label><button class="btn">Add code</button></form></section>`;
   }
+  if (sub === 'carts') {
+    const f = ['abandoned', 'active', 'recovered', 'handled'].includes(q.get('f')) ? q.get('f') : 'abandoned', hourAgo = Date.now() - 36e5;
+    const all = (await sb.from('carts').select('*').order('updated_at', { ascending: false }).limit(300)).data || [];
+    const cls = (c) => c.recovered ? 'recovered' : c.handled ? 'handled' : new Date(c.updated_at).getTime() < hourAgo ? 'abandoned' : 'active', counts = {}; all.forEach((c) => (counts[cls(c)] = (counts[cls(c)] || 0) + 1));
+    const ab = all.filter((c) => cls(c) === 'abandoned'), rec = all.filter((c) => c.recovered), rows = all.filter((c) => cls(c) === f);
+    const sum = (a) => a.reduce((x, c) => x + c.total_cents, 0), link = location.origin + location.pathname + '#/cart';
+    return `<div class="sechead"><h1 style="margin:0">Abandoned carts</h1><span class="muted">Customers who added items and didn't order</span></div>
+    <div class="kpis"><div class="kpi"><span class="lbl">Waiting now</span><b>${ab.length}</b><small class="muted">${money(sum(ab))} left behind</small></div><div class="kpi"><span class="lbl">Still shopping</span><b>${counts.active || 0}</b><small class="muted">active in the last hour</small></div><div class="kpi"><span class="lbl">Came back &amp; ordered</span><b>${rec.length}</b><small class="muted">${money(sum(rec))}</small></div></div>
+    <p class="howto">:ic-clock: <span>We keep a copy of a cart only when we can contact the customer — they're logged in, or typed their email at checkout. You get a notification when a cart has been idle for 2 hours. Carts are removed when the customer orders or empties them.</span></p>
+    <div class="chips">${[['abandoned', 'Abandoned'], ['active', 'Still shopping'], ['recovered', 'Ordered'], ['handled', 'Handled']].map(([k, l]) => `<a class="chip ${f === k ? 'on' : ''}" href="#/admin/carts?f=${k}">${l}${counts[k] ? ` (${counts[k]})` : ''}</a>`).join('')}</div>
+    ${rows.length ? `<div class="tablewrap"><table><tr><th>Customer</th><th>Items</th><th>Value</th><th>Last activity</th><th></th></tr>${rows.map((c) => { const items = (c.items || []), who = c.name || c.email;
+      const body = `Hi${c.name ? ' ' + c.name.split(' ')[0] : ''},\n\nYou left ${c.item_count} item${c.item_count === 1 ? '' : 's'} in your cart at ${theme.name || 'Gomi Insulation'}. Your cart is saved: ${link}\n\nIf you have questions about quantities, delivery or trade pricing, just reply to this email.\n\nThanks!`;
+      return `<tr><td><b>${esc(who)}</b>${c.name && c.email ? `<small class="muted" style="display:block">${esc(c.email)}</small>` : ''}${c.phone ? `<small class="muted" style="display:block">${esc(c.phone)}</small>` : ''}</td><td>${items.slice(0, 3).map((i) => `${i.qty} × ${esc(i.name)}`).join('<br>')}${items.length > 3 ? `<br><small class="muted">+${items.length - 3} more</small>` : ''}</td><td><b>${money(c.total_cents)}</b></td><td>${ago(c.updated_at)}</td>
+        <td><div class="row" style="flex-wrap:nowrap;gap:6px">${c.email ? `<a class="btn ghost" href="mailto:${esc(c.email)}?subject=${encodeURIComponent('You left something in your cart')}&body=${encodeURIComponent(body)}">:ic-mail: Email</a>` : ''}${c.user_id ? `<a class="btn ghost" href="#/messages/new?to=${c.user_id}">:ic-chat:</a>` : ''}${f === 'abandoned' && can('orders.manage') ? `<button class="btn ghost cartdone" data-id="${c.id}" title="Mark as handled">:ic-check:</button>` : ''}${can('orders.manage') ? `<button class="ibtn danger cartdel" data-id="${c.id}" aria-label="Delete">:ic-x:</button>` : ''}</div></td></tr>`; }).join('')}</table></div>` : `<div class="emptyq">:ic-cart:<p><b>Nothing here</b></p><p class="muted">${f === 'abandoned' ? 'No abandoned carts right now.' : 'No carts in this list.'}</p></div>`}`;
+  }
+  if (sub === 'spam') {
+    const [log, doms, rev] = await Promise.all([sb.from('spam_log').select('*').order('id', { ascending: false }).limit(60), sb.from('blocked_email_domains').select('domain').order('domain'), sb.rpc('spam_review')]);
+    const logs = log.data || [], day = Date.now() - 864e5, flagged = (rev.data || []).filter((u) => u.flags.length && !u.orders);
+    return `<div class="sechead"><h1 style="margin:0">Spam &amp; safety</h1><span class="muted">What's protecting your store</span></div>
+    <div class="kpis"><div class="kpi"><span class="lbl">Bot form posts blocked (24h)</span><b>${logs.filter((l) => new Date(l.created_at).getTime() > day).length}</b></div><div class="kpi"><span class="lbl">Accounts to review</span><b class="${flagged.length ? 'down' : ''}">${flagged.length}</b></div><div class="kpi"><span class="lbl">Blocked email domains</span><b>${(doms.data || []).length}</b></div></div>
+    <section class="cs" style="margin-top:16px"><h3 style="margin-top:0">Protections that are on</h3><ul class="checks">${[['Sign-ups', 'Disposable / temporary email domains are refused, names containing links are refused, and sign-ups are paused if 40 accounts appear in 10 minutes.'], ['Forms, quotes and reviews', 'Hidden bot trap + "too fast" check, links limited, and a cap per visitor (forms 12/h, quotes 5/h, reviews 6/h). Bot submissions are dropped silently.'], ['Orders and carts', 'Guest orders are limited to 8 per hour per visitor; cart saving is rate-limited.'], ['Messages', 'Customers can send at most 40 messages per 5 minutes. Your team is never limited.']].map(([t, d]) => `<li class="ok"><span class="ci">:ic-check-circle:</span><div><b>${t}</b><small class="muted">${d}</small></div></li>`).join('')}</ul>
+      <p class="muted" style="margin-bottom:0">For the strongest protection against fake accounts, also switch on a CAPTCHA (Cloudflare Turnstile or hCaptcha) in Supabase → Authentication → Attack Protection. That needs a key from your CAPTCHA account, so it's done there, not here.</p></section>
+    <div class="seogrid" style="margin-top:16px"><section class="cs"><div class="sechead"><h3 style="margin:0">New accounts</h3>${flagged.length ? `<button class="btn" id="spamdel" type="button">Delete ${flagged.length} flagged</button>` : ''}</div>
+      <div class="tablewrap"><table id="spamtable"><tr><th>Account</th><th>Joined</th><th>Orders</th><th>Flags</th></tr>${(rev.data || []).slice(0, 80).map((u) => `<tr data-id="${u.id}" data-flagged="${u.flags.length && !u.orders ? 1 : ''}"><td><b>${esc(u.name || '—')}</b><small class="muted" style="display:block">${esc(u.email)}${u.username ? ' · @' + esc(u.username) : ''}</small></td><td>${ago(u.created_at)}</td><td>${u.orders}</td><td>${u.flags.length ? u.flags.map((x) => `<span class="status pending">${esc(x)}</span>`).join(' ') : '<span class="muted">—</span>'}</td></tr>`).join('')}</table></div><p class="muted" style="margin-bottom:0">Accounts with orders are never deleted from here.</p></section>
+    <div class="stack"><section class="cs"><h3 style="margin-top:0">Blocked email domains</h3><form id="domform" class="row" style="flex-wrap:nowrap"><input name="domain" placeholder="spamdomain.com" required style="flex:1;min-width:0"><button class="btn ghost">Block</button></form><div class="brandlist" style="margin-top:10px">${(doms.data || []).map((d) => `<span class="brandpill"><b>${esc(d.domain)}</b><button type="button" class="del domdel" data-d="${esc(d.domain)}" aria-label="Unblock ${esc(d.domain)}">:ic-x:</button></span>`).join('')}</div></section>
+      <section class="cs"><h3 style="margin-top:0">Blocked form posts</h3>${logs.length ? `<ul class="plain">${logs.slice(0, 12).map((l) => `<li><span>${esc(l.detail)}</span><small class="muted">${ago(l.created_at)}</small></li>`).join('')}</ul>` : '<p class="muted" style="margin:0">Nothing blocked yet.</p>'}</section></div></div>`;
+  }
   if (sub === 'quotes') {
     const qs = (await sb.from('quotes').select('*').order('id', { ascending: false })).data;
     return `<h1>Quote requests</h1>${qs.length ? qs.map((x) => `<aside style="margin:10px 0"><b>${esc(x.name)}</b> · <a href="mailto:${esc(x.email)}">${esc(x.email)}</a> ${esc(x.phone)} · <span class="muted">${dateOf(x.created_at)}</span><p style="white-space:pre-wrap">${esc(x.message)}</p><div class="row">${can('invoices.manage') ? `<a class="btn ghost" href="#/admin/estimates/new?name=${encodeURIComponent(x.name)}&email=${encodeURIComponent(x.email || '')}&phone=${encodeURIComponent(x.phone || '')}&note=${encodeURIComponent('Quote request: ' + String(x.message || '').slice(0, 400))}">:ic-receipt: Create estimate</a>` : ''}${x.email ? `<a class="btn ghost" href="mailto:${esc(x.email)}?subject=${encodeURIComponent('Your quote request')}">:ic-mail: Reply</a>` : ''}</div></aside>`).join('') : '<div class="emptyq">:ic-clipboard:<p><b>No quote requests yet</b></p><p class="muted">Requests from the “Get a quote” page show up here.</p></div>'}`;
@@ -1435,6 +1481,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   }
   // ---- dashboard ----
   const days = [7, 30, 90].includes(Number(q.get('days'))) ? Number(q.get('days')) : 30, now = Date.now(), cutCur = now - days * 864e5;
+  const cartAb = can('orders.view') ? await sb.from('carts').select('id', { count: 'exact', head: true }).eq('recovered', false).eq('handled', false).lt('updated_at', new Date(Date.now() - 36e5).toISOString()) : { count: 0 };
   const [ordRes, itemRes, locRes, custRes, pendRes, formRes, lowRes, recentRes, quoteRes, invRes] = await Promise.all([
     sb.from('orders').select('id,created_at,status,total_cents,tax_cents,refunded_cents,location_id,source').neq('status', 'cancelled').gte('created_at', new Date(now - 2 * days * 864e5).toISOString()),
     sb.from('order_items').select('name,qty,price_cents,orders!inner(created_at,status)').neq('orders.status', 'cancelled').gte('orders.created_at', new Date(cutCur).toISOString()),
@@ -1458,7 +1505,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   const hr = new Date().getHours(), first = (profile?.name || '').split(' ')[0];
   const today0 = new Date().toISOString().slice(0, 10), overdue = (invRes.data || []).filter((i) => i.due_date < today0 && i.total_cents > i.paid_cents), rep = can('reports.view');
   const attn = [[':ic-receipt:', pendRes.count || 0, 'pending orders', '#/admin/orders', 'orders.view'], [':ic-chat:', unread.msg, 'unread messages', '#/messages', 'messages'], [':ic-edit:', formRes.count || 0, 'new form responses', '#/admin/forms', 'content.manage'], [':ic-package:', (lowRes.data || []).length, 'low-stock products', '#/admin/inventory', 'inventory.view'],
-    [':ic-clipboard:', quoteRes.count || 0, 'quote requests this week', '#/admin/quotes', 'customers.view'], [':ic-card:', overdue.length, 'overdue invoices', '#/admin/invoices', 'invoices.view']].filter((a) => can(a[4]));
+    [':ic-clipboard:', quoteRes.count || 0, 'quote requests this week', '#/admin/quotes', 'customers.view'], [':ic-card:', overdue.length, 'overdue invoices', '#/admin/invoices', 'invoices.view'], [':ic-cart:', cartAb.count || 0, 'abandoned carts', '#/admin/carts', 'orders.view']].filter((a) => can(a[4]));
   const links = [[':ic-receipt:', 'Orders', '#/admin/orders'], [':ic-store:', 'Products', '#/admin/products'], [':ic-package:', 'Inventory', '#/admin/inventory'], [':ic-map-pin:', 'Locations', '#/admin/locations'], [':ic-trending-up:', 'Sales', '#/admin/sales'], [':ic-store:', 'Point of sale', '#/admin/pos'],
     [':ic-receipt:', 'Invoices', '#/admin/invoices'], [':ic-edit:', 'Estimates', '#/admin/estimates'], [':ic-book:', 'Statements', '#/admin/statements'], [':ic-wallet:', 'Expenses', '#/admin/expenses'], [':ic-chart:', 'Profit & loss', '#/admin/profit'], [':ic-truck:', 'Purchasing', '#/admin/purchasing'], [':ic-briefcase:', 'Suppliers', '#/admin/suppliers'], [':ic-shield:', 'Team & roles', '#/admin/team'], [':ic-clock:', 'Activity log', '#/admin/activity'],
     [':ic-users:', 'Customers', '#/admin/customers'], [':ic-chart:', 'SEO', '#/admin/seo'], [':ic-chat:', 'Messages', '#/messages'], [':ic-edit:', 'Forms', '#/admin/forms'], [':ic-file:', 'Pages', '#/admin/pages'], [':ic-dollar:', 'Price compare', '#/admin/compare'], [':ic-tag:', 'Discount codes', '#/admin/codes'], [':ic-settings:', 'Settings', '#/admin/settings'], [':ic-clipboard:', 'Quotes', '#/admin/quotes']];
@@ -1598,6 +1645,11 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     if (!from.startsWith('/')) from = '/' + from; if (!/^https?:\/\//i.test(to) && !to.startsWith('/')) to = '/' + to; if (from.replace(/\/+$/, '') === to.replace(/\/+$/, '')) return fail(new Error('Old and new address are the same.'));
     const { error } = await sb.from('seo_redirects').insert({ from_path: from, to_path: to }); error ? fail(error.code === '23505' ? new Error('That old path already has a redirect.') : error) : (flash('Redirect added — it goes live on the next deploy.'), route()); });
   document.querySelectorAll('.rddel').forEach((b) => b.addEventListener('click', async () => { if (!confirm('Delete this redirect?')) return; const { error } = await sb.from('seo_redirects').delete().eq('id', b.dataset.id); error ? fail(error) : route(); }));
+  document.querySelectorAll('.cartdone').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.from('carts').update({ handled: true }).eq('id', b.dataset.id); error ? fail(error) : route(); }));
+  document.querySelectorAll('.cartdel').forEach((b) => b.addEventListener('click', async () => { if (!confirm('Delete this saved cart?')) return; const { error } = await sb.from('carts').delete().eq('id', b.dataset.id); error ? fail(error) : route(); }));
+  document.getElementById('spamdel')?.addEventListener('click', async () => { const ids = [...document.querySelectorAll('#spamtable tr[data-flagged="1"]')].map((r) => r.dataset.id); if (!ids.length || !confirm(`Permanently delete ${ids.length} flagged account${ids.length === 1 ? '' : 's'}? Accounts with orders are skipped.`)) return; const { data, error } = await sb.rpc('delete_spam_users', { ids }); error ? fail(error) : (flash(`${data} account${data === 1 ? '' : 's'} deleted.`), route()); });
+  document.getElementById('domform')?.addEventListener('submit', async (e) => { e.preventDefault(); const d = new FormData(e.target).get('domain').trim().toLowerCase().replace(/^.*@/, '').replace(/^https?:\/\//, '').replace(/\/.*$/, ''); const { error } = await sb.from('blocked_email_domains').insert({ domain: d }); error ? fail(error.code === '23505' ? new Error('Already blocked.') : error) : (flash(`${d} blocked.`), route()); });
+  document.querySelectorAll('.domdel').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.from('blocked_email_domains').delete().eq('domain', b.dataset.d); error ? fail(error) : route(); }));
   document.getElementById('addzone')?.addEventListener('click', () => document.getElementById('zonerows').insertAdjacentHTML('beforeend', zoneRow()));
   document.getElementById('zonerows')?.addEventListener('click', (e) => e.target.closest('.rmzone')?.closest('.zoneedit').remove());
   document.getElementById('addspec')?.addEventListener('click', () => document.getElementById('specrows').insertAdjacentHTML('beforeend', specRow()));
@@ -2729,4 +2781,4 @@ sb.auth.onAuthStateChange((ev) => {
 });
 applyBranding();
 document.getElementById('menubtn').innerHTML = ':ic-menu:';
-Promise.allSettled([loadSiteTheme(), loadPages(), loadSession()]).then(route);
+Promise.allSettled([loadSiteTheme(), loadPages(), loadSession()]).then(() => { route(); if (Object.keys(getCart()).length) syncCart(); });

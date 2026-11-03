@@ -839,3 +839,4 @@ footer{background:#1c1b19;color:#d8d3c9;border-top:0;margin-top:40px}footer a{co
 @media(max-width:760px) and (prefers-reduced-motion:no-preference){body.chatfull .dm{animation:chatin .18s ease-out}@keyframes chatin{from{transform:translateX(24px);opacity:.4}to{transform:none;opacity:1}}}
 .msg{white-space:normal}.msg .mt{white-space:pre-wrap;word-break:break-word}
 @media(max-width:760px){body:has(.dm:not(.has-chat):not(.solo)) footer{display:none}}
+.hpfield{position:absolute!important;left:-9999px!important;top:auto;width:1px;height:1px;overflow:hidden}

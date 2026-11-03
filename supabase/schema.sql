@@ -2448,3 +2448,262 @@ begin
   return oid;
 end $function$
 ;
+
+-- ===== Anti-spam & abandoned carts =====
+create table if not exists public.rate_limits (k text not null, bucket timestamptz not null, n int not null default 0, primary key (k, bucket));
+alter table public.rate_limits enable row level security;
+create table if not exists public.spam_log (id bigint generated always as identity primary key, kind text not null, detail text not null default '', ip_hash text not null default '', created_at timestamptz not null default now());
+create index if not exists spam_log_idx on public.spam_log (created_at desc);
+alter table public.spam_log enable row level security;
+drop policy if exists "staff read spam log" on public.spam_log;
+create policy "staff read spam log" on public.spam_log for select using (public.has_perm('team.manage'));
+create table if not exists public.blocked_email_domains (domain text primary key check (domain = lower(domain) and domain ~ '^[a-z0-9.-]+$'));
+alter table public.blocked_email_domains enable row level security;
+drop policy if exists "staff blocked domains" on public.blocked_email_domains;
+create policy "staff blocked domains" on public.blocked_email_domains for all using (public.has_perm('team.manage')) with check (public.has_perm('team.manage'));
+insert into public.blocked_email_domains (domain) values ('mailinator.com'),('guerrillamail.com'),('guerrillamail.net'),('guerrillamail.org'),('sharklasers.com'),('grr.la'),('10minutemail.com'),('10minutemail.net'),('tempmail.com'),('temp-mail.org'),('temp-mail.io'),('tempmailo.com'),('tempail.com'),('yopmail.com'),('yopmail.net'),('trashmail.com'),('trashmail.net'),('throwawaymail.com'),('getnada.com'),('nada.email'),('maildrop.cc'),('dispostable.com'),('fakeinbox.com'),('mintemail.com'),('mohmal.com'),('emailondeck.com'),('moakt.com'),('mailnesia.com'),('spamgourmet.com'),('burnermail.io'),('discard.email'),('mailcatch.com'),('inboxkitten.com'),('mytemp.email'),('tmpmail.org'),('tmpmail.net'),('minuteinbox.com'),('anonbox.net'),('luxusmail.org'),('byom.de'),('trbvm.com'),('wegwerfmail.de'),('einrot.com'),('cuvox.de'),('dayrep.com'),('armyspy.com'),('rhyta.com'),('superrito.com'),('teleworm.us'),('jourrapide.com'),('gustr.com'),('fleckens.hu') on conflict do nothing;
+
+create or replace function public.client_ip() returns text language sql stable as $$
+  select nullif(btrim(split_part(coalesce((nullif(current_setting('request.headers', true), ''))::jsonb ->> 'x-forwarded-for', ''), ',', 1)), '') $$;
+create or replace function public.link_count(t text) returns int language sql immutable as $$
+  select greatest(coalesce(array_length(regexp_split_to_array(coalesce(t, ''), '(https?://|www\.)'), 1), 1) - 1, 0) $$;
+create or replace function public.rate_check(kind text, max_n int, win interval) returns void language plpgsql security definer set search_path = public as $$
+declare key text := kind || ':' || md5(coalesce(public.client_ip(), '?') || ':' || coalesce(auth.uid()::text, '')); b timestamptz := date_bin(win, now(), timestamptz 'epoch'); c int;
+begin
+  if auth.uid() is not null and public.has_perm('orders.view') then return; end if;  -- staff are never throttled
+  insert into rate_limits (k, bucket, n) values (key, b, 1) on conflict (k, bucket) do update set n = rate_limits.n + 1 returning n into c;
+  if c > max_n then raise exception 'Too many attempts. Please wait a few minutes and try again.'; end if;
+  if random() < 0.01 then delete from rate_limits where bucket < now() - interval '2 days'; end if;
+end $$;
+create or replace function public.trg_rate() returns trigger language plpgsql security definer set search_path = public as $$
+begin perform public.rate_check(tg_argv[0], tg_argv[1]::int, (tg_argv[2] || ' seconds')::interval); return new; end $$;
+create or replace function public.trg_links_guard() returns trigger language plpgsql as $$
+declare t text := case tg_argv[0] when 'quote' then new.message when 'review' then new.comment else '' end;
+begin if public.link_count(t) > tg_argv[1]::int then raise exception 'Please remove some of the links from your message and try again.'; end if; return new; end $$;
+drop trigger if exists quotes_rate on public.quotes; create trigger quotes_rate before insert on public.quotes for each row execute function public.trg_rate('quote', '5', '3600');
+drop trigger if exists quotes_links on public.quotes; create trigger quotes_links before insert on public.quotes for each row execute function public.trg_links_guard('quote', '3');
+drop trigger if exists reviews_rate on public.reviews; create trigger reviews_rate before insert on public.reviews for each row execute function public.trg_rate('review', '6', '3600');
+drop trigger if exists reviews_links on public.reviews; create trigger reviews_links before insert on public.reviews for each row execute function public.trg_links_guard('review', '2');
+drop trigger if exists messages_rate on public.messages; create trigger messages_rate before insert on public.messages for each row execute function public.trg_rate('msg', '40', '300');
+
+-- sign-ups: no disposable-email domains, no link-stuffed names, and a global flood brake
+create or replace function public.trg_block_spam_signup() returns trigger language plpgsql security definer set search_path = public, auth as $$
+declare d text := lower(split_part(coalesce(new.email, ''), '@', 2)); nm text := coalesce(new.raw_user_meta_data->>'name', '');
+begin
+  if exists (select 1 from public.blocked_email_domains b where d = b.domain or d like '%.' || b.domain) then raise exception 'Please use a permanent email address (temporary email services are not allowed).'; end if;
+  if nm ~* '(https?://|www\.)' or length(nm) > 80 then raise exception 'That name is not allowed.'; end if;
+  if (select count(*) from auth.users where created_at > now() - interval '10 minutes') >= 40 then raise exception 'Sign-ups are busy right now. Please try again in a few minutes.'; end if;
+  return new;
+end $$;
+drop trigger if exists block_spam_signup on auth.users;
+create trigger block_spam_signup before insert on auth.users for each row execute function public.trg_block_spam_signup();
+
+-- review recent accounts for the admin Spam page, and remove obvious junk (never accounts that have orders)
+create or replace function public.spam_review() returns table(id uuid, name text, email text, username text, created_at timestamptz, confirmed boolean, orders bigint, flags text[])
+language plpgsql security definer set search_path = public, auth as $$
+begin
+  if not public.has_perm('team.manage') then raise exception 'Not allowed'; end if;
+  return query
+  select u.id, coalesce(p.name, ''), u.email::text, coalesce(p.username, ''), u.created_at, u.email_confirmed_at is not null,
+    (select count(*) from orders o where o.user_id = u.id),
+    array_remove(array[
+      case when exists (select 1 from blocked_email_domains b where split_part(lower(u.email), '@', 2) = b.domain) then 'disposable email' end,
+      case when u.email_confirmed_at is null and u.created_at < now() - interval '1 day' then 'never confirmed' end,
+      case when coalesce(p.name, '') ~* '(https?://|www\.)' then 'link in name' end,
+      case when u.email ~ '[0-9]{6,}@' then 'numeric email' end], null)
+  from auth.users u left join profiles p on p.id = u.id
+  where coalesce(p.role, 'customer') = 'customer'
+  order by u.created_at desc limit 150;
+end $$;
+create or replace function public.delete_spam_users(ids uuid[]) returns int language plpgsql security definer set search_path = public, auth as $$
+declare n int;
+begin
+  if not public.has_perm('team.manage') then raise exception 'Not allowed'; end if;
+  delete from auth.users u where u.id = any(ids) and not exists (select 1 from orders o where o.user_id = u.id) and not exists (select 1 from profiles p where p.id = u.id and p.role <> 'customer');
+  get diagnostics n = row_count; return n;
+end $$;
+revoke all on function public.spam_review(), public.delete_spam_users(uuid[]), public.rate_check(text, int, interval) from public;
+grant execute on function public.spam_review(), public.delete_spam_users(uuid[]) to authenticated;
+grant execute on function public.rate_check(text, int, interval) to anon, authenticated;
+
+-- ===== Abandoned carts =====
+create table if not exists public.carts (
+  id bigint generated always as identity primary key, session_key uuid not null unique, user_id uuid references auth.users(id) on delete set null,
+  email text not null default '', name text not null default '', phone text not null default '',
+  items jsonb not null default '[]', total_cents int not null default 0, item_count int not null default 0,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  notified boolean not null default false, recovered boolean not null default false, handled boolean not null default false);
+create index if not exists carts_updated_idx on public.carts (updated_at desc);
+alter table public.carts enable row level security;
+drop policy if exists "staff read carts" on public.carts; create policy "staff read carts" on public.carts for select using (public.has_perm('orders.view'));
+drop policy if exists "staff edit carts" on public.carts; create policy "staff edit carts" on public.carts for update using (public.has_perm('orders.manage')) with check (public.has_perm('orders.manage'));
+drop policy if exists "staff delete carts" on public.carts; create policy "staff delete carts" on public.carts for delete using (public.has_perm('orders.manage'));
+create or replace function public.save_cart(skey uuid, items jsonb, contact jsonb default '{}') returns void language plpgsql security definer set search_path = public as $$
+declare lines jsonb; tot int; cnt int; em text; nm text; ph text;
+begin
+  perform public.rate_check('cart', 120, interval '1 hour');
+  if jsonb_typeof(items) <> 'array' or jsonb_array_length(items) > 60 then return; end if;
+  select jsonb_agg(jsonb_build_object('id', p.id, 'name', p.name, 'qty', q.qty, 'line_cents', public.pack_total(p.id, p.price_cents, q.qty))), coalesce(sum(public.pack_total(p.id, p.price_cents, q.qty)), 0), coalesce(sum(q.qty), 0)
+    into lines, tot, cnt
+  from (select (e->>'id')::bigint as id, least(greatest((e->>'qty')::int, 1), 5000) as qty from jsonb_array_elements(items) e where (e->>'id') ~ '^[0-9]+$' and (e->>'qty') ~ '^[0-9]+$') q
+  join products p on p.id = q.id and p.active;
+  em := lower(btrim(coalesce(nullif(contact->>'email', ''), (select email from profiles where id = auth.uid()), '')));
+  if lines is null then delete from carts where session_key = skey and not recovered; return; end if;
+  if em = '' and auth.uid() is null then return; end if;   -- nobody we could contact: don't keep it
+  if length(em) > 200 or (em <> '' and em !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$') then em := ''; end if;
+  nm := left(coalesce(nullif(contact->>'name', ''), (select name from profiles where id = auth.uid()), ''), 120); ph := left(coalesce(contact->>'phone', ''), 40);
+  insert into carts (session_key, user_id, email, name, phone, items, total_cents, item_count) values (skey, auth.uid(), em, nm, ph, lines, tot, cnt)
+  on conflict (session_key) do update set user_id = coalesce(excluded.user_id, carts.user_id), email = coalesce(nullif(excluded.email, ''), carts.email), name = coalesce(nullif(excluded.name, ''), carts.name), phone = coalesce(nullif(excluded.phone, ''), carts.phone),
+    notified = case when carts.items is distinct from excluded.items then false else carts.notified end, handled = case when carts.items is distinct from excluded.items then false else carts.handled end,
+    items = excluded.items, total_cents = excluded.total_cents, item_count = excluded.item_count, updated_at = now(), recovered = false;
+end $$;
+create or replace function public.clear_cart(skey uuid) returns void language plpgsql security definer set search_path = public as $$
+begin perform public.rate_check('cartclear', 120, interval '1 hour'); delete from carts where session_key = skey and not recovered; end $$;
+grant execute on function public.save_cart(uuid, jsonb, jsonb), public.clear_cart(uuid) to anon, authenticated;
+create or replace function public.trg_cart_recovered() returns trigger language plpgsql security definer set search_path = public as $$
+begin update carts set recovered = true where (new.user_id is not null and user_id = new.user_id) or (email <> '' and lower(email) = lower(coalesce(new.email, ''))); return null; end $$;
+drop trigger if exists orders_cart_recovered on public.orders; create trigger orders_cart_recovered after insert on public.orders for each row execute function public.trg_cart_recovered();
+create or replace function public.notify_abandoned_carts() returns int language plpgsql security definer set search_path = public as $$
+declare r record; n int := 0;
+begin
+  for r in select * from carts where not notified and not recovered and not handled and item_count > 0 and updated_at < now() - interval '2 hours' loop
+    insert into notifications (user_id, kind, title, body, link)
+      select pr.id, 'cart', 'Abandoned cart: ' || coalesce(nullif(r.name, ''), r.email, 'a customer'), r.item_count || ' item' || case when r.item_count = 1 then '' else 's' end || ' worth $' || to_char(r.total_cents / 100.0, 'FM999990.00') || ' were left in the cart', '#/admin/carts'
+      from profiles pr where public.user_has_perm(pr.id, 'orders.view');
+    update carts set notified = true where id = r.id; n := n + 1;
+  end loop;
+  delete from carts where updated_at < now() - interval '60 days';
+  return n;
+end $$;
+
+select cron.schedule('abandoned-carts', '*/30 * * * *', 'select public.notify_abandoned_carts()');
+
+CREATE OR REPLACE FUNCTION public.place_order(items jsonb, customer jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare pk record; it jsonb; p public.products; q int; sub int := 0; ship int; oid bigint; gk uuid; item_id bigint;
+  disc int := 0; pct int; code text := nullif(upper(trim(coalesce(customer->>'code',''))), '');
+  free_over int := public.store_cfg('free_over_cents', 50000)::int; flat int := public.store_cfg('ship_flat_cents', 1500)::int;
+  rate numeric := public.store_cfg('tax_rate', 0); tax int; tlabel text := public.store_cfg_text('tax_label', 'Tax');
+  pickup boolean := coalesce(customer->>'fulfillment', 'delivery') = 'pickup'; loc public.locations; pref bigint;
+  addr text; city text; pc text; avail int;
+begin
+  perform public.rate_check('order', 8, interval '1 hour');
+  if jsonb_array_length(items) = 0 then raise exception 'Cart is empty'; end if;
+  if pickup then
+    select * into loc from locations where id = nullif(customer->>'location_id', '')::bigint and active and pickup_enabled;
+    if not found then raise exception 'Please choose a pickup location'; end if;
+    pref := loc.id;
+    addr := 'Pickup: ' || loc.name || case when loc.address <> '' then ', ' || loc.address else '' end; city := coalesce(nullif(loc.city, ''), '-'); pc := coalesce(nullif(loc.postcode, ''), '-');
+  else
+    pref := (select id from locations where is_default);
+    addr := customer->>'address'; city := customer->>'city'; pc := customer->>'postcode';
+    if coalesce(btrim(addr), '') = '' or coalesce(btrim(city), '') = '' or coalesce(btrim(pc), '') = '' then raise exception 'Please enter your delivery address'; end if;
+  end if;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint and active for update;
+    if not found or q < 1 then raise exception 'Not enough stock for %', coalesce(p.name, 'an item'); end if;
+    if pickup then select coalesce(qty, 0) into avail from inventory where product_id = p.id and location_id = loc.id;
+    else select coalesce(sum(i.qty), 0) into avail from inventory i join locations l on l.id = i.location_id where i.product_id = p.id and l.active; end if;
+    if coalesce(avail, 0) < q then raise exception 'Not enough stock for %', p.name; end if;
+    sub := sub + public.pack_total(p.id, p.price_cents, q);
+  end loop;
+  if code is not null then
+    pct := public.check_code(code, sub);
+    if pct is null then raise exception 'That discount code is not valid'; end if;
+    disc := sub * pct / 100;
+  end if;
+  ship := case when pickup or (free_over > 0 and sub - disc >= free_over) then 0 else public.ship_fee_for(pc) end;
+  tax := round((sub - disc + ship) * rate / 100.0)::int;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents, discount_cents, promo_code, location_id, fulfillment, source, tax_cents, tax_label)
+  values (auth.uid(), customer->>'email', customer->>'name', coalesce(customer->>'phone',''), addr, city, pc, coalesce(customer->>'notes',''), sub, ship, sub - disc + ship + tax, disc, code, pref,
+          case when pickup then 'pickup' else 'delivery' end, 'online', tax, case when tax > 0 then tlabel else '' end)
+  returning id, guest_key into oid, gk;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint;
+    for pk in select * from public.pack_split(p.id, p.price_cents, q) loop
+      insert into order_items (order_id, product_id, name, price_cents, qty, pack_units, bundle_size) values (oid, p.id, p.name || case when pk.label <> '' then ' (' || pk.label || ' price)' else '' end, pk.price, pk.qty, pk.units, coalesce(p.bags_per_bundle, (select min(k.units) from product_packs k where k.product_id = p.id))) returning id into item_id;
+      perform public.allocate_stock(item_id, p.id, pk.qty, pref, pickup, oid);
+    end loop;
+  end loop;
+  return jsonb_build_object('id', oid, 'key', gk);
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION public.submit_form(form_slug text, answers jsonb)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare f public.forms; fld jsonb; v jsonb; txt text; k text; clean jsonb := '{}'; ftype text; item text; st jsonb; lim numeric;
+begin
+  perform public.rate_check('form:' || form_slug, 12, interval '1 hour');
+  if coalesce(answers->>'_hp', '') <> '' or ((answers->>'_t') ~ '^[0-9]+$' and extract(epoch from now()) * 1000 - (answers->>'_t')::numeric < 2500) or public.link_count(answers::text) > 4 then
+    insert into spam_log (kind, detail, ip_hash) values ('form', 'blocked submission to ' || form_slug, md5(coalesce(public.client_ip(), '?')));
+    return;   -- looks like a bot: pretend it worked, store nothing
+  end if;
+  select * into f from forms where slug = form_slug and active;
+  if not found then raise exception 'This form is not available'; end if;
+  st := public.form_status(form_slug);
+  if not (st->>'open')::boolean then raise exception 'This form is no longer accepting responses'; end if;
+  if f.require_login and auth.uid() is null then raise exception 'Please log in to submit this form'; end if;
+  if (select count(*) from form_submissions where form_id = f.id and created_at > now() - interval '1 hour') >= 200 then
+    raise exception 'Too many submissions right now, please try again later'; end if;
+  for fld in select * from jsonb_array_elements(f.fields) loop
+    k := fld->>'id'; ftype := coalesce(fld->>'type', 'text'); v := answers->k;
+    if ftype in ('heading', 'paragraph', 'divider') then continue; end if;
+    if ftype = 'multi' then
+      if jsonb_typeof(v) = 'array' and jsonb_array_length(v) > 0 then
+        if jsonb_array_length(v) > 50 then raise exception '"%" has too many choices', fld->>'label'; end if;
+        for item in select jsonb_array_elements_text(v) loop
+          if not (fld->'options') ? item then raise exception '"%" has an invalid choice', fld->>'label'; end if;
+        end loop;
+        clean := clean || jsonb_build_object(k, v);
+      elsif coalesce((fld->>'required')::boolean, false) then raise exception '"%" is required', fld->>'label';
+      end if;
+      continue;
+    end if;
+    txt := case jsonb_typeof(v) when 'string' then v #>> '{}' when 'boolean' then v::text when 'number' then v::text else null end;
+    if coalesce((fld->>'required')::boolean, false) and (txt is null or btrim(txt) = '' or txt = 'false') then
+      raise exception '"%" is required', fld->>'label'; end if;
+    if txt is null or btrim(txt) = '' then continue; end if;
+    if length(txt) > coalesce(nullif(fld->>'maxlength', '')::int, 5000) then raise exception '"%" is too long', fld->>'label'; end if;
+    if ftype = 'email' and txt !~ '^\S+@\S+\.\S+$' then raise exception '"%" must be a valid email', fld->>'label'; end if;
+    if ftype = 'url' and txt !~* '^https?://\S+$' then raise exception '"%" must be a link starting with http:// or https://', fld->>'label'; end if;
+    if ftype = 'time' and txt !~ '^[0-9]{2}:[0-9]{2}$' then raise exception '"%" must be a time', fld->>'label'; end if;
+    if ftype = 'date' and txt !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then raise exception '"%" must be a date', fld->>'label'; end if;
+    if ftype = 'rating' and txt !~ '^[1-5]$' then raise exception '"%" must be between 1 and 5', fld->>'label'; end if;
+    if ftype = 'number' then
+      if txt !~ '^-?[0-9]+(\.[0-9]+)?$' then raise exception '"%" must be a number', fld->>'label'; end if;
+      lim := nullif(fld->>'min', '')::numeric; if lim is not null and txt::numeric < lim then raise exception '"%" must be at least %', fld->>'label', lim; end if;
+      lim := nullif(fld->>'max', '')::numeric; if lim is not null and txt::numeric > lim then raise exception '"%" must be at most %', fld->>'label', lim; end if;
+    end if;
+    if ftype in ('select', 'radio') and not (fld->'options') ? txt then raise exception '"%" has an invalid choice', fld->>'label'; end if;
+    if ftype = 'file' and (txt not like f.slug || '/%' or not exists (select 1 from storage.objects where bucket_id = 'form-uploads' and name = txt)) then
+      raise exception '"%" upload was not found, please try again', fld->>'label'; end if;
+    clean := clean || jsonb_build_object(k, case when ftype = 'checkbox' then to_jsonb(txt = 'true') else to_jsonb(txt) end);
+  end loop;
+  insert into form_submissions (form_id, data, user_id) values (f.id, clean, auth.uid());
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION public.notify_when_back(pid bigint, addr text)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+begin
+  perform public.rate_check('alert', 10, interval '1 hour');
+  addr := lower(trim(addr));
+  if addr !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'Enter a valid email address'; end if;
+  if not exists (select 1 from products where id = pid and active) then raise exception 'Product not found'; end if;
+  insert into stock_alerts (product_id, email) values (pid, addr) on conflict do nothing;
+end $function$
+;

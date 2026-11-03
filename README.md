@@ -249,3 +249,8 @@ Log in and Create account share one two-panel screen (benefits on the left on de
 ## New messages for everyone
 
 Registered customers can now start **new messages** (not just one endless chat): **Messages → New message** has quick topics (order, delivery, product advice, pricing, other), a subject, the message, an optional order and photo/file attachments. Each message is its own conversation, so customers with several see an inbox (with unread counts and search), and a closed conversation just offers *Start a new message*. Staff get the same **New message** button with a customer picker (search by name or email); the old "message this customer" shortcut still opens their latest thread. On phones the **More** sheet now works properly: one scrolling list, links are tappable, and tapping outside or pressing Esc closes it.
+
+## Search bar & password rule
+
+**Search** now matches every word you type against product name, category, brand and SKU ("r 13", "owens foam"), highlights what matched, supports arrow keys + Enter, shows recent searches when you tap the empty box, has a clear (×) button, keeps your query in the box on the shop page, ignores out-of-date responses, and offers "Request a quote" when nothing matches. The shop's search results use the same multi-word matching.
+Supabase's **minimum password length is now 8** (it was 6), matching the sign-up form.

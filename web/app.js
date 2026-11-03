@@ -279,18 +279,36 @@ document.getElementById('tabbar').addEventListener('click', (e) => { if (e.targe
 window.addEventListener('hashchange', () => { document.body.classList.remove('msearch'); renderTabbar(); });
 document.addEventListener('click', (e) => { if (e.target.isConnected && document.body.classList.contains('menu-open') && !e.target.closest('#nav, #tabbar, #menubtn')) { setMenu(false); renderTabbar(); } });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('menu-open')) { setMenu(false); renderTabbar(); } });
-const sugg = document.getElementById('sugg'), sinput = document.querySelector('#search input[name=q]'); let stm = null;
-sinput.addEventListener('input', () => {
-  clearTimeout(stm); const t = sinput.value.trim().replace(/[%,()]/g, ''); if (t.length < 2) { sugg.hidden = true; return; }
-  stm = setTimeout(async () => {
-    const { data } = await sb.from('products').select('slug,name,price_cents,category').eq('active', true).or(`name.ilike.%${t}%,category.ilike.%${t}%`).order('name').limit(6);
-    sugg.innerHTML = (data || []).length ? data.map((x) => `<a href="#/product/${esc(x.slug)}"><span>${esc(x.name)}<small>${esc(x.category)}</small></span><b>${money(x.price_cents)}</b></a>`).join('') + `<a class="all" href="#/shop?q=${encodeURIComponent(t)}">See all results for “${esc(t)}” →</a>` : '<p class="muted" style="padding:10px 14px;margin:0">No matches</p>';
-    sugg.hidden = false;
-  }, 180);
+// ---- search: every word must match (name, category, brand, SKU); suggestions with keyboard, recent searches, clear button ----
+const searchWords = (t) => String(t || '').toLowerCase().split(/\s+/).map((w) => w.replace(/[%,()*\\]/g, '')).filter(Boolean).slice(0, 6);
+const applySearch = (req, term, cols = ['name', 'category', 'brand', 'sku']) => { searchWords(term).forEach((w) => { req = req.or(cols.map((c) => `${c}.ilike.%${w}%`).join(',')); }); return req; };
+const markHit = (text, words) => { let h = esc(text); words.forEach((w) => { h = h.replace(new RegExp('(' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig'), '<mark>$1</mark>'); }); return h; };
+const getRecent = () => { try { return JSON.parse(localStorage.getItem('recent_search') || '[]'); } catch { return []; } };
+const addRecent = (t) => { t = t.trim(); if (!t) return; try { localStorage.setItem('recent_search', JSON.stringify([t, ...getRecent().filter((x) => x.toLowerCase() !== t.toLowerCase())].slice(0, 5))); } catch {} };
+const sugg = document.getElementById('sugg'), sinput = document.querySelector('#search input[name=q]'), sform = document.getElementById('search'); let stm = null, sseq = 0, hl = -1;
+const sclear = document.createElement('button'); sclear.type = 'button'; sclear.className = 'sclear'; sclear.hidden = true; sclear.setAttribute('aria-label', 'Clear search'); sclear.innerHTML = ':ic-x:'; sform.appendChild(sclear);
+sinput.setAttribute('role', 'combobox'); sinput.setAttribute('aria-expanded', 'false'); sinput.setAttribute('aria-autocomplete', 'list'); sinput.setAttribute('enterkeyhint', 'search'); sinput.type = 'search'; sinput.setAttribute('autocapitalize', 'none');
+const openSugg = (html) => { sugg.innerHTML = html; sugg.hidden = false; sinput.setAttribute('aria-expanded', 'true'); hl = -1; };
+const closeSugg = () => { sugg.hidden = true; sinput.setAttribute('aria-expanded', 'false'); hl = -1; };
+const showRecent = () => { const r = getRecent(); if (!r.length) return closeSugg(); openSugg(`<p class="sgh">Recent searches <button type="button" class="link" id="sclr">Clear</button></p>${r.map((x) => `<a href="#/shop?q=${encodeURIComponent(x)}"><span>:ic-clock: ${esc(x)}</span></a>`).join('')}`); };
+const runSuggest = async () => {
+  const t = sinput.value.trim().replace(/[%,()]/g, ''); sclear.hidden = !sinput.value; if (t.length < 2) { t.length ? closeSugg() : showRecent(); return; }
+  const my = ++sseq; let req = sb.from('products').select('slug,name,price_cents,category,brand,sku,stock').eq('active', true); req = applySearch(req, t);
+  const { data } = await req.order('name').limit(6); if (my !== sseq) return; const ws = searchWords(t);
+  openSugg((data || []).length ? data.map((x) => `<a href="#/product/${esc(x.slug)}"><span>${markHit(x.name, ws)}<small>${esc([x.brand, x.category].filter(Boolean).join(' · '))}${x.stock <= 0 ? ' · sold out' : ''}</small></span><b>${money(x.price_cents)}</b></a>`).join('') + `<a class="all" href="#/shop?q=${encodeURIComponent(t)}">See all results for “${esc(t)}” →</a>` : `<p class="muted sgh">No products match “${esc(t)}”.</p><a class="all" href="#/quote">Can't find it? Request a quote →</a>`);
+};
+sinput.addEventListener('input', () => { clearTimeout(stm); sclear.hidden = !sinput.value; stm = setTimeout(runSuggest, 160); });
+sinput.addEventListener('focus', () => { if (!sinput.value.trim()) showRecent(); else if (sugg.innerHTML) sugg.hidden = false; });
+sclear.addEventListener('click', () => { sinput.value = ''; sclear.hidden = true; sinput.focus(); showRecent(); if (location.hash.startsWith('#/shop') && new URLSearchParams(location.hash.split('?')[1] || '').get('q')) { const n = new URLSearchParams(location.hash.split('?')[1]); n.delete('q'); location.hash = '#/shop' + (n.toString() ? '?' + n : ''); } });
+sinput.addEventListener('keydown', (e) => {
+  const items = [...sugg.querySelectorAll('a')];
+  if (e.key === 'Escape') { closeSugg(); sinput.blur(); }
+  else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !sugg.hidden && items.length) { e.preventDefault(); hl = e.key === 'ArrowDown' ? (hl + 1) % items.length : (hl - 1 + items.length) % items.length; items.forEach((a, i) => a.classList.toggle('hl', i === hl)); items[hl].scrollIntoView({ block: 'nearest' }); }
+  else if (e.key === 'Enter' && hl >= 0 && items[hl]) { e.preventDefault(); location.hash = items[hl].getAttribute('href'); closeSugg(); }
 });
-sinput.addEventListener('keydown', (e) => { if (e.key === 'Escape') sugg.hidden = true; });
-document.addEventListener('click', (e) => { if (!e.target.closest('#search') || e.target.closest('#sugg a')) sugg.hidden = true; });
-document.getElementById('search').addEventListener('submit', (e) => { e.preventDefault(); location.hash = `#/shop?q=${encodeURIComponent(new FormData(e.target).get('q'))}`; });
+sugg.addEventListener('click', (e) => { if (e.target.closest('#sclr')) { e.preventDefault(); e.stopPropagation(); try { localStorage.removeItem('recent_search'); } catch {} closeSugg(); return; } const a = e.target.closest('a'); if (a) { const m = /[?&]q=([^&]*)/.exec(a.getAttribute('href') || ''); if (m && a.classList.contains('all')) addRecent(decodeURIComponent(m[1])); closeSugg(); } });
+document.addEventListener('click', (e) => { if (!e.target.closest('#search')) closeSugg(); });
+sform.addEventListener('submit', (e) => { e.preventDefault(); const v = String(new FormData(e.target).get('q') || '').trim(); closeSugg(); sinput.blur(); if (!v) { location.hash = '#/shop'; return; } addRecent(v); location.hash = `#/shop?q=${encodeURIComponent(v)}`; });
 
 // ---- pages ----
 const pages = {};
@@ -311,7 +329,7 @@ pages.shop = async (_, q) => {
   const category = q.get('category') || '', brand = q.get('brand') || '', term = (q.get('q') || '').replace(/[%,()]/g, ''), sort = q.get('sort') || 'name';
   const instock = q.get('instock') === '1', sale = q.get('sale') === '1', pmin = Math.round((parseFloat(q.get('min')) || 0) * 100), pmax = Math.round((parseFloat(q.get('max')) || 0) * 100);
   let req = sb.from('products').select('*').eq('active', true).limit(1000);
-  if (term) req = req.or(`name.ilike.%${term}%,description.ilike.%${term}%,category.ilike.%${term}%,brand.ilike.%${term}%,sku.ilike.%${term}%`);
+  if (term) req = applySearch(req, term, ['name', 'description', 'category', 'brand', 'sku']);
   const { data: all, error } = await req; if (error) throw error; await attachPacks(all);
   const pass = (p, skip) => (skip === 'category' || !category || p.category === category) && (skip === 'brand' || !brand || p.brand === brand) && (!instock || p.stock > 0) && (!sale || onSale(p)) && (!pmin || p.price_cents >= pmin) && (!pmax || p.price_cents <= pmax);
   const cmp = { name: (a, b) => a.name.localeCompare(b.name), price_asc: (a, b) => a.price_cents - b.price_cents, price_desc: (a, b) => b.price_cents - a.price_cents, stock: (a, b) => b.stock - a.stock, newest: (a, b) => b.id - a.id }[sort] || ((a, b) => a.name.localeCompare(b.name));
@@ -2815,6 +2833,7 @@ async function route() {
   const TITLES = { shop: 'Shop', cart: 'Cart', checkout: 'Checkout', account: 'My account', messages: 'Messages', notifications: 'Notifications', login: 'Log in', register: 'Sign up', quote: 'Request a quote', wishlist: 'Wishlist', track: 'Track an order', admin: 'Admin', forgot: 'Reset password', reset: 'New password' };
   const PRIVATE = ['cart', 'checkout', 'account', 'messages', 'notifications', 'login', 'register', 'admin', 'invoice', 'estimate', 'reset', 'track', 'wishlist'];
   setSeo({ title: name === 'home' || name === '' ? (SEO.home_title || '') : TITLES[name] || '', description: '', noindex: PRIVATE.includes(name), path: name === 'shop' ? '/#/shop' : '', jsonld: name === 'home' || name === '' ? [{ '@context': 'https://schema.org', '@type': 'WebSite', name: seoSite(), url: seoBase() + '/', potentialAction: { '@type': 'SearchAction', target: seoBase() + '/#/shop?q={search_term_string}', 'query-input': 'required name=search_term_string' } }, { '@context': 'https://schema.org', '@type': 'Organization', name: (STORE.biz?.legal_name || seoSite()), url: seoBase() + '/', ...(STORE.biz?.phone ? { telephone: STORE.biz.phone } : {}), ...(STORE.biz?.email ? { email: STORE.biz.email } : {}), ...(SEO.og_image ? { logo: SEO.og_image } : {}) }] : undefined });
+  if (name === 'shop') { const tq = q.get('q') || ''; if (document.activeElement !== sinput) { sinput.value = tq; sclear.hidden = !tq; } } else if (name !== 'product' && document.activeElement !== sinput) { sinput.value = ''; sclear.hidden = true; }
   if (!page) { $app.innerHTML = '<h1>Not found</h1>'; return; }
   try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); if (name === 'admin' && args[0]) $app.insertAdjacentHTML('afterbegin', adminNavHtml(args[0])); setMenu(false);
     $app.querySelectorAll('table').forEach((t) => { if (!t.parentElement.classList.contains('tablewrap') && !t.closest('.invdoc, .tablewrap')) { const w = document.createElement('div'); w.className = 'tablewrap'; t.replaceWith(w); w.appendChild(t); }

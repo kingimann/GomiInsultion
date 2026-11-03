@@ -1284,7 +1284,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const [psR, alR] = await Promise.all([sb.from('products').select('*').order('name'), sb.from('stock_alerts').select('product_id')]);
     const ps = psR.data || [], waiting = {}; (alR.data || []).forEach((a) => (waiting[a.product_id] = (waiting[a.product_id] || 0) + 1));
     const cats = [...new Set(ps.map((x) => x.category))].sort();
-    return `<div class="sechead"><h1 style="margin:0">Products</h1><div class="row"><button class="btn ghost" id="prodcsv" type="button">:ic-download: Export CSV</button><a class="btn" href="#/admin/products/new">+ New product</a></div></div>
+    return `<div class="sechead"><h1 style="margin:0">Products</h1><div class="row"><button class="btn ghost" id="optimg" type="button" title="Shrinks photos that are too big, so pages load faster">:ic-image: Optimize photos</button><button class="btn ghost" id="prodcsv" type="button">:ic-download: Export CSV</button><a class="btn" href="#/admin/products/new">+ New product</a></div></div>
     <div class="toolbar"><input id="prodq" type="search" placeholder="Search products…" aria-label="Search products" style="max-width:280px"><select id="prodcat" aria-label="Category"><option value="">All categories</option>${cats.map((c) => `<option>${esc(c)}</option>`).join('')}</select><select id="prodbrand" aria-label="Brand"><option value="">All brands</option>${[...new Set(ps.map((x) => x.brand).filter(Boolean))].sort().map((b) => `<option>${esc(b)}</option>`).join('')}</select>
     <select id="prodview" aria-label="Show"><option value="">All</option><option value="low">Low or out of stock</option><option value="sale">On sale</option><option value="hidden">Hidden</option></select><span class="muted grow" id="prodcount"></span></div>
     <table id="prodtable"><tr><th>Name</th><th>Brand</th><th>Category</th><th>Price</th><th>Stock</th><th>Waiting</th><th>Status</th></tr>
@@ -1338,6 +1338,24 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   <h2 class="dsec">Manage</h2><div class="mgroups">${manage.map(([g, ls]) => `<div class="mgroup"><h4>${g}</h4><div class="qlinks">${ls.map(([i, l, h]) => `<a href="${h}"><span>${i}</span>${l}</a>`).join('')}</div></div>`).join('')}</div>`;
 };
 pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
+  document.getElementById('optimg')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget; if (!confirm('Check every product photo and shrink the ones that are too big (over 1600px or 400 KB)? Smaller copies replace them; this can take a minute.')) return;
+    btn.disabled = true; const PUB = '/storage/v1/object/public/product-images/'; let done = 0, saved = 0, skipped = 0, failed = 0;
+    try {
+      const prods = (await sb.from('products').select('id,image_url')).data || [], extras = (await sb.from('product_images').select('id,url')).data || [];
+      const jobs = [...prods.filter((x) => x.image_url).map((x) => ({ t: 'products', id: x.id, col: 'image_url', url: x.image_url })), ...extras.map((x) => ({ t: 'product_images', id: x.id, col: 'url', url: x.url }))];
+      for (const j of jobs) { btn.textContent = `Optimizing ${++done} of ${jobs.length}…`;
+        try {
+          const r = await fetch(j.url); if (!r.ok) throw new Error('fetch'); const blob = await r.blob(); const f = new File([blob], 'photo.' + (blob.type.split('/')[1] || 'jpg'), { type: blob.type });
+          const out = await prepImage(f); if (out === f || out.size >= f.size) { skipped++; continue; }
+          const path = `opt/${Date.now()}-${j.id}.webp`, up = await sb.storage.from('product-images').upload(path, out, { contentType: 'image/webp' }); if (up.error) throw up.error;
+          const url = sb.storage.from('product-images').getPublicUrl(path).data.publicUrl, u = await sb.from(j.t).update({ [j.col]: url }).eq('id', j.id); if (u.error) throw u.error;
+          saved += f.size - out.size; if (j.url.includes(PUB)) sb.storage.from('product-images').remove([decodeURIComponent(j.url.split(PUB)[1])]);
+        } catch { failed++; }
+      }
+      flash(`Photos checked: ${jobs.length - skipped - failed} shrunk (saved ${(saved / 1048576).toFixed(1)} MB), ${skipped} already fine${failed ? `, ${failed} could not be changed (for example photos hosted on other websites)` : ''}.`, failed ? 'error' : 'ok');
+    } catch (err) { fail(err); } finally { btn.disabled = false; btn.innerHTML = ':ic-image: Optimize photos'; }
+  });
   if (document.getElementById('custtable')) {
     const tb = document.getElementById('custtable'), rows = () => [...tb.querySelectorAll('tr[data-q]')]; let seg = '';
     const run = () => { const t = document.getElementById('custq').value.toLowerCase().trim(), so = document.getElementById('custsort').value, rs = rows(); let n = 0;

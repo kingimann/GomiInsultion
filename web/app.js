@@ -277,6 +277,8 @@ document.getElementById('msearchbtn').innerHTML = ':ic-search:';
 document.getElementById('msearchbtn').addEventListener('click', () => { const on = !document.body.classList.contains('msearch'); document.body.classList.toggle('msearch', on); if (on) { setMenu(false); document.querySelector('#search input').focus(); } });
 document.getElementById('tabbar').addEventListener('click', (e) => { if (e.target.closest('#tabmore')) { setMenu(!document.body.classList.contains('menu-open')); renderTabbar(); } else { if (document.body.classList.contains('menu-open')) setMenu(false); document.body.classList.remove('msearch'); } });
 window.addEventListener('hashchange', () => { document.body.classList.remove('msearch'); renderTabbar(); });
+document.addEventListener('click', (e) => { if (e.target.isConnected && document.body.classList.contains('menu-open') && !e.target.closest('#nav, #tabbar, #menubtn')) { setMenu(false); renderTabbar(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('menu-open')) { setMenu(false); renderTabbar(); } });
 const sugg = document.getElementById('sugg'), sinput = document.querySelector('#search input[name=q]'); let stm = null;
 sinput.addEventListener('input', () => {
   clearTimeout(stm); const t = sinput.value.trim().replace(/[%,()]/g, ''); if (t.length < 2) { sugg.hidden = true; return; }
@@ -2269,57 +2271,105 @@ async function markRead() {
   await sb.rpc('mark_conversation_read', { cid: DM.conv.id });
   await sb.from('notifications').update({ read: true }).eq('link', `#/messages/${DM.conv.id}`).eq('read', false); refreshUnread();
 }
-async function loadInbox() {
+async function loadInbox(asCustomer = false) {
   const convs = (await sb.from('conversations').select('*').order('last_message_at', { ascending: false }).limit(200)).data || [];
   const ids = convs.map((c) => c.id), last = {}, unreadBy = {};
   if (ids.length) ((await sb.from('messages').select('conversation_id,body,sender_id,created_at,read_at,internal,attachments,deleted_at').in('conversation_id', ids).order('id', { ascending: false }).limit(800)).data || []).forEach((m) => {
     if (!last[m.conversation_id]) last[m.conversation_id] = m;
-    const c = convs.find((x) => x.id === m.conversation_id); if (c && !m.internal && m.sender_id === c.customer_id && !m.read_at && !m.deleted_at) unreadBy[c.id] = (unreadBy[c.id] || 0) + 1;
+    const c = convs.find((x) => x.id === m.conversation_id); if (c && !m.internal && (asCustomer ? m.sender_id !== c.customer_id : m.sender_id === c.customer_id) && !m.read_at && !m.deleted_at) unreadBy[c.id] = (unreadBy[c.id] || 0) + 1;
   });
   const names = {}; if (convs.length) ((await sb.from('profiles').select('id,name,email').in('id', [...new Set(convs.map((c) => c.customer_id))])).data || []).forEach((u) => (names[u.id] = u.name || u.email));
   return { convs, last, unreadBy, names };
 }
 const previewOf = (m, c) => (!m ? 'No messages yet' : m.deleted_at ? 'Message unsent' : (m.internal ? 'Note: ' : m.sender_id !== c.customer_id ? 'You: ' : '') + (m.body ? m.body.slice(0, 70) : (m.attachments || []).length ? 'Sent an attachment' : 'Shared an order'));
-const listHtml = (inbox, selected, filter = '', mode = '') => {
-  const f = filter.toLowerCase(), rows = inbox.convs.filter((c) => (!f || (inbox.names[c.customer_id] || '').toLowerCase().includes(f) || (inbox.last[c.id]?.body || '').toLowerCase().includes(f)) && (mode === 'unread' ? inbox.unreadBy[c.id] : mode === 'closed' ? c.closed : true));
-  return rows.length ? rows.map((c) => { const nm = inbox.names[c.customer_id] || 'Customer', lm = inbox.last[c.id], un = inbox.unreadBy[c.id] || 0;
-    return `<a class="dmrow ${String(selected) === String(c.id) ? 'on' : ''} ${un ? 'unread' : ''}" href="#/messages/${c.id}">${avatar(nm)}<div class="dmtxt"><div class="row" style="justify-content:space-between;flex-wrap:nowrap"><b>${esc(nm)}</b><small class="muted">${lm ? ago(lm.created_at) : ''}</small></div>
-    <span class="muted prev">${esc(previewOf(lm, c))}</span></div>${un ? `<span class="dot">${un}</span>` : c.closed ? '<small class="muted">closed</small>' : ''}</a>`; }).join('')
+const convTitle = (c) => (c.subject && c.subject !== 'Direct message' ? c.subject : 'Store team');
+const listHtml = (inbox, selected, filter = '', mode = '', cust = false) => {
+  const f = filter.toLowerCase(), nameOf = (c) => (cust ? convTitle(c) : inbox.names[c.customer_id] || 'Customer'), rows = inbox.convs.filter((c) => (!f || nameOf(c).toLowerCase().includes(f) || (c.subject || '').toLowerCase().includes(f) || (inbox.last[c.id]?.body || '').toLowerCase().includes(f)) && (mode === 'unread' ? inbox.unreadBy[c.id] : mode === 'closed' ? c.closed : true));
+  return rows.length ? rows.map((c) => { const nm = nameOf(c), lm = inbox.last[c.id], un = inbox.unreadBy[c.id] || 0;
+    const prev = cust ? (!lm ? 'No messages yet' : lm.deleted_at ? 'Message unsent' : (lm.sender_id === c.customer_id ? 'You: ' : '') + (lm.body ? lm.body.slice(0, 70) : (lm.attachments || []).length ? 'Sent an attachment' : 'Shared an order')) : previewOf(lm, c);
+    return `<a class="dmrow ${String(selected) === String(c.id) ? 'on' : ''} ${un ? 'unread' : ''}" href="#/messages/${c.id}">${avatar(nm, cust ? 'store' : '')}<div class="dmtxt"><div class="row" style="justify-content:space-between;flex-wrap:nowrap"><b>${esc(nm)}</b><small class="muted">${lm ? ago(lm.created_at) : ''}</small></div>
+    ${!cust && c.subject && c.subject !== 'Direct message' ? `<small class="dmsub">${esc(c.subject)}</small>` : ''}<span class="muted prev">${esc(prev)}</span></div>${un ? `<span class="dot">${un}</span>` : c.closed ? '<small class="muted">closed</small>' : ''}</a>`; }).join('')
     : '<p class="muted" style="padding:16px">No conversations found.</p>';
 };
+let NM = null;
+const MSG_TOPICS = ['Question about an order', 'Delivery or pickup', 'Product advice', 'Pricing or a quote', 'Something else'];
+async function newMessagePage(isStaff, q) {
+  const orders = isStaff ? [] : (await sb.from('orders').select('id,status,total_cents').eq('user_id', session.user.id).order('id', { ascending: false }).limit(15)).data || [];
+  NM = { isStaff, orders, cust: null, files: [], preOrder: q.get('order') || '' };
+  return `<div class="newmsg" id="newmsg"><a class="muted" href="#/messages">← Messages</a><h1>New message</h1><p class="muted" style="margin-top:0">${isStaff ? 'Start a conversation with a customer.' : 'Ask us anything — we usually reply within a day.'}</p>
+  <form id="nmform" class="stack" novalidate>
+    ${isStaff ? `<label>Customer<input id="nm_cust" placeholder="Search by name or email…" autocomplete="off"></label><div id="nm_res" class="nmres" hidden></div><p id="nm_sel" class="nmsel" hidden></p>` : ''}
+    <div><b>What's it about?</b><div class="chips" id="nm_topics" style="margin:8px 0 0">${MSG_TOPICS.map((t) => `<button type="button" class="chip" data-t="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>
+    <label>Subject<input name="subject" required maxlength="100" value="${esc(q.get('subject') || '')}" placeholder="e.g. Delivery date for my order"></label>
+    <label>Message<textarea name="body" rows="6" required maxlength="5000" placeholder="Write your message…"></textarea></label>
+    <div class="row"><select id="nm_order" aria-label="Attach an order" ${isStaff ? 'hidden' : ''}><option value="">Attach an order (optional)…</option>${orders.map((o) => `<option value="${o.id}" ${String(o.id) === NM.preOrder ? 'selected' : ''}>Order #${o.id} · ${esc(o.status)} · ${money(o.total_cents)}</option>`).join('')}</select>
+      <label class="btn ghost" style="cursor:pointer">:ic-paperclip: Attach photos or files<input type="file" id="nm_files" accept="${CHAT_FILES}" multiple hidden></label></div>
+    <div class="pend" id="nm_pend" hidden></div>
+    <p class="autherr" id="nm_err" role="alert" hidden></p>
+    <button class="btn" id="nm_go">Send message</button></form></div>`;
+}
+function initCompose() {
+  const $ = (i) => document.getElementById(i), err = (m) => { $('nm_err').textContent = m || ''; $('nm_err').hidden = !m; };
+  $('nm_topics').addEventListener('click', (e) => { const b = e.target.closest('[data-t]'); if (!b) return; document.querySelectorAll('#nm_topics .chip').forEach((x) => x.classList.toggle('on', x === b)); const sub = $('nmform').elements.subject; if (!sub.value.trim() || MSG_TOPICS.includes(sub.value)) sub.value = b.dataset.t; });
+  const drawPend = () => { const el = $('nm_pend'); el.hidden = !NM.files.length; el.innerHTML = NM.files.map((f, i) => `<span class="pchip">:ic-image: ${esc(f.name)} <small class="muted">${fmtSize(f.size)}</small><button type="button" data-rm="${i}" aria-label="Remove ${esc(f.name)}">:ic-x:</button></span>`).join(''); };
+  $('nm_files').addEventListener('change', (e) => { for (const f of e.target.files) { if (NM.files.length >= 6) { err('You can attach up to 6 files.'); break; } if (f.size > 25 * 1024 * 1024) { err(`"${f.name}" is too big (25 MB max).`); continue; } NM.files.push(f); } e.target.value = ''; drawPend(); });
+  $('nm_pend').addEventListener('click', (e) => { const rm = e.target.closest('[data-rm]'); if (rm) { NM.files.splice(Number(rm.dataset.rm), 1); drawPend(); } });
+  if (NM.isStaff) {
+    let t = null; const inp = $('nm_cust'), res = $('nm_res');
+    inp.addEventListener('input', () => { clearTimeout(t); const v = inp.value.trim().replace(/[%,()]/g, ''); if (v.length < 2) { res.hidden = true; return; }
+      t = setTimeout(async () => { const { data } = await sb.from('profiles').select('id,name,email').or(`name.ilike.%${v}%,email.ilike.%${v}%`).eq('role', 'customer').limit(8); res.hidden = false; res.innerHTML = (data || []).length ? data.map((u) => `<button type="button" class="nmpick" data-id="${u.id}" data-name="${esc(u.name || u.email)}" data-email="${esc(u.email)}">${avatar(u.name || u.email)}<span><b>${esc(u.name || '—')}</b><small class="muted">${esc(u.email)}</small></span></button>`).join('') : '<p class="muted" style="margin:8px">No customers found.</p>'; }, 250); });
+    res.addEventListener('click', async (e) => { const b = e.target.closest('.nmpick'); if (!b) return; NM.cust = { id: b.dataset.id, name: b.dataset.name }; res.hidden = true; inp.value = ''; $('nm_sel').hidden = false; $('nm_sel').innerHTML = `To: <b>${esc(b.dataset.name)}</b> <small class="muted">${esc(b.dataset.email)}</small> <button type="button" class="link" id="nm_clear">change</button>`;
+      const { data } = await sb.from('orders').select('id,status,total_cents').eq('user_id', b.dataset.id).order('id', { ascending: false }).limit(15); const sel = $('nm_order'); sel.hidden = !(data || []).length; sel.innerHTML = '<option value="">Attach an order (optional)…</option>' + (data || []).map((o) => `<option value="${o.id}">Order #${o.id} · ${esc(o.status)} · ${money(o.total_cents)}</option>`).join(''); });
+    document.getElementById('newmsg').addEventListener('click', (e) => { if (e.target.id === 'nm_clear') { NM.cust = null; $('nm_sel').hidden = true; inp.focus(); } });
+  }
+  $('nmform').addEventListener('submit', async (e) => {
+    e.preventDefault(); err(''); const f = e.target.elements, subject = f.subject.value.trim(), body = f.body.value.trim(), btn = $('nm_go');
+    if (NM.isStaff && !NM.cust) return err('Choose a customer first.'); if (!subject) return err('Add a subject.'); if (!body && !NM.files.length) return err('Write a message.');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      const cid = NM.isStaff ? NM.cust.id : session.user.id, c = await sb.from('conversations').insert({ customer_id: cid, subject }).select('id').single(); if (c.error) throw c.error;
+      const attachments = []; for (let file of NM.files) { file = await prepImage(file); const path = `conv_${c.data.id}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-70)}`; const up = await sb.storage.from('message-files').upload(path, file, { contentType: file.type || 'application/octet-stream' }); if (up.error) throw up.error; attachments.push({ path, name: file.name, type: file.type || 'application/octet-stream', size: file.size }); }
+      const m = await sb.from('messages').insert({ conversation_id: c.data.id, body, attachments, order_id: $('nm_order').value ? Number($('nm_order').value) : null, internal: false }); if (m.error) throw m.error;
+      location.hash = `#/messages/${c.data.id}`;
+    } catch (ex) { err(ex.message || 'Could not send your message. Please try again.'); btn.disabled = false; btn.textContent = 'Send message'; }
+  });
+}
 pages.messages = async ([id], q) => {
   if (!session) { location.hash = '#/login'; return ''; }
   const isStaff = can('messages');
-  if (id === 'new') { // find or create the DM with a customer, then open it
-    const to = isStaff ? q.get('to') : session.user.id; if (!to) { location.hash = '#/messages'; return ''; }
-    let c = (await sb.from('conversations').select('id').eq('customer_id', to).order('id', { ascending: false }).limit(1).maybeSingle()).data;
-    if (!c) { const r = await sb.from('conversations').insert({ customer_id: to, subject: 'Direct message' }).select('id').single(); if (r.error) throw r.error; c = r.data; }
-    location.hash = `#/messages/${c.id}`; return '';
+  if (id === 'new') {
+    if (isStaff && q.get('to') && !q.get('compose')) { // staff shortcut: open (or create) the thread with this customer
+      let c = (await sb.from('conversations').select('id').eq('customer_id', q.get('to')).order('id', { ascending: false }).limit(1).maybeSingle()).data;
+      if (!c) { const r = await sb.from('conversations').insert({ customer_id: q.get('to'), subject: 'Direct message' }).select('id').single(); if (r.error) throw r.error; c = r.data; }
+      location.hash = `#/messages/${c.id}`; return '';
+    }
+    return await newMessagePage(isStaff, q);
   }
-  let inbox = null, conv = null, selected = id && /^\d+$/.test(id) ? id : null;
-  if (isStaff) inbox = await loadInbox();
-  else { const r = await sb.from('conversations').select('*').eq('customer_id', session.user.id).order('id', { ascending: false }).limit(1).maybeSingle(); conv = r.data; selected = conv?.id ?? 'solo'; }
-  if (isStaff && selected) conv = (await sb.from('conversations').select('*').eq('id', selected).maybeSingle()).data;
+  let inbox = await loadInbox(!isStaff), conv = null, selected = id && /^\d+$/.test(id) ? id : null;
+  const showList = isStaff || inbox.convs.length > 1, wide = !window.matchMedia('(max-width:760px)').matches;
+  if (!isStaff && !inbox.convs.length) { location.hash = '#/messages/new'; return ''; }
+  if (!selected && !isStaff && (!showList || wide)) selected = inbox.convs[0].id;
+  if (selected) conv = (await sb.from('conversations').select('*').eq('id', selected).maybeSingle()).data;
   const msgs = conv ? (await sb.from('messages').select('*').eq('conversation_id', conv.id).order('id')).data || [] : [];
   const custId = isStaff ? conv?.customer_id : session.user.id;
   const myOrders = custId ? (await sb.from('orders').select('id,status,total_cents,created_at').eq('user_id', custId).order('id', { ascending: false }).limit(15)).data || [] : [];
   const replies = isStaff ? (await sb.from('canned_replies').select('*').order('title')).data || [] : [];
-  const peerName = isStaff ? (inbox.names[conv?.customer_id] || 'Customer') : 'Store team';
+  const peerName = isStaff ? (inbox.names[conv?.customer_id] || 'Customer') : (conv ? convTitle(conv) : 'Store team');
   const firstUnread = msgs.find((m) => !m.internal && !m.deleted_at && !m.read_at && (isStaff ? m.sender_id === conv?.customer_id : m.sender_id !== conv?.customer_id))?.id || null;
-  DM = { conv, msgs, isStaff, peerName, inbox, online: false, orders: {}, urls: {}, pending: [], pendingOrder: null, internal: false, firstUnread, myOrders, replies, filter: '' };
+  DM = { conv, msgs, isStaff, showList, peerName, inbox, online: false, orders: {}, urls: {}, pending: [], pendingOrder: null, internal: false, firstUnread, myOrders, replies, filter: '' };
   myOrders.forEach((o) => (DM.orders[o.id] = o));
   const closedCust = !isStaff && conv?.closed;
-  const chat = (isStaff && !conv) ? '<div class="empty-chat">:ic-chat:<p><b>Select a conversation</b></p><p class="muted">Pick a customer on the left, or start one from Admin → Customers.</p></div>'
-    : `<header class="dmhead"><a class="backbtn" href="${isStaff ? '#/messages' : '#/'}" aria-label="${isStaff ? 'Back to conversations' : 'Back'}">:ic-chevron-down:</a>${avatar(peerName, isStaff ? '' : 'store')}<div style="min-width:0"><b>${esc(peerName)}</b><div class="dmstatus muted" id="dmstatus">${isStaff ? 'Customer' : 'Replies usually within a day'}</div></div>
-      <span class="grow"></span>${isStaff ? `<button type="button" class="ibtn" id="ctxtoggle" aria-label="Customer details" title="Customer details">:ic-users:</button>${conv ? `<button type="button" class="btn ghost" id="closeconv" style="padding:6px 12px;min-height:0">${conv.closed ? 'Reopen' : 'Close'} conversation</button>` : ''}` : ''}</header>
+  const chat = (showList && !conv) ? `<div class="empty-chat">:ic-chat:<p><b>Select a conversation</b></p><p class="muted">${isStaff ? 'Pick a customer on the left, or start a new message.' : 'Pick a conversation, or start a new message.'}</p><a class="btn" href="#/messages/new${isStaff ? '?compose=1' : ''}">:ic-edit: New message</a></div>`
+    : `<header class="dmhead"><a class="backbtn" href="${isStaff || showList ? '#/messages' : '#/'}" aria-label="${isStaff || showList ? 'Back to conversations' : 'Back'}">:ic-chevron-down:</a>${avatar(peerName, isStaff ? '' : 'store')}<div style="min-width:0"><b>${esc(peerName)}</b><div class="dmstatus muted" id="dmstatus">${isStaff ? 'Customer' : (peerName === 'Store team' ? 'Replies usually within a day' : 'Store team · replies within a day')}</div></div>
+      <span class="grow"></span>${isStaff ? '' : '<a class="btn ghost newmsgbtn" href="#/messages/new" title="Start a new message">:ic-edit: <span>New message</span></a>'}${isStaff ? `<button type="button" class="ibtn" id="ctxtoggle" aria-label="Customer details" title="Customer details">:ic-users:</button>${conv ? `<button type="button" class="btn ghost" id="closeconv" style="padding:6px 12px;min-height:0">${conv.closed ? 'Reopen' : 'Close'} conversation</button>` : ''}` : ''}</header>
     <div class="thread" id="thread"></div><div class="typing" id="typing" hidden>${esc(peerName)} is typing<span>.</span><span>.</span><span>.</span></div>
-    ${closedCust ? '<p class="closednote">:ic-lock: This conversation was closed by the store team. Start a new one by contacting us from the <a href="#/quote">quote form</a>.</p>' : `<div class="composer2" id="composer2"><div class="pend" id="pend" hidden></div>
+    ${closedCust ? '<p class="closednote">:ic-lock: This conversation was closed by the store team. <a href="#/messages/new">Start a new message</a> if you need anything else.</p>' : `<div class="composer2" id="composer2"><div class="pend" id="pend" hidden></div>
       <div class="ctools"><button type="button" class="ibtn" id="attachbtn" aria-label="Attach a file" title="Attach photos or files">:ic-paperclip:</button><input type="file" id="dmfile" accept="${CHAT_FILES}" multiple hidden>
         ${myOrders.length ? `<select id="orderpick" aria-label="Attach an order"><option value="">Attach an order…</option>${myOrders.map((o) => `<option value="${o.id}">Order #${o.id} · ${esc(o.status)} · ${money(o.total_cents)}</option>`).join('')}</select>` : ''}
         ${isStaff ? `<span class="grow"></span><div class="qrwrap"><button type="button" class="btn ghost qrbtn" id="qrbtn">:ic-chat: Quick replies</button><div class="qr" id="qr" hidden><div id="qrlist"></div><form id="qradd" class="stack"><b style="font-size:.85rem">Save a new quick reply</b><input name="title" placeholder="Title (e.g. Delivery times)" maxlength="60" required><textarea name="body" rows="2" placeholder="Message text" maxlength="2000" required></textarea><button class="btn ghost">Save quick reply</button></form></div></div>
         <label class="switch" title="Only your team can see internal notes"><input type="checkbox" id="dminternal"><span class="track"></span><span>Internal note</span></label>` : ''}</div>
       <form id="dmform" class="composer"><button type="button" class="plusbtn" id="plusbtn" aria-label="Attachments and more" aria-expanded="false">:ic-paperclip:</button><textarea name="body" rows="1" maxlength="5000" placeholder="Message ${esc(isStaff ? peerName : 'the store team')}…" aria-label="Message"></textarea><button class="send" aria-label="Send message">:ic-send:</button></form></div>`}`;
-  return `<div class="dm ${isStaff ? '' : 'solo'} ${conv && isStaff ? 'has-chat' : ''} ${isStaff ? 'withctx' : ''}">${isStaff ? `<aside class="dmlist"><div class="dmlist-head"><b>Messages</b><input id="dmsearch" placeholder="Search customers or messages…" aria-label="Search"><div class="chips" style="margin:0"><button type="button" class="chip on" data-mode="">All</button><button type="button" class="chip" data-mode="unread">Unread</button><button type="button" class="chip" data-mode="closed">Closed</button></div></div><div id="dmrows">${listHtml(inbox, selected)}</div></aside>` : ''}<section class="dmchat">${chat}</section>${isStaff && conv ? '<aside class="dmctx" id="dmctx"><p class="muted" style="padding:16px">Loading customer…</p></aside>' : ''}</div>`;
+  return `<div class="dm ${showList ? '' : 'solo'} ${conv && showList ? 'has-chat' : ''} ${isStaff ? 'withctx' : ''}">${showList ? `<aside class="dmlist"><div class="dmlist-head"><div class="row" style="justify-content:space-between;flex-wrap:nowrap"><b>Messages</b><a class="btn newmsgbtn" href="#/messages/new${isStaff ? '?compose=1' : ''}">:ic-edit: <span>New message</span></a></div><input id="dmsearch" placeholder="${isStaff ? 'Search customers or messages…' : 'Search your messages…'}" aria-label="Search"><div class="chips" style="margin:0"><button type="button" class="chip on" data-mode="">All</button><button type="button" class="chip" data-mode="unread">Unread</button>${isStaff ? '<button type="button" class="chip" data-mode="closed">Closed</button>' : ''}</div></div><div id="dmrows">${listHtml(inbox, selected, '', '', !isStaff)}</div></aside>` : ''}<section class="dmchat">${chat}</section>${isStaff && conv ? '<aside class="dmctx" id="dmctx"><p class="muted" style="padding:16px">Loading customer…</p></aside>' : ''}</div>`;
 };
 async function loadContext() {
   const el = document.getElementById('dmctx'); if (!el || !DM?.conv) return; const cid = DM.conv.customer_id;
@@ -2333,16 +2383,17 @@ async function loadContext() {
     <div class="stack" style="gap:8px;margin-top:6px"><a class="btn ghost" href="#/admin/customers/${cid}">View customer</a>${can('invoices.manage') ? `<a class="btn ghost" href="#/admin/invoices/new">New invoice</a><a class="btn ghost" href="#/admin/estimates/new">New estimate</a>` : ''}</div>`;
 }
 pages.messages.after = () => {
+  if (document.getElementById('newmsg')) { document.body.classList.remove('chatfull'); initCompose(); return; }
   if (!DM) return;
-  { const full = window.matchMedia('(max-width:760px)').matches && !!(DM.conv || !DM.isStaff); document.body.classList.toggle('chatfull', full);
+  { const full = window.matchMedia('(max-width:760px)').matches && !!DM.conv; document.body.classList.toggle('chatfull', full);
     if (full && window.visualViewport) { const setVh = () => { const el = document.querySelector('.dm'); if (!el) return; el.style.setProperty('--vvh', window.visualViewport.height + 'px'); const t = document.getElementById('thread'); if (t) t.scrollTop = t.scrollHeight; }; setVh(); window.visualViewport.addEventListener('resize', setVh); const off = () => { window.visualViewport.removeEventListener('resize', setVh); window.removeEventListener('hashchange', off); }; window.addEventListener('hashchange', off); } }
   document.getElementById('plusbtn')?.addEventListener('click', (e) => { const c = document.getElementById('composer2'); const on = c.classList.toggle('opentools'); e.currentTarget.setAttribute('aria-expanded', String(on)); });
   document.getElementById('thread')?.addEventListener('click', (e) => { const m = e.target.closest('.msg'); if (!m || e.target.closest('a,button,.un')) return; const was = m.classList.contains('sel'); document.querySelectorAll('.msg.sel').forEach((x) => x.classList.remove('sel')); if (!was && m.querySelector('.un')) m.classList.add('sel'); });
   const $ = (i) => document.getElementById(i), listEl = $('dmrows'); let mode = '';
-  const redrawList = () => { if (listEl) listEl.innerHTML = listHtml(DM.inbox, DM.conv?.id, $('dmsearch')?.value || '', mode); };
+  const redrawList = () => { if (listEl) listEl.innerHTML = listHtml(DM.inbox, DM.conv?.id, $('dmsearch')?.value || '', mode, !DM.isStaff); };
   $('dmsearch')?.addEventListener('input', redrawList);
   document.querySelectorAll('.dmlist-head [data-mode]').forEach((b) => b.addEventListener('click', () => { mode = b.dataset.mode; document.querySelectorAll('.dmlist-head [data-mode]').forEach((x) => x.classList.toggle('on', x === b)); redrawList(); }));
-  if (DM.isStaff) threadChan.push(sb.channel('inbox').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async () => { DM.inbox = await loadInbox(); redrawList(); }).subscribe());
+  if (DM.showList) threadChan.push(sb.channel('inbox').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async () => { DM.inbox = await loadInbox(!DM.isStaff); redrawList(); }).subscribe());
   $('ctxtoggle')?.addEventListener('click', () => document.querySelector('.dm').classList.toggle('showctx'));
   $('closeconv')?.addEventListener('click', async () => { const { error } = await sb.from('conversations').update({ closed: !DM.conv.closed }).eq('id', DM.conv.id); error ? fail(error) : route(); });
   loadContext();

@@ -211,3 +211,7 @@ Each product can now have: **SKU** and **barcode**, **key features** (bullets), 
 ## Admin: section bar, bulk edit, CSV import
 
 Every admin page now has a section bar (Dashboard, Orders, Products, Inventory… — only what your role may open) so you can jump around without going back to the dashboard. In **Admin → Products** tick products (or *Select all shown*) to change prices by % or $, show/hide them, or set a brand or category in one go, and use **Import CSV** (with a **Template** to start from) to add or update many products at once — rows matching an existing SKU or name are updated, new ones are added (with starting stock in the default location when a `stock` column is given). There's also a back-to-top button on long pages.
+
+## Order history & quotes → estimates
+
+Each admin order page now has a **History** timeline (placed, every status change, tracking added, refunds — with who did it and when), recorded automatically by the database. On **Admin → Quote requests**, **Create estimate** opens a new estimate already filled with the customer's name, email, phone and their message, and **Reply** opens an email.

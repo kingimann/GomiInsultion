@@ -2228,3 +2228,30 @@ drop policy if exists "staff write product docs" on storage.objects;
 create policy "staff write product docs" on storage.objects for insert to authenticated with check (bucket_id = 'product-docs' and public.has_perm('catalog.manage'));
 drop policy if exists "staff delete product docs" on storage.objects;
 create policy "staff delete product docs" on storage.objects for delete to authenticated using (bucket_id = 'product-docs' and public.has_perm('catalog.manage'));
+
+-- ===== Order history (who changed what, when) =====
+create table if not exists public.order_events (
+  id bigint generated always as identity primary key, order_id bigint not null references public.orders(id) on delete cascade,
+  kind text not null, detail text not null default '', actor text not null default '', created_at timestamptz not null default now());
+create index if not exists order_events_idx on public.order_events (order_id, id);
+alter table public.order_events enable row level security;
+drop policy if exists "staff read order events" on public.order_events;
+create policy "staff read order events" on public.order_events for select using (public.has_perm('orders.view'));
+create or replace function public.trg_order_events() returns trigger language plpgsql security definer set search_path = public as $$
+declare who text := coalesce((select name from profiles where id = auth.uid()), case when auth.uid() is null then 'System' else '' end);
+begin
+  if tg_op = 'INSERT' then
+    insert into order_events (order_id, kind, detail, actor) values (new.id, 'created', case when new.source = 'in_store' then 'In-store sale' else 'Order placed online' end, who);
+  else
+    if new.status is distinct from old.status then insert into order_events (order_id, kind, detail, actor) values (new.id, 'status', old.status || ' → ' || new.status, who); end if;
+    if coalesce(new.tracking_number, '') is distinct from coalesce(old.tracking_number, '') then insert into order_events (order_id, kind, detail, actor) values (new.id, 'tracking', coalesce(nullif(new.tracking_carrier, ''), 'Tracking') || ' ' || coalesce(new.tracking_number, ''), who); end if;
+    if coalesce(new.refunded_cents, 0) is distinct from coalesce(old.refunded_cents, 0) then insert into order_events (order_id, kind, detail, actor) values (new.id, 'refund', 'Refunded total now $' || to_char(coalesce(new.refunded_cents, 0) / 100.0, 'FM999990.00'), who); end if;
+  end if;
+  return null;
+end $$;
+drop trigger if exists orders_events on public.orders;
+create trigger orders_events after insert or update on public.orders for each row execute function public.trg_order_events();
+-- backfill one "created" entry for existing orders
+insert into public.order_events (order_id, kind, detail, actor, created_at)
+  select o.id, 'created', case when o.source = 'in_store' then 'In-store sale' else 'Order placed online' end, '', o.created_at from public.orders o
+  where not exists (select 1 from public.order_events e where e.order_id = o.id);

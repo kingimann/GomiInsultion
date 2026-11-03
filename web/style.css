@@ -632,3 +632,7 @@ img{max-width:100%}
 .bulkbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 14px;border:1px solid var(--brand);border-radius:var(--r);background:var(--brand-soft);margin:0 0 12px;position:sticky;top:70px;z-index:5}.bulkbar label{display:flex;gap:6px;align-items:center;margin:0}.bulkbar input,.bulkbar select{min-height:0;padding:7px 9px}
 .totop{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));z-index:30;width:44px;height:44px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--fg);box-shadow:var(--shadow);cursor:pointer;display:flex;align-items:center;justify-content:center}.totop:hover{border-color:var(--brand)}@media(max-width:760px){body:has(.buybar:not([hidden])) .totop{bottom:84px}}
 #prodtable th:first-child,#prodtable td:first-child{width:38px;padding-right:0;text-align:left}#prodtable input[type=checkbox]{margin:0;width:18px;height:18px}
+
+/* order history */
+.evlist{list-style:none;margin:0;padding:0;display:grid;gap:0}.evlist li{display:flex;gap:12px;padding:8px 0;position:relative}.evlist li:not(:last-child):before{content:"";position:absolute;left:5px;top:22px;bottom:-8px;width:2px;background:var(--line)}
+.evdot{flex:none;width:12px;height:12px;border-radius:50%;background:var(--brand);margin-top:5px}.ev-status .evdot{background:#2563eb}.ev-refund .evdot{background:var(--err)}.ev-tracking .evdot{background:#16a34a}.evlist small{display:block}

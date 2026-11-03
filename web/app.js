@@ -798,9 +798,11 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   }
   if (sub === 'orders' && id) {
     const o = (await sb.from('orders').select('*').eq('id', id).single()).data;
+    const evR = await sb.from('order_events').select('*').eq('order_id', id).order('id', { ascending: false });
     const [itemsR, notesR, refR] = await Promise.all([sb.from('order_items').select('*').eq('order_id', id), sb.from('order_notes').select('*').eq('order_id', id).order('id', { ascending: false }), sb.from('refunds').select('*').eq('order_id', id).order('id', { ascending: false })]);
     const remaining = o.total_cents - (o.refunded_cents || 0);
     return `<div class="row noprint" style="justify-content:flex-end;margin-bottom:8px"><a class="btn ghost" href="#/admin/orders/${o.id}/slip">:ic-clipboard: Packing slip</a></div>${orderHtml(o, itemsR.data, can('orders.manage') ? true : 'ro')}
+    <section class="cs" style="margin-top:16px"><h3>History</h3>${(evR.data || []).length ? `<ol class="evlist">${evR.data.map((e) => `<li class="ev-${esc(e.kind)}"><span class="evdot"></span><div><b>${esc(e.detail)}</b><small class="muted">${esc(e.actor || '—')} · ${dateOf(e.created_at)}</small></div></li>`).join('')}</ol>` : '<p class="muted" style="margin:0">No history yet.</p>'}</section>
     <section class="cs" style="margin-top:16px"><h3>Internal notes <small class="muted" style="font-weight:400">(only admins can see these)</small></h3>
       ${(notesR.data || []).map((n) => `<div class="addr"><div style="white-space:pre-wrap">${esc(n.note)}</div><small class="muted">${esc(n.author)} · ${ago(n.created_at)}</small></div>`).join('') || '<p class="muted" style="margin:0">No notes yet.</p>'}
       <form id="noteform" class="row" style="flex-wrap:nowrap"><input name="note" maxlength="2000" placeholder="Add a note (e.g. customer called, will collect Friday)" required style="flex:1;min-width:0"><button class="btn ghost">Add note</button></form></section>
@@ -1082,7 +1084,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   }
   if (sub === 'invoices' && id === 'recurring') return editorPage('recurring', extra);
   if (sub === 'invoices' && (id === 'new' || extra === 'edit')) return editorPage('invoice', id);
-  if (sub === 'estimates' && (id === 'new' || extra === 'edit')) return editorPage('estimate', id);
+  if (sub === 'estimates' && (id === 'new' || extra === 'edit')) return editorPage('estimate', id, q);
   if (sub === 'estimates' && id) {
     const [er, ir] = await Promise.all([sb.from('estimates').select('*').eq('id', id).single(), sb.from('estimate_items').select('*').eq('estimate_id', id).order('sort')]);
     const e = er.data, mng = can('invoices.manage'), link = `${location.origin}${location.pathname}#/estimate/${e.id}?k=${e.view_key}`;
@@ -1250,7 +1252,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   }
   if (sub === 'quotes') {
     const qs = (await sb.from('quotes').select('*').order('id', { ascending: false })).data;
-    return `<h1>Quote requests</h1>${qs.length ? qs.map((x) => `<aside style="margin:10px 0"><b>${esc(x.name)}</b> · <a href="mailto:${esc(x.email)}">${esc(x.email)}</a> ${esc(x.phone)} · <span class="muted">${dateOf(x.created_at)}</span><p style="white-space:pre-wrap">${esc(x.message)}</p></aside>`).join('') : '<p>No requests yet.</p>'}`;
+    return `<h1>Quote requests</h1>${qs.length ? qs.map((x) => `<aside style="margin:10px 0"><b>${esc(x.name)}</b> · <a href="mailto:${esc(x.email)}">${esc(x.email)}</a> ${esc(x.phone)} · <span class="muted">${dateOf(x.created_at)}</span><p style="white-space:pre-wrap">${esc(x.message)}</p><div class="row">${can('invoices.manage') ? `<a class="btn ghost" href="#/admin/estimates/new?name=${encodeURIComponent(x.name)}&email=${encodeURIComponent(x.email || '')}&phone=${encodeURIComponent(x.phone || '')}&note=${encodeURIComponent('Quote request: ' + String(x.message || '').slice(0, 400))}">:ic-receipt: Create estimate</a>` : ''}${x.email ? `<a class="btn ghost" href="mailto:${esc(x.email)}?subject=${encodeURIComponent('Your quote request')}">:ic-mail: Reply</a>` : ''}</div></aside>`).join('') : '<div class="emptyq">:ic-clipboard:<p><b>No quote requests yet</b></p><p class="muted">Requests from the “Get a quote” page show up here.</p></div>'}`;
   }
   if (sub === 'orders') {
     const locs = (await sb.from('locations').select('id,name').order('name')).data || [], locF = q.get('loc') || '', statusF = q.get('status') || '', term = (q.get('search') || '').trim().replace(/[%,()]/g, '');
@@ -2443,7 +2445,7 @@ const invLineRow = (l, i) => `<tr data-i="${i}"><td><input data-k="description" 
   <td><input data-k="price" type="number" step="0.01" min="0" value="${(l.unit_price_cents / 100).toFixed(2)}" style="width:104px"></td><td class="c"><input data-k="taxable" type="checkbox" ${l.taxable ? 'checked' : ''} aria-label="Taxable"></td><td class="r amt">${money(Math.round(l.qty * l.unit_price_cents))}</td><td><button type="button" class="crm" data-del="${i}" aria-label="Remove line">:ic-x:</button></td></tr>`;
 const invTotalsHtml = () => { const t = calcInv(INV.items, INV.discount_cents, INV.tax_rate); return `<dl class="totals" style="margin-left:auto"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>${esc(INV.tax_label || 'Tax')} (${Number(INV.tax_rate) || 0}%)</dt><dd>${money(t.tax)}</dd><dt><b>Total</b></dt><dd><b>${money(t.total)}</b></dd></dl>`; };
 
-const editorPage = async (kind, id) => {
+const editorPage = async (kind, id, q = new URLSearchParams()) => {
   const tbl = { invoice: 'invoices', estimate: 'estimates', recurring: 'recurring_invoices' }[kind], isNew = !id || id === 'new';
   const ex = isNew ? null : (await sb.from(tbl).select('*').eq('id', id).single()).data;
   const toLine = (x) => ({ description: x.description, qty: Number(x.qty), unit_price_cents: x.unit_price_cents, taxable: x.taxable, product_id: x.product_id || null });
@@ -2455,6 +2457,7 @@ const editorPage = async (kind, id) => {
     issue_date: ex?.issue_date || todayStr(), due_date: kind === 'estimate' ? (ex?.expires_on || addDays(todayStr(), 30)) : (ex?.due_date || addDays(todayStr(), Number(STORE.invoice_due_days) || 14)), notes: ex?.notes || '', terms: ex ? ex.terms : (STORE.invoice_terms || ''),
     discount_cents: ex?.discount_cents || 0, tax_rate: ex ? Number(ex.tax_rate) : (Number(STORE.tax_rate) || 0), tax_label: ex?.tax_label || STORE.tax_label || 'Tax',
     items: ex ? exItems : [{ description: '', qty: 1, unit_price_cents: 0, taxable: true, product_id: null }], custs: custs.data || [], prods: prods.data || [] };
+  if (isNew && q.get('name')) { INV.customer_name = q.get('name').slice(0, 120); INV.customer_email = (q.get('email') || '').slice(0, 200); INV.customer_phone = (q.get('phone') || '').slice(0, 40); INV.notes = (q.get('note') || '').slice(0, 1000); }
   const meta = kind === 'recurring' ? `<section class="cs"><h3>Schedule</h3><label>Name <small class="muted">(for your own reference)</small><input id="rc_name" value="${esc(ex?.name || '')}" maxlength="120" placeholder="e.g. Monthly maintenance — Acme" required></label>
       <div class="two2"><label>Repeats<select id="rc_freq">${[['weekly', 'Weekly'], ['monthly', 'Monthly'], ['quarterly', 'Quarterly'], ['yearly', 'Yearly']].map(([v, l]) => `<option value="${v}" ${(ex?.frequency || 'monthly') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><label>Every (how many periods)<input id="rc_every" type="number" min="1" max="24" value="${ex?.every || 1}"></label></div>
       <div class="two2"><label>First invoice on<input id="rc_next" type="date" value="${ex?.next_run || todayStr()}"></label><label>Stop after (optional)<input id="rc_end" type="date" value="${ex?.end_date || ''}"></label></div>

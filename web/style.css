@@ -620,3 +620,8 @@ img{max-width:100%}
 .skuline{margin:0 0 6px;font-size:.85rem}
 .detailbox{display:grid;gap:14px}.kvedit{display:grid;grid-template-columns:1fr 1.6fr auto;gap:8px;align-items:center;margin-top:8px}.kvedit input{min-width:0}
 @media(max-width:600px){.kvedit{grid-template-columns:1fr auto}.kvedit input:nth-child(2){grid-column:1}}
+
+/* counting bundles + loose bags */
+.howto{display:flex;gap:8px;align-items:flex-start;padding:10px 14px;border-radius:var(--rb);background:var(--brand-soft);margin:10px 0}.howto .ic{margin-top:3px;color:var(--brand);flex:none}
+.bbox{display:grid;gap:2px;margin:0}.bbox input{width:74px}.invbund{gap:10px}.nobsize{display:block;max-width:140px}
+.stockrow{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;padding:10px 0;border-top:1px solid var(--line)}.stockrow>b{flex:1 1 100%}.stockrow label{display:grid;gap:2px;margin:0}.stockrow input[type=number]{width:96px}.sbtot{flex:1 1 100%}

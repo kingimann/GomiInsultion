@@ -17,3 +17,13 @@
   for = "/icon*"
   [headers.values]
     Cache-Control = "public, max-age=86400"
+
+# App files revalidate on every visit, so changes show up straight after a deploy.
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+[[headers]]
+  for = "/*.css"
+  [headers.values]
+    Cache-Control = "no-cache"

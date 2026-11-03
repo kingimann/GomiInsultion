@@ -2184,3 +2184,28 @@ begin
 end $$;
 revoke all on function public.set_bags_per_bundle(bigint, int) from public;
 grant execute on function public.set_bags_per_bundle(bigint, int) to authenticated;
+
+-- Bundle size changes also rename auto-named 'Pack of N' labels
+CREATE OR REPLACE FUNCTION public.set_bags_per_bundle(pid bigint, n integer)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare old int; synced boolean := false;
+begin
+  if not public.can_brand() then raise exception 'Not allowed'; end if;
+  if n is not null and (n < 2 or n > 1000) then raise exception 'Bags per bundle must be between 2 and 1000'; end if;
+  select bags_per_bundle into old from products where id = pid; if not found then raise exception 'Product not found'; end if;
+  update products set bags_per_bundle = n where id = pid;
+  -- keep the selling bundle in step (price per bag stays the same) when it used the old size
+  if old is not null and n is not null and old <> n
+     and exists (select 1 from product_packs where product_id = pid and units = old)
+     and not exists (select 1 from product_packs where product_id = pid and units = n) then
+    update product_packs set units = n, label = regexp_replace(label, '^(Bundle|Pack) of ' || old || '(\D|$)', '\1 of ' || n || '\2')
+      where product_id = pid and units = old;
+    synced := true;
+  end if;
+  return jsonb_build_object('selling_bundle_updated', synced);
+end $function$
+;

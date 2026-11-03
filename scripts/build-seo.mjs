@@ -55,4 +55,7 @@ for (const g of pages) {
 }
 writeFileSync(join(root, 'sitemap.xml'), `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((u) => `  <url><loc>${esc(base + u.loc)}</loc><priority>${u.pr}</priority></url>`).join('\n')}\n</urlset>\n`);
 writeFileSync(join(root, 'robots.txt'), seo.noindex ? 'User-agent: *\nDisallow: /\n' : `User-agent: *\nAllow: /\nDisallow: /#/admin\n${base ? `Sitemap: ${base}/sitemap.xml\n` : ''}`);
+// Cache-bust the app files so visitors always get the newest version after a deploy.
+{ const f = join(root, 'index.html'); let h = readFileSync(f, 'utf8'); const v = Date.now().toString(36);
+  h = h.replace(/(href="style\.css|src="(?:config|icons|app)\.js)(\?v=\w+)?"/g, `$1?v=${v}"`); writeFileSync(f, h); }
 console.log(`SEO build: ${products.length} products, ${pages.length} pages, ${urls.length} sitemap URLs`);

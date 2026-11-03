@@ -199,3 +199,5 @@ Products with a bundle size now show **Buy by the bag or by the bundle** on the 
 In the product editor, **Price per bag** is the main price field, and each bundle row takes **price per bag in the bundle** *or* **price per bundle** — type either and the other fills in (changing the number of bags keeps the per-bag price and updates the bundle price).
 
 **Optimize photos** (Admin → Products): one click re-checks every existing product and gallery photo hosted in your storage and replaces the oversized ones with resized WebP copies (max 1600px). Photos hosted on other websites can't be changed and are reported. All images are also capped to their container size by CSS, so a huge photo can never break the layout.
+
+**Removing a product photo:** open the product, tick **Remove this photo when I save** under *Current photo* (or choose a new file to replace it); gallery photos have their own Remove link. App files are now cache-busted on every deploy (and Netlify serves JS/CSS with `no-cache`), so layout fixes reach visitors immediately — no hard refresh needed.

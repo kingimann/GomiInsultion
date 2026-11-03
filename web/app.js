@@ -641,6 +641,34 @@ pages.account.after = () => {
   document.querySelectorAll('.defaddr').forEach((b) => b.addEventListener('click', async () => { await setDefault(b.dataset.id); route(); }));
 };
 
+
+// ---- admin command palette (Ctrl/Cmd+K) ----
+const CMD_LINKS = [['Dashboard', '#/admin', 'orders.view'], ['Orders', '#/admin/orders', 'orders.view'], ['Point of sale', '#/admin/pos', 'pos'], ['Products', '#/admin/products', 'catalog.manage'], ['New product', '#/admin/products/new', 'catalog.manage'], ['Inventory', '#/admin/inventory', 'inventory.view'], ['Customers', '#/admin/customers', 'customers.view'], ['Invoices', '#/admin/invoices', 'invoices.view'], ['New invoice', '#/admin/invoices/new', 'invoices.manage'], ['Estimates', '#/admin/estimates', 'invoices.view'], ['Expenses', '#/admin/expenses', 'expenses.view'], ['Profit & loss', '#/admin/profit', 'expenses.view'], ['Purchasing', '#/admin/purchasing', 'purchasing.view'], ['Messages', '#/messages', 'messages'], ['Forms', '#/admin/forms', 'content.manage'], ['Pages', '#/admin/pages', 'content.manage'], ['SEO', '#/admin/seo', 'content.manage'], ['Discount codes', '#/admin/codes', 'content.manage'], ['Quotes', '#/admin/quotes', 'customers.view'], ['Settings', '#/admin/settings', 'team.manage'], ['Team & roles', '#/admin/team', 'team.manage'], ['Activity log', '#/admin/activity', 'team.manage']];
+function openPalette() {
+  if (!isStaff() || document.getElementById('cmdk')) return;
+  const el = document.createElement('div'); el.id = 'cmdk'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Quick search');
+  el.innerHTML = '<div class="cmdbox"><input id="cmdq" placeholder="Jump to… or search customers, products, orders, invoices" autocomplete="off" aria-label="Search"><div id="cmdlist" role="listbox"></div><div class="cmdfoot muted">↑↓ to move · Enter to open · Esc to close</div></div>';
+  document.body.appendChild(el); const q = el.querySelector('#cmdq'), list = el.querySelector('#cmdlist'); let items = [], sel = 0, seq = 0;
+  const close = () => { el.remove(); document.removeEventListener('keydown', onKey, true); };
+  const draw = () => { list.innerHTML = items.length ? items.map((x, i) => `<a role="option" class="cmditem ${i === sel ? 'on' : ''}" href="${x.href}" data-i="${i}"><span class="cmdk">${esc(x.kind)}</span><span class="cmdt"><b>${esc(x.label)}</b>${x.sub ? `<small class="muted">${esc(x.sub)}</small>` : ''}</span></a>`).join('') : '<p class="muted" style="padding:14px">No matches.</p>'; list.querySelector('.on')?.scrollIntoView({ block: 'nearest' }); };
+  const base = (t) => CMD_LINKS.filter(([l, , perm]) => can(perm) && l.toLowerCase().includes(t)).map(([l, h]) => ({ kind: 'Go to', label: l, href: h }));
+  const run = async () => {
+    const t = q.value.trim().toLowerCase(), my = ++seq; items = base(t).slice(0, t ? 5 : 12); sel = 0; draw(); if (t.length < 2) return;
+    const like = t.replace(/[%,()]/g, ''), num = /^#?\d+$/.test(t) ? Number(t.replace('#', '')) : null, jobs = [];
+    if (can('customers.view')) jobs.push(sb.from('profiles').select('id,name,email').or(`name.ilike.%${like}%,email.ilike.%${like}%`).limit(5).then((r) => (r.data || []).map((u) => ({ kind: 'Customer', label: u.name || u.email, sub: u.email, href: `#/admin/customers/${u.id}` }))));
+    if (can('catalog.manage')) jobs.push(sb.from('products').select('id,name,category').ilike('name', `%${like}%`).limit(5).then((r) => (r.data || []).map((x) => ({ kind: 'Product', label: x.name, sub: x.category, href: `#/admin/products/${x.id}` }))));
+    if (can('orders.view')) jobs.push(sb.from('orders').select('id,name,total_cents,status').or(num ? `id.eq.${num},name.ilike.%${like}%` : `name.ilike.%${like}%,email.ilike.%${like}%`).order('id', { ascending: false }).limit(5).then((r) => (r.data || []).map((o) => ({ kind: 'Order', label: `#${o.id} · ${o.name}`, sub: `${o.status} · ${money(o.total_cents)}`, href: `#/admin/orders/${o.id}` }))));
+    if (can('invoices.view')) jobs.push(sb.from('invoices').select('id,number,customer_name,total_cents').or(`number.ilike.%${like}%,customer_name.ilike.%${like}%`).limit(5).then((r) => (r.data || []).map((i) => ({ kind: 'Invoice', label: `${i.number} · ${i.customer_name}`, sub: money(i.total_cents), href: `#/admin/invoices/${i.id}` }))));
+    const res = (await Promise.all(jobs.map((j) => j.catch(() => [])))).flat(); if (my !== seq) return; items = [...items, ...res]; draw();
+  };
+  const go = (i) => { const x = items[i]; if (x) { close(); location.hash = x.href; } };
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } else if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(items.length - 1, sel + 1); draw(); } else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(0, sel - 1); draw(); } else if (e.key === 'Enter' && document.activeElement === q) { e.preventDefault(); go(sel); } };
+  document.addEventListener('keydown', onKey, true); let tm; q.addEventListener('input', () => { clearTimeout(tm); tm = setTimeout(run, 160); });
+  el.addEventListener('click', (e) => { if (e.target === el) close(); else if (e.target.closest('.cmditem')) close(); }); run(); q.focus();
+}
+document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && isStaff()) { e.preventDefault(); openPalette(); } });
+document.addEventListener('click', (e) => { if (e.target.closest('.openpalette')) openPalette(); });
+
 // ---- admin ----
 const needAdmin = () => { if (!profile?.is_admin) { $app.innerHTML = '<h1>Forbidden</h1>'; return false; } return true; };
 const salesChart = (orders) => {
@@ -1145,19 +1173,29 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <table id="ordtable"><tr><th><input type="checkbox" id="selall" aria-label="Select all"></th><th>Order</th><th>Date</th><th>Location</th><th>Status</th><th>Total</th></tr>${os.map((o) => `<tr><td><input type="checkbox" class="osel" value="${o.id}" aria-label="Select order ${o.id}"></td><td><a href="#/admin/orders/${o.id}">#${o.id}</a> · ${esc(o.name)}</td><td>${dateOf(o.created_at)}</td><td>${esc(lnames[o.location_id] || '')}${o.source === 'in_store' ? ' · in store' : o.fulfillment === 'pickup' ? ' · pickup' : ''}</td><td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}${o.refunded_cents ? `<br><small class="down">−${money(o.refunded_cents)} refunded</small>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">No orders match.</p>'}`;
   }
   if (sub === 'customers' && id) {
-    const [pr, ords, info] = await Promise.all([sb.from('profiles').select('*').eq('id', id).single(), sb.from('orders').select('*').eq('user_id', id).order('id', { ascending: false }), sb.from('customer_info').select('*').eq('user_id', id).maybeSingle()]);
+    const [pr, ords, info, invR] = await Promise.all([sb.from('profiles').select('*').eq('id', id).single(), sb.from('orders').select('*').eq('user_id', id).order('id', { ascending: false }), sb.from('customer_info').select('*').eq('user_id', id).maybeSingle(), can('invoices.view') ? sb.from('invoices').select('id,number,total_cents,paid_cents,status,due_date').eq('customer_id', id).order('id', { ascending: false }) : { data: [] }]);
     const u = pr.data, os = ords.data || [], live = os.filter((o) => o.status !== 'cancelled'), spent = live.reduce((a, o) => a + net(o), 0), ci = info.data || { notes: '', tags: [] };
     return `<p><a href="#/admin/customers">← All customers</a></p><div class="acchead">${avatar(u.name || u.email)}<div><h1 style="margin:0">${esc(u.name || u.email)}${u.is_admin ? ' <span class="status paid">admin</span>' : ''}</h1><span class="muted">${u.username ? '@' + esc(u.username) + ' · ' : ''}${esc(u.email)} · joined ${new Date(u.created_at).toLocaleDateString()}</span></div>
       <a class="btn ghost" href="#/messages/new?to=${u.id}" style="margin-left:auto">:ic-chat: Message</a></div>
     <div class="kpis"><div class="kpi"><span class="lbl">Orders</span><b>${live.length}</b></div><div class="kpi"><span class="lbl">Lifetime spend</span><b>${money(spent)}</b></div><div class="kpi"><span class="lbl">Average order</span><b>${money(live.length ? Math.round(spent / live.length) : 0)}</b></div><div class="kpi"><span class="lbl">Last order</span><b style="font-size:1.1rem">${os[0] ? new Date(os[0].created_at).toLocaleDateString() : '—'}</b></div></div>
     <section class="cs" style="margin-top:16px"><h3>Notes &amp; tags <small class="muted" style="font-weight:400">(private)</small></h3><form id="custform" class="stack" data-id="${u.id}"><label>Tags (comma separated)<input name="tags" value="${esc((ci.tags || []).join(', '))}" placeholder="contractor, wholesale, VIP"></label><label>Notes<textarea name="notes" rows="4" maxlength="5000">${esc(ci.notes)}</textarea></label><button class="btn">Save</button></form></section>
+    ${can('invoices.view') ? `<section class="cs" style="margin-top:16px"><div class="sechead"><h3 style="margin:0">Invoices</h3>${can('invoices.manage') ? `<a class="btn ghost" href="#/admin/invoices/new">+ New invoice</a>` : ''}</div>${(invR.data || []).length ? `<div class="tablewrap"><table><tr><th>Number</th><th>Total</th><th>Balance</th><th>Due</th><th>Status</th></tr>${invR.data.map((i) => `<tr><td><a href="#/admin/invoices/${i.id}"><b>${esc(i.number)}</b></a></td><td>${money(i.total_cents)}</td><td>${money(i.total_cents - i.paid_cents)}</td><td>${esc(i.due_date)}</td><td><span class="status ${invEff(i) === 'overdue' ? 'cancelled' : i.status === 'paid' ? 'paid' : ''}">${invEff(i)}</span></td></tr>`).join('')}</table></div>` : '<p class="muted" style="margin:0">No invoices linked to this customer.</p>'}</section>` : ''}
     <section class="cs" style="margin-top:16px"><h3>Orders</h3>${ordersTable(os, '#/admin/orders')}</section>`;
   }
   if (sub === 'customers') {
-    const us = (await sb.from('profiles').select('*').order('created_at', { ascending: false })).data;
-    const cst = {}; ((await sb.from('orders').select('user_id,total_cents,tax_cents,refunded_cents,status')).data || []).forEach((o) => { if (!o.user_id || o.status === 'cancelled') return; const c = (cst[o.user_id] = cst[o.user_id] || { n: 0, spent: 0 }); c.n++; c.spent += net(o); });
+    const us = (await sb.from('profiles').select('*').order('created_at', { ascending: false })).data || [];
+    const cst = {}; ((await sb.from('orders').select('user_id,total_cents,tax_cents,refunded_cents,status,created_at')).data || []).forEach((o) => { if (!o.user_id || o.status === 'cancelled') return; const c = (cst[o.user_id] = cst[o.user_id] || { n: 0, spent: 0, last: '' }); c.n++; c.spent += net(o); if (o.created_at > c.last) c.last = o.created_at; });
     const tagsBy = {}; ((await sb.from('customer_info').select('user_id,tags')).data || []).forEach((r) => (tagsBy[r.user_id] = r.tags || []));
-    return `<h1>Customers</h1><table><tr><th>Name</th><th>Email</th><th>Orders</th><th>Spent</th><th>Joined</th><th></th></tr>${us.map((u) => `<tr><td><a href="#/admin/customers/${u.id}">${esc(u.name || u.email)}</a>${u.is_admin ? ' (admin)' : ''}${(tagsBy[u.id] || []).map((t) => ` <span class="status">${esc(t)}</span>`).join('')}</td><td>${esc(u.email)}</td><td>${cst[u.id]?.n || 0}</td><td>${money(cst[u.id]?.spent || 0)}</td><td>${dateOf(u.created_at)}</td><td>${u.is_admin ? '' : `<a href="#/messages/new?to=${u.id}">:ic-chat: Message</a>`}</td></tr>`).join('')}</table>`;
+    const people = us.filter((u) => !u.is_admin), spends = people.map((u) => cst[u.id]?.spent || 0).sort((a, b) => b - a), vipCut = Math.max(spends[Math.floor(spends.length * 0.1)] || 0, 1), d30 = new Date(Date.now() - 30 * 864e5).toISOString(), d90 = new Date(Date.now() - 90 * 864e5).toISOString();
+    const segs = (u) => { const c = cst[u.id], out = []; if (c && c.spent >= vipCut && c.n >= 1) out.push('vip'); if (u.created_at > d30) out.push('new'); if (c?.n >= 2) out.push('repeat'); if (c && c.last < d90) out.push('inactive'); if (!c) out.push('none'); return out; };
+    const repeatRate = people.filter((u) => cst[u.id]).length ? Math.round(people.filter((u) => cst[u.id]?.n >= 2).length / people.filter((u) => cst[u.id]).length * 100) : 0;
+    const total = people.reduce((a, u) => a + (cst[u.id]?.spent || 0), 0);
+    return `<div class="sechead"><h1 style="margin:0">Customers</h1><button class="btn ghost" id="custcsv" type="button">:ic-download: Export CSV</button></div>
+    <div class="kpis"><div class="kpi"><span class="lbl">Customers</span><b>${people.length}</b></div><div class="kpi"><span class="lbl">New (30 days)</span><b>${people.filter((u) => u.created_at > d30).length}</b></div><div class="kpi"><span class="lbl">Repeat buyers</span><b>${repeatRate}%</b><small class="muted">of those who ordered</small></div><div class="kpi"><span class="lbl">Avg lifetime value</span><b>${money(people.length ? Math.round(total / people.length) : 0)}</b></div></div>
+    <div class="toolbar" style="margin-top:14px"><input id="custq" type="search" placeholder="Search name, email or tag…" aria-label="Search customers" style="max-width:280px"><div class="chips" id="custseg" style="margin:0">${[['', 'All'], ['vip', 'Top 10%'], ['new', 'New'], ['repeat', 'Repeat'], ['inactive', 'Inactive 90d+'], ['none', 'No orders']].map(([v, l], k) => `<button type="button" class="chip ${k ? '' : 'on'}" data-seg="${v}">${l}</button>`).join('')}</div>
+      <select id="custsort" aria-label="Sort"><option value="joined">Newest</option><option value="spent">Highest spend</option><option value="orders">Most orders</option><option value="last">Recent order</option></select><span class="muted grow" id="custcount"></span></div>
+    <div class="tablewrap"><table id="custtable"><tr><th>Name</th><th>Email</th><th>Orders</th><th>Spent</th><th>Last order</th><th>Joined</th><th></th></tr>${us.map((u) => { const c = cst[u.id] || { n: 0, spent: 0, last: '' }, tg = tagsBy[u.id] || [];
+      return `<tr data-q="${esc((u.name + ' ' + u.email + ' ' + (u.username || '') + ' ' + tg.join(' ')).toLowerCase())}" data-seg="${segs(u).join(' ')}" data-joined="${u.created_at}" data-spent="${c.spent}" data-orders="${c.n}" data-last="${c.last}" data-csv='${esc(JSON.stringify([u.name, u.email, c.n, (c.spent / 100).toFixed(2), c.last.slice(0, 10), u.created_at.slice(0, 10), tg.join('; ')]))}'><td><a href="#/admin/customers/${u.id}">${esc(u.name || u.email)}</a>${u.is_admin ? ' <span class="status paid">team</span>' : ''}${segs(u).includes('vip') ? ' <span class="status shipped">VIP</span>' : ''}${tg.map((t) => ` <span class="status">${esc(t)}</span>`).join('')}</td><td>${esc(u.email)}</td><td>${c.n}</td><td>${money(c.spent)}</td><td>${c.last ? ago(c.last) : '—'}</td><td>${new Date(u.created_at).toLocaleDateString()}</td><td>${u.is_admin ? '' : `<a href="#/messages/new?to=${u.id}">Message</a>`}</td></tr>`; }).join('')}</table></div>`;
   }
   if (sub === 'products' && (id === 'new' || id)) {
     const p = id === 'new' ? {} : (await sb.from('products').select('*').eq('id', id).single()).data;
@@ -1223,7 +1261,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   const card = (title, body, action = '') => `<section class="cs dcard"><div class="sechead"><h3 style="margin:0">${title}</h3>${action}</div>${body}</section>`;
   const recent = (recentRes.data || []).slice(0, 8);
   return `<div class="dashhead"><div><h1 style="margin:0">Good ${hr < 12 ? 'morning' : hr < 18 ? 'afternoon' : 'evening'}${first ? ', ' + esc(first) : ''}</h1><p class="muted" style="margin:2px 0 0">${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })} · ${money(todayRev)} sold today</p></div>
-    <div class="row">${can(SECTION_PERM.settings) ? `<button type="button" class="btn ghost shoptoggle" id="shoptoggle">${shopClosed() ? ':ic-store: Reopen shop' : ':ic-lock: Close shop'}</button>` : ''}<a class="btn" href="#/admin/pos">:ic-store: In-store sale</a><a class="btn ghost" href="#/admin/products/new">+ Product</a></div></div>
+    <div class="row"><button type="button" class="btn ghost openpalette" aria-label="Quick search">:ic-search: Search <kbd>Ctrl K</kbd></button>${can(SECTION_PERM.settings) ? `<button type="button" class="btn ghost shoptoggle" id="shoptoggle">${shopClosed() ? ':ic-store: Reopen shop' : ':ic-lock: Close shop'}</button>` : ''}<a class="btn" href="#/admin/pos">:ic-store: In-store sale</a><a class="btn ghost" href="#/admin/products/new">+ Product</a></div></div>
   ${attn.length ? `<div class="attn">${attn.map(([i, n, l, h]) => `<a class="attnc ${n ? 'on' : ''}" href="${h}"><span>${i}</span><b>${n}</b><small>${l}</small></a>`).join('')}</div>` : ''}
   ${rep ? `<div class="sechead dsec"><h2 style="margin:0">Performance</h2><div class="seg">${[7, 30, 90].map((d) => `<a class="${d === days ? 'on' : ''}" href="#/admin?days=${d}">${d} days</a>`).join('')}</div></div>
   <div class="kpis">${kpi('Revenue', money(revCur), delta(revCur, revPrev))}${kpi('Orders', cur.length, delta(cur.length, prev.length))}${kpi('Average order', money(cur.length ? Math.round(revCur / cur.length) : 0), delta(cur.length ? revCur / cur.length : 0, prev.length ? revPrev / prev.length : 0))}${kpi('New customers', custCur, delta(custCur, custPrev))}</div>` : ''}
@@ -1236,6 +1274,16 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   <h2 class="dsec">Manage</h2><div class="mgroups">${manage.map(([g, ls]) => `<div class="mgroup"><h4>${g}</h4><div class="qlinks">${ls.map(([i, l, h]) => `<a href="${h}"><span>${i}</span>${l}</a>`).join('')}</div></div>`).join('')}</div>`;
 };
 pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
+  if (document.getElementById('custtable')) {
+    const tb = document.getElementById('custtable'), rows = () => [...tb.querySelectorAll('tr[data-q]')]; let seg = '';
+    const run = () => { const t = document.getElementById('custq').value.toLowerCase().trim(), so = document.getElementById('custsort').value, rs = rows(); let n = 0;
+      const key = { joined: (r) => r.dataset.joined, spent: (r) => Number(r.dataset.spent), orders: (r) => Number(r.dataset.orders), last: (r) => r.dataset.last }[so];
+      rs.sort((a, b) => (key(a) < key(b) ? 1 : key(a) > key(b) ? -1 : 0)).forEach((r) => { tb.appendChild(r); const ok = (!t || r.dataset.q.includes(t)) && (!seg || r.dataset.seg.split(' ').includes(seg)); r.hidden = !ok; if (ok) n++; });
+      document.getElementById('custcount').textContent = `${n} customer${n === 1 ? '' : 's'}`; };
+    document.getElementById('custq').addEventListener('input', run); document.getElementById('custsort').addEventListener('change', run);
+    document.getElementById('custseg').addEventListener('click', (e) => { const b = e.target.closest('[data-seg]'); if (!b) return; seg = b.dataset.seg; document.querySelectorAll('#custseg .chip').forEach((x) => x.classList.toggle('on', x === b)); run(); }); run();
+    document.getElementById('custcsv').addEventListener('click', () => download('customers.csv', [['Name', 'Email', 'Orders', 'Spent', 'Last order', 'Joined', 'Tags'], ...rows().filter((r) => !r.hidden).map((r) => JSON.parse(r.dataset.csv))]));
+  }
   if (document.getElementById('prodtable')) {
     const rows = () => [...document.querySelectorAll('#prodtable tr[data-name]')];
     const filt = () => { const t = document.getElementById('prodq').value.toLowerCase().trim(), c = document.getElementById('prodcat').value, v = document.getElementById('prodview').value; let n = 0;
@@ -2059,10 +2107,10 @@ const calcInv = (lines, discCents, rate) => {
   return { sub, disc, tax, total: sub - disc + tax };
 };
 let LASTDOC = null;
-function loadScript(src) { return new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res(); const sc = document.createElement('script'); sc.src = src; sc.onload = res; sc.onerror = () => rej(new Error('Could not load the PDF library. Check your connection.')); document.head.appendChild(sc); }); }
+function loadScript(src) { return new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res(); const sc = document.createElement('script'); sc.src = src; sc.onload = res; sc.onerror = () => rej(new Error('Could not load the PDF tools (' + src + '). Refresh the page and try again.')); document.head.appendChild(sc); }); }
 async function buildPdf() {
   if (!LASTDOC) return null; const { inv, items, pays } = LASTDOC, est = 'expires_on' in inv, b = STORE.biz || {};
-  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'); await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js');
+  await loadScript('vendor/jspdf.umd.min.js'); await loadScript('vendor/jspdf.plugin.autotable.min.js');
   const { jsPDF } = window.jspdf, doc = new jsPDF({ unit: 'pt', format: 'a4' }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 44;
   const hex = (getComputedStyle(document.documentElement).getPropertyValue('--brand') || '#ea580c').trim(), rgb = /^#[0-9a-f]{6}$/i.test(hex) ? [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) : [234, 88, 12];
   const m = (c) => money(c).replace(/\u2212/g, '-'), bal = est ? 0 : invBal(inv), paidFull = !est && bal <= 0 && inv.total_cents > 0;
@@ -2091,7 +2139,11 @@ async function buildPdf() {
 }
 async function downloadPdf() { const r = await buildPdf(); if (r) r.doc.save(r.filename); }
 document.addEventListener('click', async (e) => { if (!e.target.closest('.pdfbtn')) return; const btn = e.target.closest('.pdfbtn'); btn.disabled = true; try { await downloadPdf(); } catch (err) { fail(err); } finally { btn.disabled = false; } });
-function addPdfButtons() { document.querySelectorAll('#printbtn').forEach((p) => { if (!p.previousElementSibling?.classList.contains('pdfbtn') && document.querySelector('.invdoc')) p.insertAdjacentHTML('beforebegin', '<button class="btn ghost pdfbtn noprint" type="button">:ic-download: Download PDF</button>'); }); }
+function addPdfButtons() {
+  const doc = document.querySelector('.invdoc'); if (!doc) return;
+  document.querySelectorAll('#printbtn').forEach((p) => { if (!p.previousElementSibling?.classList.contains('pdfbtn')) p.insertAdjacentHTML('beforebegin', '<button class="btn ghost pdfbtn noprint" type="button">:ic-download: Download PDF</button>'); });
+  if (!document.querySelector('.pdfbtn')) doc.insertAdjacentHTML('beforebegin', '<div class="row noprint" style="justify-content:flex-end;margin-bottom:10px"><button class="btn ghost pdfbtn" type="button">:ic-download: Download PDF</button></div>');
+}
 const invDoc = (inv, items, pays) => {
   LASTDOC = { inv, items, pays };
   const est = 'expires_on' in inv, b = STORE.biz || {}, bal = est ? 0 : invBal(inv), eff = est ? (inv.status === 'sent' && inv.expires_on < todayStr() ? 'expired' : inv.status) : invEff(inv);

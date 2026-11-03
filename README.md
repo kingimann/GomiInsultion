@@ -163,3 +163,9 @@ Every invoice and estimate page (admin view and the customer's public link) has 
 ## PDF attached to emailed invoices
 
 When an admin sends an invoice or estimate by email from the send panel, the browser builds the PDF, stores it in the private `doc-pdfs` bucket and the `notify` function attaches it to the email (only if it was created in the last 5 minutes, so an old file can never go out). Texts still send the link. Recurring invoices that send automatically (no admin browser involved) go out with the link only. Requires the Resend setup described above; redeploy `supabase/functions/notify` if you change it.
+
+## Customers upgrade & quick search
+
+**Admin → Customers** now shows new/repeat/lifetime-value KPIs, search (name, email, tag), segments (Top 10%, New, Repeat, Inactive 90d+, No orders), sorting, last-order column and CSV export; a customer's page also lists their invoices. Press **Ctrl/Cmd+K** anywhere in the admin (or the Search button on the dashboard) to jump to any section or find a customer, product, order or invoice.
+
+The invoice PDF library is bundled in `web/vendor/` (no external CDN needed).

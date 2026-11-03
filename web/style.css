@@ -514,3 +514,9 @@ label.switch{display:inline-flex!important;flex-direction:row;align-items:center
 .mdcard{display:flex;gap:14px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:var(--r);background:var(--card);text-decoration:none;color:var(--fg);margin:12px 0}.mdcard img{width:64px;height:64px;object-fit:cover;border-radius:10px;margin:0}.mdcard>span:nth-of-type(1){flex:1;display:grid}.mdcard small{color:var(--muted)}.mdcard .btn{padding:6px 14px;min-height:0}
 .prevframe{margin:0 auto;transition:max-width .2s}.prevframe .preview{max-width:none}
 .seg button{padding:6px 16px;border:0;border-radius:99px;background:transparent;color:var(--fg);font:inherit;font-weight:600;font-size:.9rem;cursor:pointer}.seg button.on{background:var(--fg);color:var(--bg)}
+
+/* polish */
+.crumbs{margin:18px 0 14px;font-size:.88rem}
+#app>h1:first-child{margin-top:22px}
+:focus-visible{outline:3px solid color-mix(in srgb,var(--brand) 55%,transparent);outline-offset:2px}
+.btn{transition:transform .12s,box-shadow .15s,background-color .15s}.btn:active{transform:translateY(1px)}

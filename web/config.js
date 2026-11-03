@@ -4,7 +4,7 @@ window.GOMI = {
   SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxzdmNwYmxweWN2cW5hZ3hmdmx6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM2NTgyMTksImV4cCI6MjEwOTIzNDIxOX0.g7vEG9OAMEjPBGjpZh-PBknHQNReQL-RscXMaF7l1oI',
   STORE_NAME: 'Gomi Insulation',
   CURRENCY: '$',
-  ANNOUNCEMENT: 'Free shipping on orders over $500 · Use code WELCOME10 for 10% off your first order',
+  ANNOUNCEMENT: 'Use code WELCOME10 for 10% off your first order',
   // Set to true after deploying the Stripe edge functions (see README).
   PAYMENTS: false,
   // Competitor prices older than this many days are hidden from customers.

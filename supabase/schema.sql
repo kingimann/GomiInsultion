@@ -2750,3 +2750,25 @@ drop trigger if exists reviews_links on public.reviews; create trigger reviews_l
 -- hidden reviews don't count towards the star rating
 create or replace view public.product_ratings as
   select product_id, (round(avg(rating), 1))::double precision as avg, (count(*))::integer as count from public.reviews where not hidden group by product_id;
+
+-- ===== Review photos =====
+alter table public.reviews add column if not exists photos jsonb not null default '[]' check (jsonb_typeof(photos) = 'array' and jsonb_array_length(photos) <= 4);
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+  values ('review-photos', 'review-photos', true, 5242880, array['image/jpeg','image/png','image/webp'])
+  on conflict (id) do nothing;
+drop policy if exists "customers upload review photos" on storage.objects;
+create policy "customers upload review photos" on storage.objects for insert to authenticated
+  with check (bucket_id = 'review-photos' and (storage.foldername(name))[1] = auth.uid()::text);
+drop policy if exists "delete review photos" on storage.objects;
+create policy "delete review photos" on storage.objects for delete to authenticated
+  using (bucket_id = 'review-photos' and ((storage.foldername(name))[1] = auth.uid()::text or public.has_perm('content.manage')));
+create or replace function public.trg_review_photos() returns trigger language plpgsql as $$
+declare u text;
+begin
+  for u in select jsonb_array_elements_text(new.photos) loop
+    if u !~ '^https://[^/]+/storage/v1/object/public/review-photos/' then raise exception 'Invalid photo'; end if;
+  end loop;
+  return new;
+end $$;
+drop trigger if exists reviews_photos on public.reviews;
+create trigger reviews_photos before insert on public.reviews for each row execute function public.trg_review_photos();

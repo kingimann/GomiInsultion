@@ -272,3 +272,7 @@ Supabase's **minimum password length is now 8** (it was 6), matching the sign-up
 **Reviews:** a star-distribution summary, a **Verified purchase** badge (set by the database from the customer's orders), public **store replies**, and staff moderation — hide/show, reply or delete right on the product page, plus a new **Admin → Reviews** page (new this week, unanswered, low ratings, hidden) with the average rating. Hidden reviews don't count towards the stars. Customers also see invoices addressed to their confirmed email in *My account*.
 **Opening hours:** set the hours per day and a time zone in **Settings → Opening hours**. The home page shows "Open now · until 5 PM" (or when you next open), the footer lists your hours, and the `{{contact}}` page block includes them.
 **Fix:** the anti-spam link guard added earlier referenced a column that doesn't exist on one of its two tables, which made quote requests and product reviews fail; it's corrected (verified with an insert test on both).
+
+## Review photos
+
+Customers can add up to 4 photos to a review (resized automatically). Photos show as thumbnails under the review and open in a viewer; hiding a review hides its photos, and deleting a review removes the files. Uploads go to a public `review-photos` bucket where each customer can only write into their own folder, and the database only accepts photo links that point to that bucket (max 4 per review).

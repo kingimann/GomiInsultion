@@ -1944,3 +1944,21 @@ begin
   return jsonb_build_object('id', oid, 'key', gk);
 end $function$
 ;
+
+-- ===== Sale pricing & back-in-stock alerts =====
+alter table public.products add column if not exists compare_at_cents int not null default 0 check (compare_at_cents >= 0);
+create table if not exists public.stock_alerts (
+  id bigint generated always as identity primary key, product_id bigint not null references public.products(id) on delete cascade,
+  email text not null check (length(email) between 5 and 200), created_at timestamptz not null default now(), unique (product_id, email));
+alter table public.stock_alerts enable row level security;
+drop policy if exists "admin stock alerts" on public.stock_alerts;
+create policy "admin stock alerts" on public.stock_alerts for all using (public.is_admin()) with check (public.is_admin());
+create or replace function public.notify_when_back(pid bigint, addr text) returns void language plpgsql security definer set search_path = public as $$
+begin
+  addr := lower(trim(addr));
+  if addr !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'Enter a valid email address'; end if;
+  if not exists (select 1 from products where id = pid and active) then raise exception 'Product not found'; end if;
+  insert into stock_alerts (product_id, email) values (pid, addr) on conflict do nothing;
+end $$;
+revoke all on function public.notify_when_back(bigint, text) from public;
+grant execute on function public.notify_when_back(bigint, text) to anon, authenticated;

@@ -169,8 +169,11 @@ document.addEventListener('click', (e) => {
   w = w.includes(id) ? w.filter((x) => x !== id) : [...w, id]; localStorage.setItem('wish', JSON.stringify(w));
   b.innerHTML = w.includes(id) ? ':ic-heart-fill:' : ':ic-heart:'; b.style.color = w.includes(id) ? '#dc2626' : ''; renderNav(); if (location.hash.startsWith('#/wishlist')) route();
 });
-const card = (p) => `<article class="card">${p.stock <= 0 ? '<span class="badge">Sold out</span>' : p.stock <= 10 ? '<span class="badge warn">Low stock</span>' : ''}<button class="heart" data-id="${p.id}" aria-label="Save to wishlist" style="${getWish().includes(p.id) ? 'color:#dc2626' : ''}">${getWish().includes(p.id) ? ':ic-heart-fill:' : ':ic-heart:'}</button><a href="#/product/${esc(p.slug)}">${img(p)}</a><div class="pad"><span class="tag">${esc(p.category)}</span>
-  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}${saveBadge(p)}<div class="cardfoot"><p class="price">${money(p.price_cents)}</p>${p.stock > 0 ? `<button class="addbtn" data-id="${p.id}" data-stock="${p.stock}" data-name="${esc(p.name)}" aria-label="Add ${esc(p.name)} to cart">+ Add</button>` : '<span class="muted" style="font-size:.85rem">Sold out</span>'}</div></div></article>`;
+const onSale = (p) => p.compare_at_cents > p.price_cents;
+const salePct = (p) => Math.round((1 - p.price_cents / p.compare_at_cents) * 100);
+const priceHtml = (p) => onSale(p) ? `<span class="was">${money(p.compare_at_cents)}</span> <span class="now">${money(p.price_cents)}</span>` : money(p.price_cents);
+const card = (p) => `<article class="card">${p.stock <= 0 ? '<span class="badge">Sold out</span>' : onSale(p) ? `<span class="badge sale">-${salePct(p)}%</span>` : p.stock <= 5 ? `<span class="badge warn">Only ${p.stock} left</span>` : p.stock <= 10 ? '<span class="badge warn">Low stock</span>' : ''}<button class="heart" data-id="${p.id}" aria-label="Save to wishlist" style="${getWish().includes(p.id) ? 'color:#dc2626' : ''}">${getWish().includes(p.id) ? ':ic-heart-fill:' : ':ic-heart:'}</button><a href="#/product/${esc(p.slug)}">${img(p)}</a><div class="pad"><span class="tag">${esc(p.category)}</span>
+  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}${saveBadge(p)}<div class="cardfoot"><p class="price">${priceHtml(p)}</p>${p.stock > 0 ? `<button class="addbtn" data-id="${p.id}" data-stock="${p.stock}" data-name="${esc(p.name)}" aria-label="Add ${esc(p.name)} to cart">+ Add</button>` : '<span class="muted" style="font-size:.85rem">Sold out</span>'}</div></div></article>`;
 const getPromo = () => { try { return JSON.parse(localStorage.getItem('promo') || 'null'); } catch { return null; } };
 const totals = (sub, pickup = false) => { const pr = getPromo(), disc = pr && sub ? Math.floor(sub * pr.percent / 100) : 0; const ship = pickup || !sub || (FREE_SHIP > 0 && sub - disc >= FREE_SHIP) ? 0 : SHIP; const base = sub - disc + ship, tax = Math.round(base * (Number(STORE.tax_rate) || 0) / 100); return { sub, disc, code: disc ? pr.code : '', ship, tax, taxLabel: STORE.tax_label || 'Tax', total: base + tax }; };
 const totalsHtml = (t) => `<dl class="totals"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount${t.code ? ' (' + esc(t.code) + ')' : ''}</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>Shipping</dt><dd>${t.ship ? money(t.ship) : 'Free'}</dd>${t.tax ? `<dt>${esc(t.taxLabel || 'Tax')}</dt><dd>${money(t.tax)}</dd>` : ''}<dt>Total</dt><dd><strong>${money(t.total)}</strong></dd>${t.refunded ? `<dt>Refunded</dt><dd>−${money(t.refunded)}</dd>` : ''}</dl>`;
@@ -236,21 +239,28 @@ pages.shop = async (_, q) => {
   const sort = q.get('sort') || 'name', instock = q.get('instock') === '1';
   const ord = { name: ['name', true], price_asc: ['price_cents', true], price_desc: ['price_cents', false], stock: ['stock', false] }[sort] || ['name', true];
   let req = sb.from('products').select('*').eq('active', true).order(ord[0], { ascending: ord[1] });
-  if (instock) req = req.gt('stock', 0);
+  const pmin = Math.round((parseFloat(q.get('min')) || 0) * 100), pmax = Math.round((parseFloat(q.get('max')) || 0) * 100), sale = q.get('sale') === '1';
+  if (instock) req = req.gt('stock', 0); if (pmin) req = req.gte('price_cents', pmin); if (pmax) req = req.lte('price_cents', pmax);
   if (category) req = req.eq('category', category);
   if (term) req = req.or(`name.ilike.%${term}%,description.ilike.%${term}%,category.ilike.%${term}%`);
-  const { data, error } = await req; if (error) throw error;
+  let { data, error } = await req; if (error) throw error; if (sale) data = data.filter(onSale);
   const cats = [...new Set((await sb.from('products').select('category').eq('active', true)).data.map((r) => r.category))].sort();
   return `<h1>${esc(category || 'All products')}</h1><div class="chips"><a class="chip ${!category ? 'on' : ''}" href="#/shop">All</a>
   ${cats.map((c) => `<a class="chip ${c === category ? 'on' : ''}" href="#/shop?category=${encodeURIComponent(c)}">${esc(c)}</a>`).join('')}</div>
   <form class="toolbar" id="filters"><span class="muted grow">${data.length} product${data.length === 1 ? '' : 's'}</span>
-  <label><input type="checkbox" name="instock" ${instock ? 'checked' : ''}> In stock only</label>
+  <label><input type="checkbox" name="instock" ${instock ? 'checked' : ''}> In stock only</label><label><input type="checkbox" name="sale" ${sale ? 'checked' : ''}> On sale</label>
+  <span class="pricerange"><input name="min" type="number" min="0" step="1" placeholder="Min $" value="${q.get('min') || ''}" aria-label="Minimum price"><span>–</span><input name="max" type="number" min="0" step="1" placeholder="Max $" value="${q.get('max') || ''}" aria-label="Maximum price"></span>
   <select name="sort" aria-label="Sort">${[['name', 'Name'], ['price_asc', 'Price: low to high'], ['price_desc', 'Price: high to low'], ['stock', 'Most in stock']].map(([v, l]) => `<option value="${v}" ${v === sort ? 'selected' : ''}>${l}</option>`).join('')}</select></form>
   ${term ? `<p class="muted">Results for “${esc(term)}”</p>` : ''}${data.length ? `<div class="grid">${data.map(card).join('')}</div>` : '<p>No products found.</p>'}`;
 };
+document.addEventListener('submit', async (e) => {
+  if (e.target.id !== 'alertform') return; e.preventDefault();
+  const { error } = await sb.rpc('notify_when_back', { pid: Number(e.target.dataset.id), addr: new FormData(e.target).get('email') });
+  error ? fail(error) : (flash("Got it — we'll record your email for this product."), e.target.innerHTML = '<span class="muted">:ic-check-circle: You are on the list.</span>');
+});
 pages.shop.after = (_, q) => document.getElementById('filters')?.addEventListener('change', (e) => {
   const f = new FormData(e.currentTarget), n = new URLSearchParams(q);
-  n.set('sort', f.get('sort')); f.get('instock') ? n.set('instock', '1') : n.delete('instock'); location.hash = `#/shop?${n}`;
+  n.set('sort', f.get('sort')); f.get('instock') ? n.set('instock', '1') : n.delete('instock'); f.get('sale') ? n.set('sale', '1') : n.delete('sale'); ['min', 'max'].forEach((k) => (f.get(k) ? n.set(k, f.get(k)) : n.delete(k))); location.hash = `#/shop?${n}`;
 });
 pages.product = async ([slug]) => {
   const { data: p } = await sb.from('products').select('*').eq('slug', slug).maybeSingle();
@@ -270,9 +280,9 @@ pages.product = async ([slug]) => {
   const gallery = pics.length ? `<div class="gallery"><img class="big" id="mainpic" src="${esc(pics[0])}" alt="${esc(p.image_alt || p.name)}">${pics.length > 1 ? `<div class="thumbs">${pics.map((u, i) => `<img src="${esc(u)}" alt="Photo ${i + 1}" class="${i ? '' : 'on'}">`).join('')}</div>` : ''}</div>` : img(p, true);
   return `<div class="crumbs" role="navigation" aria-label="Breadcrumb"><a href="#/shop">Shop</a> › <a href="#/shop?category=${encodeURIComponent(p.category)}">${esc(p.category)}</a> › <span>${esc(p.name)}</span></div>
   <div class="detail"><div>${gallery}</div><div><span class="tag">${esc(p.category)}</span><h1>${esc(p.name)}</h1>
-  <p class="price big">${money(p.price_cents)} <small>per ${esc(p.unit)}</small></p>${p.r_value ? `<p><strong>R-value:</strong> ${esc(p.r_value)}</p>` : ''}<p>${esc(p.description)}</p>
+  <p class="price big">${priceHtml(p)} <small>per ${esc(p.unit)}</small>${onSale(p) ? ` <span class="savepill">Save ${salePct(p)}%</span>` : ''}</p>${p.r_value ? `<p><strong>R-value:</strong> ${esc(p.r_value)}</p>` : ''}<p>${esc(p.description)}</p>
   ${p.stock > 0 ? `<form class="row" id="add"><div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="qty" value="1" min="1" max="${p.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div><button class="btn">Add to cart</button></form>
-  <p class="stockpill ${p.stock <= 10 ? 'low' : ''}"><i></i>${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : '<p class="flash error">Out of stock</p>'}
+  <p class="stockpill ${p.stock <= 10 ? 'low' : ''}"><i></i>${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : `<p class="flash error" style="margin-bottom:8px">Out of stock</p><form id="alertform" class="row" data-id="${p.id}" style="flex-wrap:nowrap"><input name="email" type="email" required placeholder="Email me when it's back" value="${esc(session?.user.email || '')}" aria-label="Email"><button class="btn">:ic-bell: Notify me</button></form>`}
   <ul class="trust"><li>:ic-truck: ${FREE_SHIP > 0 ? `Free shipping on orders over ${money(FREE_SHIP)}` : `Flat ${money(SHIP)} delivery`}</li><li>:ic-chat: Questions? <a href="#/messages">Message us</a> or <a href="#/quote">request a quote</a></li></ul>
   ${compareHtml(p)}
   ${coverageOf(p) ? `<div class="calc"><h3>:ic-ruler: How many do I need?</h3><div class="row"><label>Area (sq ft) <input type="number" id="area" min="1" value="200"></label>
@@ -1146,7 +1156,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const t = (n, l, x = '') => `<label>${l}<input name="${n}" value="${esc(p[n] ?? '')}" ${x}></label>`;
     return `<h1>${p.id ? 'Edit product' : 'New product'}</h1><form id="pf" class="stack narrow" data-id="${p.id || ''}">${t('name', 'Name', 'required')}${t('category', 'Category', 'required')}
     <label>Description<textarea name="description" rows="5">${esc(p.description)}</textarea></label>
-    <label>Price<input name="price" type="number" step="0.01" min="0" required value="${p.price_cents != null ? (p.price_cents / 100).toFixed(2) : ''}"></label>
+    <div class="two2"><label>Price<input name="price" type="number" step="0.01" min="0" required value="${p.price_cents != null ? (p.price_cents / 100).toFixed(2) : ''}"></label><label>Original price <small class="muted">shows a sale badge</small><input name="compare_at" type="number" step="0.01" min="0" value="${p.compare_at_cents ? (p.compare_at_cents / 100).toFixed(2) : ''}" placeholder="optional"></label></div>
     ${t('unit', 'Unit (e.g. bundle, roll)', 'required')}${t('r_value', 'R-value')}
     <div class="two2"><label>Unit cost ($) <small class="muted">what you pay</small><input name="cost" type="number" step="0.01" min="0" value="${((p.cost_cents || 0) / 100).toFixed(2)}"></label><label>Reorder when stock ≤<input name="reorder_point" type="number" min="0" value="${p.reorder_point ?? 10}"></label></div>
     <label>Usual reorder quantity<input name="reorder_qty" type="number" min="0" value="${p.reorder_qty ?? 0}"></label>${stockFields}
@@ -1157,9 +1167,14 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <label>More photos for the gallery (optional, you can pick several)<input type="file" name="extras" accept="image/jpeg,image/png,image/webp,image/gif" multiple></label><label>Photo description (alt text) <small class="muted">for accessibility and image search</small><input name="image_alt" maxlength="200" value="${esc(p.image_alt || '')}" placeholder="e.g. Roll of R-13 fiberglass batt insulation"></label>${seoFields(p, p.name, '/product/' + (p.slug || 'your-product') + '/')}<label class="check"><input type="checkbox" name="active" ${p.id && !p.active ? '' : 'checked'}> Visible in store</label><button class="btn">Save</button></form>`;
   }
   if (sub === 'products') {
-    const ps = (await sb.from('products').select('*').order('name')).data;
-    return `<h1>Products</h1><p><a class="btn" href="#/admin/products/new">+ New product</a></p><table><tr><th>Name</th><th>Category</th><th>Price</th><th>Stock</th><th>Status</th></tr>
-    ${ps.map((p) => `<tr><td><a href="#/admin/products/${p.id}">${esc(p.name)}</a></td><td>${esc(p.category)}</td><td>${money(p.price_cents)}</td><td>${p.stock}</td><td>${p.active ? 'Live' : 'Hidden'}</td></tr>`).join('')}</table>`;
+    const [psR, alR] = await Promise.all([sb.from('products').select('*').order('name'), sb.from('stock_alerts').select('product_id')]);
+    const ps = psR.data || [], waiting = {}; (alR.data || []).forEach((a) => (waiting[a.product_id] = (waiting[a.product_id] || 0) + 1));
+    const cats = [...new Set(ps.map((x) => x.category))].sort();
+    return `<div class="sechead"><h1 style="margin:0">Products</h1><div class="row"><button class="btn ghost" id="prodcsv" type="button">:ic-download: Export CSV</button><a class="btn" href="#/admin/products/new">+ New product</a></div></div>
+    <div class="toolbar"><input id="prodq" type="search" placeholder="Search products…" aria-label="Search products" style="max-width:280px"><select id="prodcat" aria-label="Category"><option value="">All categories</option>${cats.map((c) => `<option>${esc(c)}</option>`).join('')}</select>
+    <select id="prodview" aria-label="Show"><option value="">All</option><option value="low">Low or out of stock</option><option value="sale">On sale</option><option value="hidden">Hidden</option></select><span class="muted grow" id="prodcount"></span></div>
+    <table id="prodtable"><tr><th>Name</th><th>Category</th><th>Price</th><th>Stock</th><th>Waiting</th><th>Status</th></tr>
+    ${ps.map((p) => `<tr data-name="${esc(p.name.toLowerCase())}" data-cat="${esc(p.category)}" data-low="${p.stock <= (p.reorder_point ?? 10) ? 1 : ''}" data-sale="${onSale(p) ? 1 : ''}" data-hidden="${p.active ? '' : 1}" data-csv='${esc(JSON.stringify([p.name, p.category, (p.price_cents / 100).toFixed(2), ((p.cost_cents || 0) / 100).toFixed(2), p.stock, p.unit, p.active ? 'live' : 'hidden']))}'><td><a href="#/admin/products/${p.id}">${esc(p.name)}</a></td><td>${esc(p.category)}</td><td>${priceHtml(p)}</td><td class="${p.stock === 0 ? 'down' : ''}">${p.stock}</td><td>${waiting[p.id] ? `<span class="status pending">${waiting[p.id]}</span>` : ''}</td><td>${p.active ? 'Live' : 'Hidden'}</td></tr>`).join('')}</table>`;
   }
   // ---- dashboard ----
   const days = [7, 30, 90].includes(Number(q.get('days'))) ? Number(q.get('days')) : 30, now = Date.now(), cutCur = now - days * 864e5;
@@ -1209,6 +1224,14 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   <h2 class="dsec">Manage</h2><div class="mgroups">${manage.map(([g, ls]) => `<div class="mgroup"><h4>${g}</h4><div class="qlinks">${ls.map(([i, l, h]) => `<a href="${h}"><span>${i}</span>${l}</a>`).join('')}</div></div>`).join('')}</div>`;
 };
 pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
+  if (document.getElementById('prodtable')) {
+    const rows = () => [...document.querySelectorAll('#prodtable tr[data-name]')];
+    const filt = () => { const t = document.getElementById('prodq').value.toLowerCase().trim(), c = document.getElementById('prodcat').value, v = document.getElementById('prodview').value; let n = 0;
+      rows().forEach((r) => { const ok = (!t || r.dataset.name.includes(t)) && (!c || r.dataset.cat === c) && (!v || (v === 'low' ? r.dataset.low : v === 'sale' ? r.dataset.sale : r.dataset.hidden)); r.hidden = !ok; if (ok) n++; });
+      document.getElementById('prodcount').textContent = `${n} product${n === 1 ? '' : 's'}`; };
+    ['prodq', 'prodcat', 'prodview'].forEach((i) => document.getElementById(i).addEventListener('input', filt)); filt();
+    document.getElementById('prodcsv').addEventListener('click', () => download('products.csv', [['Name', 'Category', 'Price', 'Cost', 'Stock', 'Unit', 'Status'], ...rows().filter((r) => !r.hidden).map((r) => JSON.parse(r.dataset.csv))]));
+  }
   document.getElementById('seoform')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
     const value = { site_title: f.site_title.trim(), home_title: f.home_title.trim(), description: f.description.trim(), og_image: safeUrl(f.og_image.trim()), site_url: f.site_url.trim().replace(/\/+$/, ''), noindex: f.noindex === 'on' };
@@ -1646,7 +1669,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       f.image_url = sb.storage.from('product-images').getPublicUrl(path).data.publicUrl;
     }
     const row = { name: f.name.trim(), category: f.category.trim(), description: f.description, price_cents: Math.round(parseFloat(f.price) * 100), unit: f.unit.trim(),
-      r_value: f.r_value.trim(), image_url: safeUrl(f.image_url.trim()), active: !!f.active, cost_cents: Math.round((parseFloat(f.cost) || 0) * 100), reorder_point: parseInt(f.reorder_point, 10) || 0, reorder_qty: parseInt(f.reorder_qty, 10) || 0, seo_title: (f.seo_title || '').trim(), seo_description: (f.seo_description || '').trim(), image_alt: (f.image_alt || '').trim() };
+      r_value: f.r_value.trim(), image_url: safeUrl(f.image_url.trim()), active: !!f.active, cost_cents: Math.round((parseFloat(f.cost) || 0) * 100), reorder_point: parseInt(f.reorder_point, 10) || 0, reorder_qty: parseInt(f.reorder_qty, 10) || 0, compare_at_cents: Math.round((parseFloat(f.compare_at) || 0) * 100), seo_title: (f.seo_title || '').trim(), seo_description: (f.seo_description || '').trim(), image_alt: (f.image_alt || '').trim() };
     if (!pid) row.slug = (row.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'product') + '-' + Math.floor(Math.random() * 1000);
     const res = pid ? await sb.from('products').update(row).eq('id', pid).select('id').single() : await sb.from('products').insert(row).select('id').single();
     if (res.error) return fail(res.error);

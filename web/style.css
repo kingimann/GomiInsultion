@@ -520,3 +520,10 @@ label.switch{display:inline-flex!important;flex-direction:row;align-items:center
 #app>h1:first-child{margin-top:22px}
 :focus-visible{outline:3px solid color-mix(in srgb,var(--brand) 55%,transparent);outline-offset:2px}
 .btn{transition:transform .12s,box-shadow .15s,background-color .15s}.btn:active{transform:translateY(1px)}
+
+/* sale pricing, price filter */
+.was{color:var(--muted);text-decoration:line-through;font-weight:500;font-size:.85em}.now{color:var(--err);font-weight:800}
+.badge.sale{background:var(--err);color:#fff}.savepill{display:inline-block;background:#fee2e2;color:#b91c1c;border-radius:99px;padding:2px 10px;font-size:.8rem;font-weight:700;vertical-align:middle}
+.pricerange{display:inline-flex;gap:6px;align-items:center}.pricerange input{width:84px;padding:6px 8px;min-height:0}
+#alertform input{flex:1;min-width:0}
+.card .badge{z-index:2}

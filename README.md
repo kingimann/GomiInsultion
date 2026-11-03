@@ -147,3 +147,7 @@ Chat now supports photo/file attachments (private `message-files` bucket, signed
 ## Page editor
 
 Templates (About, FAQ, Shipping, Contact), extra blocks (tables, FAQ accordions, callouts, YouTube video, product cards, H3, numbered lists, dividers), desktop/mobile preview with word count and reading time, autosaved drafts with restore, unsaved-changes warning, Ctrl+S / Ctrl+B / Ctrl+I, version history with restore (last 25 saves), and publish/unpublish/duplicate from the pages list.
+
+## Sale pricing, price filters, back-in-stock list
+
+Set an **Original price** on a product to show a strikethrough price and a “-X%” badge (the normal price is what customers pay). The shop has price-range and “On sale” filters, cards show “Only N left” when stock is 5 or less, and sold-out products offer a “Notify me” email box — the list is stored in `stock_alerts` and shown as a *Waiting* count in Admin → Products (emails are collected, not sent automatically yet). Admin → Products also has search, category/low-stock/sale/hidden filters and CSV export.

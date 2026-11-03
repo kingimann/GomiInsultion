@@ -558,3 +558,9 @@ kbd{font:inherit;font-size:.72rem;border:1px solid var(--line);border-radius:6px
 .packhint{display:block;color:var(--brand);font-weight:600;margin:2px 0 4px}
 .packedit{grid-template-columns:.8fr 1fr 1.4fr auto}.packedit .packcalc{grid-column:1/-1}.packrow>div small{display:block}
 @media(max-width:600px){.packedit{grid-template-columns:1fr 1fr}.packedit label:nth-child(3){grid-column:1/-1}}
+
+/* brands */
+.brandtag{display:inline-block;margin-left:6px;font-size:.72rem;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:var(--brand);text-decoration:none}
+.brandchips{align-items:center}.brandchips>.muted{font-size:.85rem;margin-right:2px}
+.brandbox{display:grid;gap:10px}.brandlist{display:flex;gap:8px;flex-wrap:wrap}.brandpill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:99px;padding:4px 6px 4px 12px;background:var(--card)}.brandpill button{border:0;background:transparent;color:var(--fg);cursor:pointer;padding:2px 4px;font:inherit;font-size:.85rem}.brandpill .del{color:var(--err)}
+.invbrand{min-width:130px;padding:6px 8px;min-height:0}

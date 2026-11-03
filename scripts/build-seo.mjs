@@ -41,7 +41,7 @@ const urls = [{ loc: '/', pr: '1.0' }, { loc: '/#/shop', pr: '0.8' }];
 for (const p of products) {
   const path = `/product/${p.slug}/`, img = safe(p.image_url), desc = p.seo_description || clip(p.description, 160) || `${p.name} — ${p.category}`;
   out(`product/${p.slug}`, shell({ title: p.seo_title || p.name, desc, image: img, type: 'product', path, hash: `#/product/${p.slug}`,
-    ld: { '@context': 'https://schema.org', '@type': 'Product', name: p.name, description: clip(p.description, 500), image: img ? [img] : undefined, category: p.category, sku: 'P' + p.id,
+    ld: { '@context': 'https://schema.org', '@type': 'Product', name: p.name, description: clip(p.description, 500), image: img ? [img] : undefined, category: p.category, ...(p.brand ? { brand: { '@type': 'Brand', name: p.brand } } : {}), sku: 'P' + p.id,
       offers: { '@type': 'Offer', priceCurrency: cur, price: (p.price_cents / 100).toFixed(2), availability: p.stock > 0 ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock', url: base + path } },
     body: `<h1>${esc(p.name)}</h1>${img ? `<img src="${esc(img)}" alt="${esc(p.image_alt || p.name)}" style="max-width:100%">` : ''}<p><b>$${(p.price_cents / 100).toFixed(2)}</b> / ${esc(p.unit)} · ${esc(p.category)}</p><p>${esc(p.description)}</p>` }));
   urls.push({ loc: path, pr: '0.7' });

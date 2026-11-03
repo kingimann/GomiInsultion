@@ -2113,3 +2113,49 @@ begin
   return oid;
 end $function$
 ;
+
+-- ===== Brands =====
+alter table public.products add column if not exists brand text not null default '' check (length(brand) <= 60);
+create table if not exists public.brands (
+  id bigint generated always as identity primary key, name text not null check (length(btrim(name)) between 1 and 60), created_at timestamptz not null default now());
+create unique index if not exists brands_name_key on public.brands (lower(btrim(name)));
+alter table public.brands enable row level security;
+drop policy if exists "read brands" on public.brands;
+create policy "read brands" on public.brands for select using (true);
+-- Anyone who can manage the catalog OR the inventory may add brands and assign them to products (via these functions).
+create or replace function public.can_brand() returns boolean language sql stable security definer set search_path = public as $$
+  select public.has_perm('catalog.manage') or public.has_perm('inventory.manage') $$;
+create or replace function public.add_brand(nm text) returns text language plpgsql security definer set search_path = public as $$
+declare n text := btrim(coalesce(nm, '')); ex text;
+begin
+  if not public.can_brand() then raise exception 'Not allowed'; end if;
+  if n = '' then return ''; end if; if length(n) > 60 then raise exception 'Brand name is too long'; end if;
+  select name into ex from brands where lower(btrim(name)) = lower(n);
+  if ex is not null then return ex; end if;
+  insert into brands (name) values (n); return n;
+end $$;
+create or replace function public.set_product_brand(pid bigint, nm text) returns void language plpgsql security definer set search_path = public as $$
+declare n text;
+begin
+  if not public.can_brand() then raise exception 'Not allowed'; end if;
+  n := public.add_brand(nm);
+  update products set brand = n where id = pid;
+  if not found then raise exception 'Product not found'; end if;
+end $$;
+create or replace function public.rename_brand(old_nm text, new_nm text) returns void language plpgsql security definer set search_path = public as $$
+declare n text := btrim(coalesce(new_nm, ''));
+begin
+  if not public.can_brand() then raise exception 'Not allowed'; end if;
+  if n = '' or length(n) > 60 then raise exception 'Enter a brand name (up to 60 characters)'; end if;
+  if exists (select 1 from brands where lower(btrim(name)) = lower(n) and lower(btrim(name)) <> lower(btrim(old_nm))) then raise exception 'That brand already exists'; end if;
+  update brands set name = n where lower(btrim(name)) = lower(btrim(old_nm));
+  update products set brand = n where lower(btrim(brand)) = lower(btrim(old_nm));
+end $$;
+create or replace function public.delete_brand(nm text) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.can_brand() then raise exception 'Not allowed'; end if;
+  update products set brand = '' where lower(btrim(brand)) = lower(btrim(nm));
+  delete from brands where lower(btrim(name)) = lower(btrim(nm));
+end $$;
+revoke all on function public.can_brand(), public.add_brand(text), public.set_product_brand(bigint, text), public.rename_brand(text, text), public.delete_brand(text) from public;
+grant execute on function public.can_brand(), public.add_brand(text), public.set_product_brand(bigint, text), public.rename_brand(text, text), public.delete_brand(text) to authenticated;

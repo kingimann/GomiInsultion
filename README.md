@@ -227,3 +227,11 @@ Each admin order page now has a **History** timeline (placed, every status chang
 ## Look & feel v2 (trade counter + app-style mobile)
 
 The storefront was restyled to feel less like a template: Barlow / Barlow Condensed type, square-ish corners, flat bordered cards and no soft shadows, a plain dark hero with a practical headline and a facts strip instead of icon cards, ruled section headings, plain category list, concrete-grey product placeholders (no gradient pills) and a dark footer with your phone and address from Settings. On phones it behaves like an app: a slim header (logo + search), a **bottom tab bar** (Home · Shop · Cart with count · Account · More, plus Admin for staff), a bottom-sheet menu, 2-column product grid, full-width product photos, safe-area aware, and floating buttons that sit above the tab bar. The admin's *Site style* choices (dark mode, hero style, colours, fonts, corner style) still apply on top.
+
+## Bundles stay bundles (cart, checkout, orders)
+
+A customer who buys a bundle sees **bundles** — "2 bundles + 1 bag" — in the cart (separate Bundles and Bags steppers with their own prices), the checkout summary, the cart count and on the order page; it is never turned into a bag total on screen. Stock is still counted in bags behind the scenes. Orders remember which lines were bundle-priced (`pack_units`) and the bundle size at that time (`bundle_size`), and packing slips show bundles with the bag count underneath.
+
+## Hosting note
+
+If Netlify shows deploys as *Skipped* / *Error* in about 0.1 seconds, the team has run out of free build credits (the free plan allows about 20 production deploys a month). GitHub Pages (this repo's workflow) is unlimited — point the domain there, or upgrade Netlify.

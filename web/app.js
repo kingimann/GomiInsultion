@@ -188,6 +188,20 @@ const packRow = (k, i, p) => { const u = su(p?.unit) || 'bag', tot = k.unit_pric
 const packCalc = (row, single) => { const u = parseInt(row.querySelector('[data-f=units]').value, 10), t = parseFloat(row.querySelector('[data-f=price]').value), out = row.querySelector('.packcalc'); if (!(u >= 2) || !(t >= 0)) { out.textContent = ''; return; }
   const per = Math.round(t * 100 / u), real = per * u, alone = single * u, diff = alone - real; out.innerHTML = `= <b>${money(per)}</b> per bag${real !== Math.round(t * 100) ? ` (bundle will be ${money(real)})` : ''} · ${u} single bags cost ${money(alone)} → ${diff > 0 ? `<b style="color:var(--ok)">customer saves ${money(diff)} (${Math.round(diff / alone * 100)}%)</b>` : diff < 0 ? '<b style="color:var(--err)">bundle costs MORE than buying bags separately</b>' : 'same price'}`; };
 const packName = (k, p) => k.label || `${Bw(p)} of ${k.units} ${su(p.unit)}s`;
+const bundleN = (p) => p.bags_per_bundle || [...(p.packs || [])].map((k) => k.units).sort((a, b) => a - b)[0] || 0;
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+// "2 bundles + 1 bag" — what the customer asked for, never converted to a bag total
+const qtyText = (p, q = p.qty) => { const N = bundleN(p); if (!N || q < N) return plural(q, su(p.unit) || 'bag'); const b = Math.floor(q / N), l = q % N; return plural(b, bw(p)) + (l ? ' + ' + plural(l, su(p.unit) || 'bag') : ''); };
+const bundlePrice = (p) => { const N = bundleN(p), k = (p.packs || []).find((x) => x.units === N && x.unit_price_cents < p.price_cents); return N ? (k ? k.unit_price_cents : p.price_cents) * N : 0; };
+function rememberBundles(list) { try { const m = JSON.parse(localStorage.getItem('bn') || '{}'); list.forEach((x) => { const N = bundleN(x); if (N) m[x.id] = N; else delete m[x.id]; }); localStorage.setItem('bn', JSON.stringify(m)); } catch {} }
+const cartCount = () => { let m = {}; try { m = JSON.parse(localStorage.getItem('bn') || '{}'); } catch {} return Object.entries(getCart()).reduce((a, [id, q]) => a + (m[id] ? Math.floor(q / m[id]) + (q % m[id]) : q), 0); };
+// order lines: bundle-priced rows show as bundles
+const oiLine = (i) => { const base = String(i.name).replace(/ \((.*) price\)$/, ''), lab = (/ \((.*) price\)$/.exec(i.name) || [])[1] || '', bs = i.bundle_size || 0;
+  let sub;
+  if (i.pack_units) sub = `${plural(i.qty / i.pack_units, 'bundle')} × ${money(i.price_cents * i.pack_units)}${lab ? ' · ' + esc(lab) : ''}`;
+  else if (bs && i.qty >= bs) sub = `${plural(Math.floor(i.qty / bs), 'bundle')}${i.qty % bs ? ' + ' + plural(i.qty % bs, 'bag') : ''} · ${money(i.price_cents)} per bag`;
+  else sub = `${money(i.price_cents)} × ${i.qty}`;
+  return `<div class="citem oi"><div class="cinfo"><b>${esc(base)}</b><small class="muted">${sub}</small></div><b class="ctotal">${money(i.price_cents * i.qty)}</b></div>`; };
 const bundleOptions = (p) => { const ks = (p.packs || []).filter((k) => k.unit_price_cents < p.price_cents).map((k) => ({ ...k })); const n = p.bags_per_bundle;
   if (n && !(p.packs || []).some((k) => k.units === n)) ks.push({ units: n, unit_price_cents: p.price_cents, label: `${Bw(p)} of ${n} ${su(p.unit)}s`, same: true }); return ks.sort((a, b) => a.units - b.units); };
 const stepper = (cls, max) => `<div class="qty sm"><button type="button" data-step="-1" aria-label="Less">−</button><input class="${cls}" type="number" value="1" min="1" max="${max}" aria-label="Quantity"><button type="button" data-step="1" aria-label="More">+</button></div>`;
@@ -218,7 +232,7 @@ async function loadSession() {
 }
 // ---- app-style bottom tab bar (phones) ----
 function renderTabbar() {
-  const tb = document.getElementById('tabbar'); if (!tb) return; const n = Object.values(getCart()).reduce((a, b) => a + b, 0), hash = location.hash.slice(1) || '/', on = (...pre) => pre.some((x) => (x === '/' ? hash === '/' || hash === '' : hash === x || hash.startsWith(x + '/') || hash.startsWith(x + '?')));
+  const tb = document.getElementById('tabbar'); if (!tb) return; const n = cartCount(), hash = location.hash.slice(1) || '/', on = (...pre) => pre.some((x) => (x === '/' ? hash === '/' || hash === '' : hash === x || hash.startsWith(x + '/') || hash.startsWith(x + '?')));
   const tabs = [['#/', 'Home', 'home', on('/')], ['#/shop', 'Shop', 'grid', on('/shop', '/product')], ['#/cart', 'Cart', 'cart', on('/cart', '/checkout'), n], [session ? '#/account' : '#/login', session ? 'Account' : 'Log in', 'users', on('/account', '/login', '/register', '/order', '/wishlist', '/notifications', '/messages')], ...(isStaff() ? [['#/admin', 'Admin', 'sliders', on('/admin')]] : [])];
   tb.innerHTML = tabs.map(([h, l, ic, act, badge]) => `<a href="${h}" class="${act ? 'on' : ''}" ${act ? 'aria-current="page"' : ''}><span class="ti">:ic-${ic}:${badge ? `<i class="tbadge">${badge > 99 ? '99+' : badge}</i>` : ''}</span><span>${l}</span></a>`).join('') + `<button type="button" id="tabmore" class="${document.body.classList.contains('menu-open') ? 'on' : ''}"><span class="ti">:ic-menu:</span><span>More</span></button>`;
 }
@@ -227,7 +241,7 @@ function renderFooter() {
   el.innerHTML = `<b>${nm}</b><p>Insulation supply — delivered to your site or ready for pickup.</p>${b.phone ? `<p style="margin:6px 0"><a href="tel:${esc(String(b.phone).replace(/[^+\d]/g, ''))}">${esc(b.phone)}</a></p>` : ''}${b.address ? `<p class="muted" style="margin:0;white-space:pre-line">${esc(b.address)}</p>` : ''}`;
 }
 function renderNav() {
-  const n = Object.values(getCart()).reduce((a, b) => a + b, 0);
+  const n = cartCount();
   document.getElementById('cartlink').innerHTML = (session ? `<button class="stylebtn bell" id="bellbtn" aria-label="Notifications">:ic-bell:${unread.all ? `<span class="dot">${unread.all > 99 ? '99+' : unread.all}</span>` : ''}</button> ` : '') + `<a class="cart" href="#/cart" aria-label="Cart, ${n} item${n === 1 ? '' : 's'}">:ic-cart: <span class="cl">Cart </span>(${n})</a>`;
   const first = esc((profile?.name || 'Account').split(' ')[0]);
   document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a>${sitePages.filter((x) => x.show_in_nav).map((x) => `<a href="#/page/${esc(x.slug)}">${esc(x.title)}</a>`).join('')}<a href="#/quote">Get a quote</a><a href="#/wishlist" aria-label="Wishlist">:ic-heart:${getWish().length ? ' ' + getWish().length : ''}</a>`
@@ -326,7 +340,7 @@ pages.shop.after = (_, q) => {
 pages.product = async ([slug]) => {
   const { data: p } = await sb.from('products').select('*').eq('slug', slug).maybeSingle();
   if (!p) return '<h1>Not found</h1>';
-  await attachPacks([p]);
+  await attachPacks([p]); rememberBundles([p]);
   await loadRatings();
   const revs = (await sb.from('reviews').select('*').eq('product_id', p.id).order('created_at', { ascending: false })).data || [];
   const mine = session && revs.find((r) => r.user_id === session.user.id);
@@ -409,17 +423,22 @@ async function attachPacks(list) { const ids = list.map((x) => x.id); if (!ids.l
 async function cartLines() {
   const cart = getCart(), ids = Object.keys(cart); if (!ids.length) return [];
   const { data } = await sb.from('products').select('*').in('id', ids).eq('active', true);
-  const live = data.filter((p) => p.stock > 0); await attachPacks(live); return live.map((p) => ({ ...p, qty: Math.min(cart[p.id], p.stock) }));
+  const live = data.filter((p) => p.stock > 0); await attachPacks(live); rememberBundles(live); return live.map((p) => ({ ...p, qty: Math.min(cart[p.id], p.stock) }));
 }
+const cartLineHtml = (l) => { const N = bundleN(l), head = `<a href="#/product/${esc(l.slug)}" class="cthumb">${img(l)}</a>`, rm = `<button type="button" class="crm" data-id="${l.id}" aria-label="Remove ${esc(l.name)}">:ic-x:</button>`, tot = `<b class="ctotal">${money(lineTotal(l))}</b>`;
+  const step = (name, val, max, label) => `<div class="qty"><button type="button" data-d="-1" aria-label="Fewer ${label}">−</button><input type="number" name="${name}" value="${val}" min="0" max="${max}" aria-label="${label}"><button type="button" data-d="1" aria-label="More ${label}">+</button></div>`;
+  if (!N) return `<div class="citem">${head}<div class="cinfo"><a class="cname" href="#/product/${esc(l.slug)}">${esc(l.name)}</a><small class="muted">${packSplit(l, l.qty).map((r) => `${r.qty} × ${money(r.price)}`).join(' + ')} per ${esc(su(l.unit) || 'unit')}</small></div><div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="${l.id}" value="${l.qty}" min="0" max="${l.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div>${tot}${rm}</div>`;
+  const b = Math.floor(l.qty / N), lo = l.qty % N, u = su(l.unit) || 'bag', nudge = (l.packs || []).filter((k) => k.units > l.qty && k.unit_price_cents < l.price_cents).sort((a, c) => a.units - c.units)[0];
+  return `<div class="citem bundled">${head}<div class="cinfo"><a class="cname" href="#/product/${esc(l.slug)}">${esc(l.name)}</a><small class="muted">1 ${bw(l)} = ${N} ${esc(u)}s</small>${nudge ? `<small class="packnudge">Add ${nudge.units - l.qty} more ${esc(u)}s for the ${esc(packName(nudge, l))} price</small>` : ''}</div>
+    <div class="qtys"><input type="hidden" name="n_${l.id}" value="${N}">
+      <div class="qrow"><span class="ql"><b>${bw(l)[0].toUpperCase() + bw(l).slice(1)}s</b><small class="muted">${money(bundlePrice(l))} each</small></span>${step('b_' + l.id, b, Math.floor(l.stock / N), bw(l) + 's')}</div>
+      <div class="qrow"><span class="ql"><b>${esc(u[0].toUpperCase() + u.slice(1))}s</b><small class="muted">${money(l.price_cents)} each</small></span>${step('l_' + l.id, lo, l.stock, u + 's')}</div></div>${tot}${rm}</div>`; };
 pages.cart = async () => {
   const lines = await cartLines();
   if (!lines.length) return '<div class="empty"><div style="font-size:3rem">:ic-cart:</div><h1>Your cart is empty</h1><p class="muted">Browse our insulation and add what you need.</p><a class="btn" href="#/shop">Start shopping</a></div>';
   const t = totals(lines.reduce((a, l) => a + lineTotal(l), 0));
   const left = FREE_SHIP > 0 ? FREE_SHIP - (t.sub - t.disc) : 0;
-  return `<h1>Your cart</h1><div class="cartwrap"><form id="cartform"><div class="citems">${lines.map((l) => `<div class="citem"><a href="#/product/${esc(l.slug)}" class="cthumb">${img(l)}</a>
-    <div class="cinfo"><a class="cname" href="#/product/${esc(l.slug)}">${esc(l.name)}</a>${(() => { const N = l.bags_per_bundle || (l.packs || []).map((k) => k.units).sort((a, b) => a - b)[0]; return N ? `<small class="muted">${Math.floor(l.qty / N)} ${bw(l)}${Math.floor(l.qty / N) === 1 ? '' : 's'} + ${l.qty % N} ${esc(su(l.unit))}${l.qty % N === 1 ? '' : 's'} (${N} per bundle)</small>` : ''; })()}<small class="muted">${packSplit(l, l.qty).map((r) => `${r.qty} × ${money(r.price)}${r.label ? ' (' + esc(r.label) + ')' : ''}`).join(' + ')} per ${esc(l.unit)}</small>${(l.packs || []).some((k) => k.units > l.qty && k.unit_price_cents < l.price_cents) ? (() => { const k = l.packs.filter((x) => x.units > l.qty && x.unit_price_cents < l.price_cents).sort((a, b) => a.units - b.units)[0]; return `<small class="packnudge">Add ${k.units - l.qty} more to get the ${esc(packName(k, l))} price (save ${packSave(l, k)}% per ${esc(su(l.unit))})</small>`; })() : ''}</div>
-    <div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="${l.id}" value="${l.qty}" min="0" max="${l.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div>
-    <b class="ctotal">${money(lineTotal(l))}</b>${(l.bags_per_bundle || (l.packs || []).length) ? `<span class="bundlectl"><button type="button" class="link" data-bd="-1" data-id="${l.id}" data-n="${l.bags_per_bundle || [...l.packs].sort((a, b) => a.units - b.units)[0].units}">− ${bw(l)}</button><button type="button" class="link" data-bd="1" data-id="${l.id}" data-n="${l.bags_per_bundle || [...l.packs].sort((a, b) => a.units - b.units)[0].units}">+ ${bw(l)}</button></span>` : ''}<button type="button" class="crm" data-id="${l.id}" aria-label="Remove ${esc(l.name)}">:ic-x:</button></div>`).join('')}</div></form>
+  return `<h1>Your cart</h1><div class="cartwrap"><form id="cartform"><div class="citems">${lines.map(cartLineHtml).join('')}</div></form>
   <aside class="summary"><h3>Order summary</h3>${(STORE.ship_zones || []).length ? '<p class="muted" style="margin:0">Delivery fee depends on your postal code — you will see it at checkout.</p>' : ''}${FREE_SHIP > 0 ? `<p class="muted" style="margin:0">${left > 0 ? `Add <b>${money(left)}</b> more for free shipping` : ':ic-award: You qualify for free shipping!'}</p><div class="progress"><i style="width:${Math.min(100, (t.sub - t.disc) / FREE_SHIP * 100)}%"></i></div>` : ''}
   <form id="promo" class="row" style="flex-wrap:nowrap"><input name="code" placeholder="Discount code" value="${esc(getPromo()?.code || '')}" aria-label="Discount code" style="flex:1;min-width:0"><button class="btn ghost">Apply</button></form>
   ${totalsHtml(t)}<a class="btn block" href="#/checkout">Checkout</a><a class="muted" href="#/shop" style="text-align:center;display:block;margin-top:10px">← Continue shopping</a></aside></div>`;
@@ -435,10 +454,12 @@ pages.cart.after = () => {
   });
   const cf = document.getElementById('cartform'); let tm = null;
   cf?.addEventListener('change', () => { clearTimeout(tm); tm = setTimeout(() => cf.requestSubmit(), 350); });
-  cf?.addEventListener('click', (e) => { const bd = e.target.closest('[data-bd]'); if (bd) { const inp = cf.querySelector(`input[name="${bd.dataset.id}"]`), max = Number(inp.max) || 9999; inp.value = Math.max(0, Math.min(max, (parseInt(inp.value, 10) || 0) + Number(bd.dataset.bd) * Number(bd.dataset.n))); cf.requestSubmit(); return; } const r = e.target.closest('.crm'); if (r) { cf.querySelector(`input[name="${r.dataset.id}"]`).value = 0; cf.requestSubmit(); } });
+  cf?.addEventListener('click', (e) => { const bd = e.target.closest('[data-bd]'); if (bd) { const inp = cf.querySelector(`input[name="${bd.dataset.id}"]`), max = Number(inp.max) || 9999; inp.value = Math.max(0, Math.min(max, (parseInt(inp.value, 10) || 0) + Number(bd.dataset.bd) * Number(bd.dataset.n))); cf.requestSubmit(); return; } const r = e.target.closest('.crm'); if (r) { cf.querySelectorAll(`input[name="${r.dataset.id}"], input[name="b_${r.dataset.id}"], input[name="l_${r.dataset.id}"]`).forEach((i) => (i.value = 0)); cf.requestSubmit(); } });
   document.getElementById('cartform')?.addEventListener('submit', (e) => {
   e.preventDefault(); const cart = {};
-  for (const [id, v] of new FormData(e.target)) { const q = parseInt(v, 10); if (q > 0) cart[id] = q; }
+  const fd = new FormData(e.target), bundled = new Set();
+  for (const [k, v] of fd) { const m = /^[bln]_(\d+)$/.exec(k); if (m) { bundled.add(m[1]); continue; } const q = parseInt(v, 10); if (q > 0) cart[k] = q; }
+  bundled.forEach((id) => { const q = (parseInt(fd.get('b_' + id), 10) || 0) * (parseInt(fd.get('n_' + id), 10) || 1) + (parseInt(fd.get('l_' + id), 10) || 0); if (q > 0) cart[id] = q; });
   setCart(cart); route();
 });
 };
@@ -466,7 +487,7 @@ pages.checkout = async () => {
   <section class="cs"><h3><span class="num">3</span> Notes &amp; payment</h3><label>Order notes (optional)<textarea name="notes" rows="3" placeholder="Gate code, delivery instructions…"></textarea></label>
   <p class="muted" style="margin:0">${C.PAYMENTS ? ':ic-lock: You will be taken to a secure Stripe page to pay by card.' : "Payment: we'll email you an invoice and payment options once your order is confirmed."}</p>
   <button class="btn block">${C.PAYMENTS ? 'Continue to payment' : 'Place order'}</button></section></form>
-  <aside class="summary"><h3>Order summary</h3><ul class="olist">${lines.map((l) => `<li><span class="cthumb sm">${img(l)}</span><span>${l.qty} × ${esc(l.name)}</span><b>${money(lineTotal(l))}</b></li>`).join('')}</ul>${totalsHtml(t)}<a class="muted" href="#/cart" style="text-align:center;display:block">← Edit cart</a></aside></div>`;
+  <aside class="summary"><h3>Order summary</h3><ul class="olist">${lines.map((l) => `<li><span class="cthumb sm">${img(l)}</span><span>${esc(qtyText(l))} × ${esc(l.name)}</span><b>${money(lineTotal(l))}</b></li>`).join('')}</ul>${totalsHtml(t)}<a class="muted" href="#/cart" style="text-align:center;display:block">← Edit cart</a></aside></div>`;
 };
 pages.checkout.after = () => {
   document.getElementById('savedaddr')?.addEventListener('change', (e) => {
@@ -513,7 +534,7 @@ const orderHtml = (o, items, admin) => {
   <div class="ohead"><div><h1 style="margin:0">Order #${o.id}</h1><p class="muted" style="margin:2px 0 0">Placed ${dateOf(o.created_at)} · ${kind}</p></div><span class="status big ${esc(o.status)}">${esc(o.status)}</span></div>
   ${o.status === 'cancelled' ? '' : `<ol class="timeline">${steps.map((st, i) => `<li class="${i < idx ? 'done' : i === idx ? 'on' : ''}"><i></i><span>${st}</span></li>`).join('')}</ol>`}
   ${o.tracking_number ? `<div class="trackbox">:ic-package: <span><b>${esc(o.tracking_carrier || 'Tracking number')}</b> · ${esc(o.tracking_number)}</span>${link ? `<a class="btn ghost noprint" href="${esc(link)}" target="_blank" rel="noopener nofollow">Track package ↗</a>` : ''}</div>` : ''}
-  <div class="cartwrap"><div><div class="citems">${items.map((i) => `<div class="citem oi"><div class="cinfo"><b>${esc(i.name)}</b><small class="muted">${money(i.price_cents)} × ${i.qty}</small></div><b class="ctotal">${money(i.price_cents * i.qty)}</b></div>`).join('')}</div>
+  <div class="cartwrap"><div><div class="citems">${items.map(oiLine).join('')}</div>
   ${o.notes ? `<p class="muted"><em>Notes: ${esc(o.notes)}</em></p>` : ''}</div>
   <aside class="summary">${totalsHtml({ sub: o.subtotal_cents, disc: o.discount_cents, code: o.promo_code, ship: o.shipping_cents, tax: o.tax_cents, taxLabel: o.tax_label, total: o.total_cents, refunded: o.refunded_cents })}
     <div><h3 style="margin:0 0 4px">${kind === 'Delivery' ? 'Delivering to' : kind === 'Pickup' ? 'Pickup' : 'Sold at'}</h3><p style="margin:0">${esc(o.name)}<br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br><span class="muted">${esc(o.email)} ${esc(o.phone)}</span></p>${o.payment_method ? `<p class="muted" style="margin:6px 0 0">Paid by ${esc(o.payment_method)}</p>` : ''}</div>
@@ -815,7 +836,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     ${ids.filter((i) => byId[i]).map((i) => { const o = byId[i], items = (its.data || []).filter((x) => x.order_id === i), pick = o.fulfillment === 'pickup';
       return `<section class="slip"><div class="invtop"><div><h2 style="margin:0">${esc(biz.legal_name || theme.name || 'Gomi Insulation')}</h2><p class="muted" style="margin:4px 0 0">${[biz.address, biz.phone].filter(Boolean).map(esc).join('<br>')}</p></div><div class="invmeta"><h1 style="margin:0">PACKING SLIP</h1><p style="margin:4px 0 0">Order <b>#${o.id}</b><br>${new Date(o.created_at).toLocaleDateString()}</p></div></div>
       <div class="two2" style="margin:18px 0"><div><small class="muted">${pick ? 'PICKUP FOR' : 'SHIP TO'}</small><br><b>${esc(o.name)}</b><br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br>${esc(o.phone || '')}</div><div><small class="muted">METHOD</small><br><b>${pick ? 'Pickup' : 'Delivery'}</b>${o.tracking_number ? `<br>${esc(o.tracking_carrier || 'Tracking')}: ${esc(o.tracking_number)}` : ''}</div></div>
-      <table class="invitems"><tr><th style="width:36px">Packed</th><th>Item</th><th class="r">Qty</th></tr>${items.map((x) => `<tr><td><span class="tick"></span></td><td>${esc(x.name)}</td><td class="r"><b>${x.qty}</b></td></tr>`).join('')}</table>
+      <table class="invitems"><tr><th style="width:36px">Packed</th><th>Item</th><th class="r">Qty</th></tr>${items.map((x) => `<tr><td><span class="tick"></span></td><td>${esc(x.name)}</td><td class="r"><b>${x.pack_units ? plural(x.qty / x.pack_units, 'bundle') : x.qty}</b>${x.pack_units ? `<small class="muted" style="display:block">${x.qty} bags</small>` : ''}</td></tr>`).join('')}</table>
       ${o.notes ? `<p style="white-space:pre-wrap"><b>Customer notes</b><br>${esc(o.notes)}</p>` : ''}<p class="muted" style="margin-top:24px">Thank you for your order! Questions? ${[biz.phone, biz.email].filter(Boolean).map(esc).join(' · ')}</p></section>`; }).join('') || '<p>No orders found.</p>'}`;
   }
   if (sub === 'orders' && id) {

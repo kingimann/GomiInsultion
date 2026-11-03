@@ -254,3 +254,10 @@ Registered customers can now start **new messages** (not just one endless chat):
 
 **Search** now matches every word you type against product name, category, brand and SKU ("r 13", "owens foam"), highlights what matched, supports arrow keys + Enter, shows recent searches when you tap the empty box, has a clear (×) button, keeps your query in the box on the shop page, ignores out-of-date responses, and offers "Request a quote" when nothing matches. The shop's search results use the same multi-word matching.
 Supabase's **minimum password length is now 8** (it was 6), matching the sign-up form.
+
+## Compare, calculator, pickup info, dark-mode switch
+
+- **Compare products:** tick *Compare* on up to 3 products in the shop; a bar appears with a **Compare** button. The side-by-side page shows price, brand, R-value, coverage, price per sq ft (with a "best value" marker), availability and any specifications you've entered, with an Add to cart button for each.
+- **Insulation calculator** (`#/calculator`, also in the menu): choose where you're insulating (attic, walls, basement… each fills in a typical R-value) or type your own, enter the area and extra-for-waste percentage, and it lists every product that meets the R-value with how many you need and the total, cheapest first, with one-click Add to cart.
+- **Free pickup info** on each product page shows which locations have it in stock.
+- **Light / dark switch** in the menu lets each visitor pick their own appearance (remembered in their browser); the admin's site-wide style is still the default.

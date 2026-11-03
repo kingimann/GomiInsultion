@@ -51,7 +51,7 @@ try { theme = JSON.parse(localStorage.getItem('site_theme') || 'null') || window
 const HEX = /^#[0-9a-f]{6}$/i;
 const isDark = () => document.documentElement.dataset.mode === 'dark' || (!document.documentElement.dataset.mode && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
 function applyTheme() {
-  const root = document.documentElement;
+  const root = document.documentElement; setTimeout(applyVisitorMode, 0);
   for (const [k, o] of Object.entries(THEME_OPTS)) { const v = theme[k]; if (v && o.vals.some(([x]) => x === v)) root.dataset[k] = v; else delete root.dataset[k]; }
   const custom = ['--brand', '--brand-d', '--brand-soft', '--hero-a', '--hero-b', '--hero-c', '--hero-fg', '--ph-a', '--ph-b', '--ph-fg'];
   custom.forEach((v) => root.style.removeProperty(v));
@@ -226,7 +226,7 @@ const onSale = (p) => p.compare_at_cents > p.price_cents;
 const salePct = (p) => Math.round((1 - p.price_cents / p.compare_at_cents) * 100);
 const priceHtml = (p) => onSale(p) ? `<span class="was">${money(p.compare_at_cents)}</span> <span class="now">${money(p.price_cents)}</span>` : money(p.price_cents);
 const card = (p) => `<article class="card">${p.stock <= 0 ? '<span class="badge">Sold out</span>' : onSale(p) ? `<span class="badge sale">-${salePct(p)}%</span>` : p.stock <= 5 ? `<span class="badge warn">Only ${p.stock} left</span>` : p.stock <= 10 ? '<span class="badge warn">Low stock</span>' : ''}<button class="heart" data-id="${p.id}" aria-label="Save to wishlist" style="${getWish().includes(p.id) ? 'color:#dc2626' : ''}">${getWish().includes(p.id) ? ':ic-heart-fill:' : ':ic-heart:'}</button><a href="#/product/${esc(p.slug)}">${img(p)}</a><div class="pad"><span class="tag">${esc(p.category)}</span>${p.brand && p.brand !== p.category ? `<a class="brandtag" href="#/shop?brand=${encodeURIComponent(p.brand)}">${esc(p.brand)}</a>` : ''}
-  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}${saveBadge(p)}${packHint(p)}<div class="cardfoot"><p class="price">${priceHtml(p)}</p>${p.stock > 0 ? `<button class="addbtn" data-id="${p.id}" data-stock="${p.stock}" data-name="${esc(p.name)}" aria-label="Add ${esc(p.name)} to cart">+ Add</button>` : '<span class="muted" style="font-size:.85rem">Sold out</span>'}</div></div></article>`;
+  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}${saveBadge(p)}${packHint(p)}<label class="cmpchk" title="Compare this product"><input type="checkbox" class="cmpbox" data-id="${p.id}"> Compare</label><div class="cardfoot"><p class="price">${priceHtml(p)}</p>${p.stock > 0 ? `<button class="addbtn" data-id="${p.id}" data-stock="${p.stock}" data-name="${esc(p.name)}" aria-label="Add ${esc(p.name)} to cart">+ Add</button>` : '<span class="muted" style="font-size:.85rem">Sold out</span>'}</div></div></article>`;
 const getPromo = () => { try { return JSON.parse(localStorage.getItem('promo') || 'null'); } catch { return null; } };
 const zoneFee = (pc) => { const n = String(pc || '').toUpperCase().replace(/\s+/g, ''); let best = -1, fee = null; (STORE.ship_zones || []).forEach((z) => (z.prefixes || []).forEach((x) => { const pre = String(x).toUpperCase().replace(/\s+/g, ''); if (pre && n.startsWith(pre) && pre.length > best) { best = pre.length; fee = Math.max(0, Number(z.fee_cents) || 0); } })); return fee === null ? SHIP : fee; };
 const zoneLabel = (pc) => { const n = String(pc || '').toUpperCase().replace(/\s+/g, ''); let best = -1, lab = ''; (STORE.ship_zones || []).forEach((z) => (z.prefixes || []).forEach((x) => { const pre = String(x).toUpperCase().replace(/\s+/g, ''); if (pre && n.startsWith(pre) && pre.length > best) { best = pre.length; lab = z.label || ''; } })); return lab; };
@@ -252,16 +252,21 @@ function renderFooter() {
   const b = STORE.biz || {}, el = document.querySelector('footer .foot > div:first-child'); if (!el) return; const nm = esc((theme.name || b.legal_name || 'Gomi Insulation'));
   el.innerHTML = `<b>${nm}</b><p>Insulation supply — delivered to your site or ready for pickup.</p>${b.phone ? `<p style="margin:6px 0"><a href="tel:${esc(String(b.phone).replace(/[^+\d]/g, ''))}">${esc(b.phone)}</a></p>` : ''}${b.address ? `<p class="muted" style="margin:0;white-space:pre-line">${esc(b.address)}</p>` : ''}`;
 }
+// visitor light/dark switch (overrides the site default for this browser only)
+const getVMode = () => { try { return localStorage.getItem('visitor_mode') || ''; } catch { return ''; } };
+const modeLabel = () => (isDark() ? ':ic-sun: Light mode' : ':ic-moon: Dark mode');
+function applyVisitorMode() { const m = getVMode(); if (m) document.documentElement.dataset.mode = m; }
+document.addEventListener('click', (e) => { if (!e.target.closest('#modeswitch')) return; const next = isDark() ? 'light' : 'dark'; try { localStorage.setItem('visitor_mode', next); } catch {} document.documentElement.dataset.mode = next; const b = document.getElementById('modeswitch'); if (b) b.innerHTML = modeLabel(); });
 function renderNav() {
   const n = cartCount();
   document.getElementById('cartlink').innerHTML = (session ? `<button class="stylebtn bell" id="bellbtn" aria-label="Notifications">:ic-bell:${unread.all ? `<span class="dot">${unread.all > 99 ? '99+' : unread.all}</span>` : ''}</button> ` : '') + `<a class="cart" href="#/cart" aria-label="Cart, ${n} item${n === 1 ? '' : 's'}">:ic-cart: <span class="cl">Cart </span>(${n})</a>`;
   const first = esc((profile?.name || 'Account').split(' ')[0]);
-  document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a>${sitePages.filter((x) => x.show_in_nav).map((x) => `<a href="#/page/${esc(x.slug)}">${esc(x.title)}</a>`).join('')}<a href="#/quote">Get a quote</a><a href="#/wishlist" aria-label="Wishlist">:ic-heart:${getWish().length ? ' ' + getWish().length : ''}</a>`
+  document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a>${sitePages.filter((x) => x.show_in_nav).map((x) => `<a href="#/page/${esc(x.slug)}">${esc(x.title)}</a>`).join('')}<a href="#/calculator">Calculator</a><a href="#/quote">Get a quote</a><a href="#/wishlist" aria-label="Wishlist">:ic-heart:${getWish().length ? ' ' + getWish().length : ''}</a>`
     + (session ? `<a href="#/messages" class="msglink">:ic-chat:<span class="lbl"> Messages</span>${unread.msg ? ` <span class="dot">${unread.msg}</span>` : ''}</a>
       <div class="usermenu"><button class="userbtn" id="userbtn" aria-haspopup="true" aria-expanded="false">${avatar(profile?.name || 'U')}<span class="uname">${first}</span><span class="caret">:ic-chevron-down:</span></button>
       <div class="umpanel" id="umpanel"><div class="umhead"><b>${esc(profile?.name || 'Account')}</b>${profile?.username ? `<small class="muted">@${esc(profile.username)}</small>` : ''}<small class="muted">${esc(session.user.email)}${profile?.role && profile.role !== 'customer' ? ' · ' + esc(profile.role) : ''}</small></div>
         <a href="#/account">My account</a><a href="#/account">My orders</a><a href="#/notifications">Notifications</a>${isStaff() ? '<a href="#/admin">Admin dashboard</a>' : ''}${profile?.is_admin ? '<button class="link" id="stylebtn">:ic-sliders: Site style</button>' : ''}<button class="link" id="logout">Log out</button></div></div>`
-      : `<a href="#/login">Log in</a><a href="#/register" class="signup">Sign up</a>`);
+      : `<a href="#/login">Log in</a><a href="#/register" class="signup">Sign up</a>`) + `<button type="button" class="link modeswitch" id="modeswitch" aria-label="Switch light or dark appearance">${modeLabel()}</button>`;
   document.getElementById('logout')?.addEventListener('click', async () => { await sb.auth.signOut(); location.hash = '#/'; });
   renderTabbar();
 }
@@ -320,9 +325,65 @@ pages.home = async () => {
   const biz = STORE.biz || {}, tel = String(biz.phone || '').replace(/[^+\d]/g, '');
   return `<section class="hero"><div class="hero-art" aria-hidden="true"></div><h1>Insulation, delivered to your job site.</h1><p>Batts, spray foam, rigid board and loose fill from stock. Order online, pick up, or call us for trade pricing.</p>
   <div class="herobtns"><a class="btn" href="#/shop">Shop the catalogue</a><a class="btn ghost" href="#/quote">Get a quote</a>${tel ? `<a class="btn ghost" href="tel:${esc(tel)}">Call ${esc(biz.phone)}</a>` : ''}</div></section>
-  <ul class="facts"><li><b>${FREE_SHIP > 0 ? `Free delivery over ${money(FREE_SHIP)}` : `Delivery ${money(SHIP)} flat`}</b><span>${(STORE.ship_zones || []).length ? 'Fee depends on your postal code' : 'Or pick up at our location, free'}</span></li><li><b>Coverage calculator</b><span>Tells you how many you need</span></li><li><b>Trade pricing</b><span>Ask for a quote on big jobs</span></li></ul>
+  <ul class="facts"><li><b>${FREE_SHIP > 0 ? `Free delivery over ${money(FREE_SHIP)}` : `Delivery ${money(SHIP)} flat`}</b><span>${(STORE.ship_zones || []).length ? 'Fee depends on your postal code' : 'Or pick up at our location, free'}</span></li><li><a href="#/calculator" class="factlink"><b>Insulation calculator</b><span>Tells you how many you need →</span></a></li><li><b>Trade pricing</b><span>Ask for a quote on big jobs</span></li></ul>
   <div class="sect"><h2>Shop by category</h2><a href="#/shop">All products</a></div><div class="tiles">${cats.map((c) => `<a class="tile" href="#/shop?category=${encodeURIComponent(c)}"><b>${esc(c)}</b><small>${catCount[c]}</small></a>`).join('')}</div>
   <div class="sect"><h2>Featured products</h2><a href="#/shop">View all</a></div><div class="grid">${data.map(card).join('')}</div>${await recentHtml(0)}`;
+};
+// ---- compare products (customers) ----
+const getCmp = () => { try { return JSON.parse(localStorage.getItem('cmp') || '[]'); } catch { return []; } };
+const setCmp = (a) => { try { localStorage.setItem('cmp', JSON.stringify(a.slice(0, 3))); } catch {} renderCmpBar(); syncCmpBoxes(); };
+function syncCmpBoxes() { const c = getCmp(); document.querySelectorAll('.cmpbox').forEach((b) => { b.checked = c.includes(Number(b.dataset.id)); }); }
+function renderCmpBar() {
+  let bar = document.getElementById('cmpbar'); const c = getCmp();
+  if (!c.length || location.hash.startsWith('#/compare') || /^#\/(admin|checkout|messages)/.test(location.hash)) { bar?.remove(); return; }
+  if (!bar) { bar = document.createElement('div'); bar.id = 'cmpbar'; bar.className = 'cmpbar noprint'; document.body.appendChild(bar); }
+  bar.innerHTML = `<span><b>${c.length}</b> product${c.length === 1 ? '' : 's'} to compare <small class="muted">(max 3)</small></span><span class="row" style="flex-wrap:nowrap"><button type="button" class="link" id="cmpclear">Clear</button><a class="btn" href="#/compare">Compare${c.length < 2 ? ' (add one more)' : ''}</a></span>`;
+}
+document.addEventListener('change', (e) => { const b = e.target.closest?.('.cmpbox'); if (!b) return; const id = Number(b.dataset.id); let c = getCmp(); if (b.checked) { if (c.length >= 3) { b.checked = false; flash('You can compare up to 3 products at a time.', 'error'); return; } c = [...c, id]; } else c = c.filter((x) => x !== id); setCmp(c); });
+document.addEventListener('click', (e) => { if (e.target.closest('#cmpclear')) setCmp([]); });
+pages.compare = async (_, q) => {
+  const ids = (q.get('ids') ? q.get('ids').split(',').map(Number) : getCmp()).filter(Boolean).slice(0, 3);
+  if (ids.length < 2) return `<div class="empty"><div style="font-size:3rem">:ic-grid:</div><h1>Compare products</h1><p class="muted">Tick “Compare” on 2 or 3 products in the shop to see them side by side.</p><a class="btn" href="#/shop">Browse products</a></div>`;
+  const { data } = await sb.from('products').select('*').in('id', ids).eq('active', true); const list = ids.map((i) => (data || []).find((x) => x.id === i)).filter(Boolean); await attachPacks(list);
+  const cov = (x) => coverageOf(x), perSq = (x) => (cov(x) ? x.price_cents / cov(x) : null), best = Math.min(...list.map(perSq).filter((v) => v !== null), Infinity);
+  const keys = [...new Set(list.flatMap((x) => (x.specs || []).map((k) => k.k)))];
+  const row = (label, fn, cls = '') => `<tr class="${cls}"><th>${label}</th>${list.map((x) => `<td>${fn(x)}</td>`).join('')}</tr>`;
+  return `<div class="sechead"><h1 style="margin:0">Compare products</h1><button class="btn ghost" id="cmpreset" type="button">Start over</button></div>
+  <div class="tablewrap cmptable"><table><tr><th></th>${list.map((x) => `<td><div class="cmphead"><a href="#/product/${esc(x.slug)}" class="cthumb">${img(x)}</a><b>${esc(x.name)}</b><button type="button" class="link cmpdrop" data-id="${x.id}">Remove</button></div></td>`).join('')}</tr>
+  ${row('Price', (x) => `<b class="cmpprice">${priceHtml(x)}</b><small class="muted"> per ${esc(su(x.unit) || x.unit)}</small>`)}
+  ${row('Brand', (x) => esc(x.brand || '—'))}${row('R-value', (x) => esc(x.r_value || '—'))}
+  ${row('Coverage', (x) => (cov(x) ? `${cov(x)} sq ft per ${esc(su(x.unit))}` : '—'))}
+  ${row('Price per sq ft', (x) => (perSq(x) === null ? '—' : `<span class="${perSq(x) === best && list.filter((y) => perSq(y) !== null).length > 1 ? 'up' : ''}">${money(Math.round(perSq(x)))}/sq ft${perSq(x) === best && list.filter((y) => perSq(y) !== null).length > 1 ? ' · best value' : ''}</span>`))}
+  ${row('Category', (x) => esc(x.category))}${row('Availability', (x) => (x.stock > 0 ? `<span class="up">In stock${x.stock <= 10 ? ` (${x.stock} left)` : ''}</span>` : '<span class="down">Out of stock</span>'))}
+  ${keys.map((k) => row(esc(k), (x) => esc(((x.specs || []).find((y) => y.k === k) || {}).v || '—'))).join('')}
+  ${row('', (x) => (x.stock > 0 ? `<button class="btn cmpadd" data-id="${x.id}" data-stock="${x.stock}" data-name="${esc(x.name)}" type="button">Add to cart</button>` : '<span class="muted">Sold out</span>'), 'cmpactions')}</table></div>`;
+};
+pages.compare.after = () => {
+  document.getElementById('cmpreset')?.addEventListener('click', () => { setCmp([]); location.hash = '#/shop'; });
+  document.querySelectorAll('.cmpdrop').forEach((b) => b.addEventListener('click', () => { setCmp(getCmp().filter((x) => x !== Number(b.dataset.id))); route(); }));
+  document.querySelectorAll('.cmpadd').forEach((b) => b.addEventListener('click', () => { const c = getCart(), id = Number(b.dataset.id); c[id] = Math.min((c[id] || 0) + 1, Number(b.dataset.stock)); setCart(c); flash(`Added ${b.dataset.name} to your cart.`); }));
+};
+// ---- insulation calculator ----
+const rNum = (r) => { const m = /(\d+(?:\.\d+)?)/.exec(String(r || '')); return m && !/\/\s*in/i.test(r) ? Number(m[1]) : 0; };
+pages.calculator = async (_, q) => {
+  const area = Math.max(0, parseFloat(q.get('area')) || 0), target = Number(q.get('r')) || 0, waste = Math.min(30, Math.max(0, q.get('waste') === null ? 10 : parseFloat(q.get('waste')) || 0));
+  const parts = [['Attic floor', 38], ['Exterior walls (2×4)', 13], ['Exterior walls (2×6)', 20], ['Basement walls', 12], ['Floors over crawlspace', 25], ['Cathedral ceiling', 30]];
+  let results = '';
+  if (area > 0 && target > 0) {
+    const { data } = await sb.from('products').select('*').eq('active', true); const need = area * (1 + waste / 100);
+    const rows = (data || []).filter((x) => rNum(x.r_value) >= target && coverageOf(x) > 0).map((x) => { const n = Math.ceil(need / coverageOf(x)); return { x, n, cost: n * x.price_cents, ok: x.stock >= n }; }).sort((a, b) => a.cost - b.cost);
+    results = rows.length ? `<h2>Options for ${area.toLocaleString()} sq ft at R-${target}+ <small class="muted">(includes ${waste}% extra for cuts and waste)</small></h2><div class="tablewrap"><table class="calctable"><tr><th>Product</th><th>R-value</th><th>You need</th><th>Total</th><th></th></tr>${rows.map((r, i) => `<tr class="${i === 0 ? 'bestrow' : ''}"><td><a href="#/product/${esc(r.x.slug)}"><b>${esc(r.x.name)}</b></a>${i === 0 ? ' <span class="status paid">Lowest cost</span>' : ''}<small class="muted" style="display:block">${coverageOf(r.x)} sq ft per ${esc(su(r.x.unit))} · ${money(r.x.price_cents)} each</small></td><td>${esc(r.x.r_value)}</td><td><b>${r.n}</b> ${esc(su(r.x.unit))}${r.n === 1 ? '' : 's'}</td><td><b>${money(r.cost)}</b></td><td>${r.ok ? `<button class="btn calcadd" data-id="${r.x.id}" data-n="${r.n}" type="button">Add to cart</button>` : `<small class="muted">${r.x.stock > 0 ? `Only ${r.x.stock} in stock` : 'Out of stock'}</small>`}</td></tr>`).join('')}</table></div><p class="muted">Estimates only. Check your local building code for the R-value required in your area, and ask us for a quote on big jobs.</p>`
+      : `<p class="flash error" style="margin-top:16px">No products with a coverage listed meet R-${target}. <a href="#/quote">Ask us for a quote</a> — we can often special-order it.</p>`;
+  }
+  return `<div class="calcwrap"><h1>Insulation calculator</h1><p class="muted" style="margin-top:0">Tell us the area and the R-value you're aiming for, and we'll work out what to order.</p>
+  <form id="calcform" class="cs stack"><div><b>Where are you insulating?</b><div class="chips" id="calcparts" style="margin:8px 0 0">${parts.map(([l, r]) => `<button type="button" class="chip ${target === r ? 'on' : ''}" data-r="${r}">${l} <small>R-${r}</small></button>`).join('')}</div></div>
+    <div class="two2"><label>Area (sq ft)<input name="area" type="number" min="1" step="1" required value="${area || ''}" placeholder="e.g. 1200"></label><label>Target R-value<input name="r" type="number" min="1" max="80" step="1" required value="${target || ''}" placeholder="e.g. 38"></label></div>
+    <label>Extra for cuts &amp; waste (%)<input name="waste" type="number" min="0" max="30" value="${waste}"></label><button class="btn">Calculate</button></form>${results}</div>`;
+};
+pages.calculator.after = () => {
+  const f = document.getElementById('calcform'); document.getElementById('calcparts')?.addEventListener('click', (e) => { const b = e.target.closest('[data-r]'); if (!b) return; f.elements.r.value = b.dataset.r; document.querySelectorAll('#calcparts .chip').forEach((x) => x.classList.toggle('on', x === b)); });
+  f?.addEventListener('submit', (e) => { e.preventDefault(); const d = new FormData(f); location.hash = `#/calculator?area=${encodeURIComponent(d.get('area'))}&r=${encodeURIComponent(d.get('r'))}&waste=${encodeURIComponent(d.get('waste') || 0)}`; });
+  document.querySelectorAll('.calcadd').forEach((b) => b.addEventListener('click', () => { const c = getCart(), id = Number(b.dataset.id); c[id] = (c[id] || 0) + Number(b.dataset.n); setCart(c); flash('Added to your cart.'); location.hash = '#/cart'; }));
 };
 pages.shop = async (_, q) => {
   await loadRatings();
@@ -392,7 +453,7 @@ pages.product = async ([slug]) => {
   ${p.sku ? `<p class="muted skuline">SKU: ${esc(p.sku)}</p>` : ''}${packTable(p)}
   ${p.stock > 0 && !bundleOptions(p).length ? `<form class="row" id="add"><div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="qty" value="1" min="1" max="${p.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div><button class="btn">Add to cart</button></form>
   <p class="stockpill ${p.stock <= 10 ? 'low' : ''}"><i></i>${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : `<p class="flash error" style="margin-bottom:8px">Out of stock</p><form id="alertform" class="row" data-id="${p.id}" style="flex-wrap:nowrap"><input name="email" type="email" required placeholder="Email me when it's back" value="${esc(session?.user.email || '')}" aria-label="Email"><button class="btn">:ic-bell: Notify me</button></form>`}
-  <ul class="trust"><li>:ic-truck: ${FREE_SHIP > 0 ? `Free shipping on orders over ${money(FREE_SHIP)}` : `Flat ${money(SHIP)} delivery`}</li><li>:ic-chat: Questions? <a href="#/messages">Message us</a> or <a href="#/quote">request a quote</a></li></ul>
+  <p class="pickinfo" id="pickinfo" data-id="${p.id}"></p><ul class="trust"><li>:ic-truck: ${FREE_SHIP > 0 ? `Free shipping on orders over ${money(FREE_SHIP)}` : `Flat ${money(SHIP)} delivery`}</li><li>:ic-chat: Questions? <a href="#/messages">Message us</a> or <a href="#/quote">request a quote</a></li></ul>
   ${compareHtml(p)}
   ${coverageOf(p) ? `<div class="calc"><h3>:ic-ruler: How many do I need?</h3><div class="row"><label>Area (sq ft) <input type="number" id="area" min="1" value="200"></label>
   <label>Waste % <input type="number" id="waste" min="0" max="30" value="10"></label></div><p class="out" id="calcout"></p></div>` : ''}</div></div>
@@ -402,6 +463,8 @@ pages.product = async ([slug]) => {
 };
 const coverageOf = (p) => { const m = /(\d+)\s*sq\s*ft/i.exec(p.unit); return m ? Number(m[1]) : 0; };
 pages.product.after = ([slug]) => {
+  (async () => { const box = document.getElementById('pickinfo'); if (!box) return; const { data } = await sb.rpc('pickup_locations', { items: [{ id: Number(box.dataset.id), qty: 1 }] }); const ok = (data || []).filter((l) => l.available);
+    box.innerHTML = ok.length ? `:ic-store: <span><b>Free pickup</b> — in stock at ${ok.map((l) => esc(l.name)).join(', ')}</span>` : (data || []).length ? ':ic-store: <span class="muted">Not available for pickup right now</span>' : ''; })();
   document.getElementById('ptablist')?.addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (!b) return; document.querySelectorAll('#ptablist button').forEach((x) => x.classList.toggle('on', x === b)); document.querySelectorAll('.ptab').forEach((x) => (x.hidden = x.dataset.pane !== b.dataset.tab)); });
   const buy = document.getElementById('add') || (document.querySelector('.packs [data-addqty]') ? document.querySelector('.packs') : null); if (buy && window.IntersectionObserver) {
     const bar = document.createElement('div'); bar.className = 'buybar'; bar.hidden = true;
@@ -2830,7 +2893,7 @@ async function route() {
   let h = location.hash.slice(1); if (!h.startsWith('/')) h = '/'; // e.g. #access_token=… after email confirmation
   const [path, qs] = h.split('?'); const q = new URLSearchParams(qs || '');
   const [name = 'home', ...args] = path.split('/').filter(Boolean); const page = pages[name === '' ? 'home' : name];
-  const TITLES = { shop: 'Shop', cart: 'Cart', checkout: 'Checkout', account: 'My account', messages: 'Messages', notifications: 'Notifications', login: 'Log in', register: 'Sign up', quote: 'Request a quote', wishlist: 'Wishlist', track: 'Track an order', admin: 'Admin', forgot: 'Reset password', reset: 'New password' };
+  const TITLES = { calculator: 'Insulation calculator', compare: 'Compare products', shop: 'Shop', cart: 'Cart', checkout: 'Checkout', account: 'My account', messages: 'Messages', notifications: 'Notifications', login: 'Log in', register: 'Sign up', quote: 'Request a quote', wishlist: 'Wishlist', track: 'Track an order', admin: 'Admin', forgot: 'Reset password', reset: 'New password' };
   const PRIVATE = ['cart', 'checkout', 'account', 'messages', 'notifications', 'login', 'register', 'admin', 'invoice', 'estimate', 'reset', 'track', 'wishlist'];
   setSeo({ title: name === 'home' || name === '' ? (SEO.home_title || '') : TITLES[name] || '', description: '', noindex: PRIVATE.includes(name), path: name === 'shop' ? '/#/shop' : '', jsonld: name === 'home' || name === '' ? [{ '@context': 'https://schema.org', '@type': 'WebSite', name: seoSite(), url: seoBase() + '/', potentialAction: { '@type': 'SearchAction', target: seoBase() + '/#/shop?q={search_term_string}', 'query-input': 'required name=search_term_string' } }, { '@context': 'https://schema.org', '@type': 'Organization', name: (STORE.biz?.legal_name || seoSite()), url: seoBase() + '/', ...(STORE.biz?.phone ? { telephone: STORE.biz.phone } : {}), ...(STORE.biz?.email ? { email: STORE.biz.email } : {}), ...(SEO.og_image ? { logo: SEO.og_image } : {}) }] : undefined });
   if (name === 'shop') { const tq = q.get('q') || ''; if (document.activeElement !== sinput) { sinput.value = tq; sclear.hidden = !tq; } } else if (name !== 'product' && document.activeElement !== sinput) { sinput.value = ''; sclear.hidden = true; }
@@ -2841,7 +2904,7 @@ async function route() {
       const heads = [...t.querySelectorAll('th')].map((x) => x.textContent);
       t.querySelectorAll('tr').forEach((tr) => [...tr.children].forEach((td, i) => { if (td.tagName === 'TD') td.dataset.label = heads[i] || ''; }));
     });
-    void $app.offsetWidth; $app.classList.add('in'); addPdfButtons(); renderTabbar(); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
+    void $app.offsetWidth; $app.classList.add('in'); addPdfButtons(); renderTabbar(); syncCmpBoxes(); renderCmpBar(); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
 }
 window.addEventListener('hashchange', route);
 sb.auth.onAuthStateChange((ev) => {

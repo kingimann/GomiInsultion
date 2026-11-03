@@ -1962,3 +1962,18 @@ begin
 end $$;
 revoke all on function public.notify_when_back(bigint, text) from public;
 grant execute on function public.notify_when_back(bigint, text) to anon, authenticated;
+
+-- ===== Discount code limits =====
+alter table public.discount_codes add column if not exists expires_at timestamptz;
+alter table public.discount_codes add column if not exists max_uses int not null default 0 check (max_uses >= 0);
+alter table public.discount_codes add column if not exists uses int not null default 0;
+create or replace function public.check_code(c text, subtotal int) returns int language sql stable security definer set search_path = public as $$
+  select percent from discount_codes where code = upper(trim(c)) and active and subtotal >= min_cents
+    and (expires_at is null or expires_at > now()) and (max_uses = 0 or uses < max_uses) $$;
+create or replace function public.trg_count_code() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.promo_code is not null and new.promo_code <> '' then update discount_codes set uses = uses + 1 where code = upper(new.promo_code); end if;
+  return new;
+end $$;
+drop trigger if exists orders_count_code on public.orders;
+create trigger orders_count_code after insert on public.orders for each row execute function public.trg_count_code();

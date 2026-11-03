@@ -151,3 +151,7 @@ Templates (About, FAQ, Shipping, Contact), extra blocks (tables, FAQ accordions,
 ## Sale pricing, price filters, back-in-stock list
 
 Set an **Original price** on a product to show a strikethrough price and a “-X%” badge (the normal price is what customers pay). The shop has price-range and “On sale” filters, cards show “Only N left” when stock is 5 or less, and sold-out products offer a “Notify me” email box — the list is stored in `stock_alerts` and shown as a *Waiting* count in Admin → Products (emails are collected, not sent automatically yet). Admin → Products also has search, category/low-stock/sale/hidden filters and CSV export.
+
+## Discount code limits & mobile buy bar
+
+Discount codes can now have a **usage limit** and an **expiry date** (enforced by the database when an order is placed, with a live "used" counter), plus delete and status labels (Active / Off / Expired / Used up). On phones, product pages show a sticky **Add to cart** bar once the main button scrolls out of view.

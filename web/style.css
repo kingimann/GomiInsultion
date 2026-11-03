@@ -527,3 +527,7 @@ label.switch{display:inline-flex!important;flex-direction:row;align-items:center
 .pricerange{display:inline-flex;gap:6px;align-items:center}.pricerange input{width:84px;padding:6px 8px;min-height:0}
 #alertform input{flex:1;min-width:0}
 .card .badge{z-index:2}
+
+/* mobile buy bar */
+.buybar{display:none}
+@media(max-width:760px){.buybar:not([hidden]){display:flex;position:fixed;left:0;right:0;bottom:0;z-index:40;gap:12px;align-items:center;justify-content:space-between;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line);box-shadow:0 -6px 20px rgba(0,0,0,.12)}.buybar span{display:grid;min-width:0}.buybar b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.buybar small{color:var(--muted)}}

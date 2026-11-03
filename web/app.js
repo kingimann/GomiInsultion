@@ -292,6 +292,13 @@ pages.product = async ([slug]) => {
 };
 const coverageOf = (p) => { const m = /(\d+)\s*sq\s*ft/i.exec(p.unit); return m ? Number(m[1]) : 0; };
 pages.product.after = ([slug]) => {
+  const buy = document.getElementById('add'); if (buy && window.IntersectionObserver) {
+    const bar = document.createElement('div'); bar.className = 'buybar'; bar.hidden = true;
+    bar.innerHTML = `<span><b>${esc(document.querySelector('h1')?.textContent || '')}</b><small>${document.querySelector('.price.big')?.textContent.replace(/\s+/g, ' ').trim() || ''}</small></span><button class="btn" type="button">Add to cart</button>`;
+    document.body.appendChild(bar); bar.querySelector('button').addEventListener('click', () => buy.requestSubmit());
+    const io = new IntersectionObserver(([en]) => { bar.hidden = en.isIntersecting; }, { threshold: 0 }); io.observe(buy);
+    const gone = () => { bar.remove(); io.disconnect(); window.removeEventListener('hashchange', gone); }; window.addEventListener('hashchange', gone);
+  }
   document.querySelectorAll('.thumbs img').forEach((t) => t.addEventListener('click', () => {
     document.getElementById('mainpic').src = t.src; document.querySelectorAll('.thumbs img').forEach((x) => x.classList.toggle('on', x === t));
   }));
@@ -1111,9 +1118,13 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <p class="muted" style="font-size:.85rem">Based on sales dated in the period (not when cash arrived), at each product's current unit cost for invoice lines linked to products.</p>`;
   }
   if (sub === 'codes') {
-    const cs = (await sb.from('discount_codes').select('*').order('code')).data;
-    return `<h1>Discount codes</h1><table><tr><th>Code</th><th>Off</th><th>Min order</th><th>Status</th><th></th></tr>${cs.map((c) => `<tr><td><b>${esc(c.code)}</b></td><td>${c.percent}%</td><td>${money(c.min_cents)}</td><td>${c.active ? 'Active' : 'Off'}</td><td><button class="btn ghost togcode" data-code="${esc(c.code)}" data-active="${c.active}">${c.active ? 'Disable' : 'Enable'}</button></td></tr>`).join('')}</table>
-    <h3>New code</h3><form id="cf" class="row"><input name="code" placeholder="SUMMER15" required><input name="percent" type="number" min="1" max="100" placeholder="% off" required><input name="min" type="number" min="0" step="0.01" placeholder="Min order $" value="0"><button class="btn">Add</button></form>`;
+    const cs = (await sb.from('discount_codes').select('*').order('code')).data || [];
+    const state = (c) => !c.active ? ['Off', ''] : c.expires_at && new Date(c.expires_at) < new Date() ? ['Expired', 'cancelled'] : c.max_uses && c.uses >= c.max_uses ? ['Used up', 'cancelled'] : ['Active', 'paid'];
+    return `<div class="sechead"><h1 style="margin:0">Discount codes</h1><span class="muted">${cs.filter((c) => state(c)[0] === 'Active').length} active</span></div>
+    <div class="tablewrap"><table><tr><th>Code</th><th>Off</th><th>Min order</th><th>Used</th><th>Expires</th><th>Status</th><th></th></tr>${cs.map((c) => { const [lab, cls] = state(c); return `<tr><td><b>${esc(c.code)}</b></td><td>${c.percent}%</td><td>${money(c.min_cents)}</td><td>${c.uses}${c.max_uses ? ' / ' + c.max_uses : ''}</td><td>${c.expires_at ? dateOf(c.expires_at) : '—'}</td><td><span class="status ${cls}">${lab}</span></td><td><button class="link togcode" data-code="${esc(c.code)}" data-active="${c.active}">${c.active ? 'Disable' : 'Enable'}</button> · <button class="link delcode" data-code="${esc(c.code)}" style="color:var(--err)">Delete</button></td></tr>`; }).join('')}</table></div>
+    <section class="cs"><h3 style="margin-top:0">New code</h3><form id="cf" class="stack narrow"><div class="two2"><label>Code<input name="code" placeholder="SUMMER15" required maxlength="30" style="text-transform:uppercase"></label><label>% off<input name="percent" type="number" min="1" max="100" required></label></div>
+    <div class="two2"><label>Minimum order ($)<input name="min" type="number" min="0" step="0.01" value="0"></label><label>Usage limit <small class="muted">0 = unlimited</small><input name="max_uses" type="number" min="0" value="0"></label></div>
+    <label>Expires <small class="muted">optional — last day it works</small><input name="expires" type="date"></label><button class="btn">Add code</button></form></section>`;
   }
   if (sub === 'quotes') {
     const qs = (await sb.from('quotes').select('*').order('id', { ascending: false })).data;
@@ -1640,12 +1651,13 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   }));
   document.getElementById('cf')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
-    const { error } = await sb.from('discount_codes').insert({ code: f.code.trim().toUpperCase(), percent: Number(f.percent), min_cents: Math.round(Number(f.min || 0) * 100) });
+    const { error } = await sb.from('discount_codes').insert({ code: f.code.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, ''), percent: Number(f.percent), min_cents: Math.round(Number(f.min || 0) * 100), max_uses: Math.max(0, parseInt(f.max_uses, 10) || 0), expires_at: f.expires ? new Date(f.expires + 'T23:59:59').toISOString() : null });
     error ? fail(error) : (flash('Code added.'), route());
   });
   document.querySelectorAll('.togcode').forEach((b) => b.addEventListener('click', async () => {
     const { error } = await sb.from('discount_codes').update({ active: b.dataset.active !== 'true' }).eq('code', b.dataset.code); error ? fail(error) : route();
   }));
+  document.querySelectorAll('.delcode').forEach((b) => b.addEventListener('click', async () => { if (!confirm(`Delete code ${b.dataset.code}?`)) return; const { error } = await sb.from('discount_codes').delete().eq('code', b.dataset.code); error ? fail(error) : route(); }));
   document.getElementById('csv')?.addEventListener('click', async () => {
     const os = (await sb.from('orders').select('*').order('id')).data, cols = ['id', 'created_at', 'status', 'name', 'email', 'phone', 'address', 'city', 'postcode', 'subtotal_cents', 'shipping_cents', 'total_cents'];
     const cell = (v) => { v = String(v ?? ''); if (/^[=+\-@]/.test(v)) v = "'" + v; return `"${v.replace(/"/g, '""')}"`; };

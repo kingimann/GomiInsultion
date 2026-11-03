@@ -924,3 +924,12 @@ footer{background:#1c1b19;color:#d8d3c9;border-top:0;margin-top:40px}footer a{co
 /* review photos */
 .revphotos{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.revph{border:0;padding:0;background:transparent;cursor:zoom-in;border-radius:var(--rb);overflow:hidden;width:88px;height:88px}.revph img{width:100%;height:100%;object-fit:cover;display:block}
 .lightbox{position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;padding:16px;cursor:zoom-out}.lightbox img{max-width:min(96vw,1100px);max-height:92vh;object-fit:contain;border-radius:6px}.lightbox button{position:absolute;top:14px;right:14px;width:44px;height:44px;border:0;border-radius:50%;background:rgba(255,255,255,.18);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}
+
+/* admin: shortcuts help, team to-do */
+.modalbg{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:16px}
+.modalbox{background:var(--bg,#fff);color:inherit;max-width:420px;width:100%;padding:20px;border:1px solid var(--line,#ddd)}
+.modalbox kbd{border:1px solid var(--line,#bbb);padding:0 6px;font-size:.8rem}
+.modalbox .plain li{display:flex;justify-content:space-between;gap:12px;padding:5px 0}
+.tasklist li{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.tasklist li.done span:first-child{text-decoration:line-through;opacity:.55}
+.tasklist .taskdel{font-size:1.1rem;color:var(--err,#b00);background:none;border:0;cursor:pointer}

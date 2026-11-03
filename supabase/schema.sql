@@ -2772,3 +2772,47 @@ begin
 end $$;
 drop trigger if exists reviews_photos on public.reviews;
 create trigger reviews_photos before insert on public.reviews for each row execute function public.trg_review_photos();
+
+-- ===== Invoicing + admin tools batch =====
+create table if not exists public.invoice_presets (
+  id bigint generated always as identity primary key,
+  description text not null check (char_length(description) between 1 and 300),
+  unit_price_cents int not null default 0 check (unit_price_cents >= 0),
+  taxable boolean not null default true,
+  created_at timestamptz not null default now()
+);
+alter table public.invoice_presets enable row level security;
+drop policy if exists "view presets" on public.invoice_presets;
+drop policy if exists "manage presets" on public.invoice_presets;
+create policy "view presets" on public.invoice_presets for select using (public.has_perm('invoices.view'));
+create policy "manage presets" on public.invoice_presets for all using (public.has_perm('invoices.manage')) with check (public.has_perm('invoices.manage'));
+
+create table if not exists public.admin_tasks (
+  id bigint generated always as identity primary key,
+  title text not null check (char_length(title) between 1 and 200),
+  done boolean not null default false,
+  due_on date,
+  created_by uuid default auth.uid(),
+  done_at timestamptz,
+  created_at timestamptz not null default now()
+);
+alter table public.admin_tasks enable row level security;
+drop policy if exists "staff tasks" on public.admin_tasks;
+create policy "staff tasks" on public.admin_tasks for all
+  using (public.has_perm('orders.view') or public.has_perm('invoices.view'))
+  with check (public.has_perm('orders.view') or public.has_perm('invoices.view'));
+
+alter table public.invoices add column if not exists overdue_notified boolean not null default false;
+
+create or replace function public.notify_overdue_invoices() returns int language plpgsql security definer set search_path = public as $$
+declare r record; n int := 0;
+begin
+  for r in select i.* from invoices i where i.status = 'sent' and not i.overdue_notified and i.due_date < current_date and i.total_cents > i.paid_cents loop
+    insert into notifications (user_id, kind, title, body, link)
+      select pr.id, 'invoice', 'Invoice ' || r.number || ' is overdue', r.customer_name || ' owes $' || to_char((r.total_cents - r.paid_cents) / 100.0, 'FM999990.00') || ' (due ' || r.due_date || ')', '#/admin/invoices/' || r.id
+      from profiles pr where public.user_has_perm(pr.id, 'invoices.view');
+    update invoices set overdue_notified = true where id = r.id; n := n + 1;
+  end loop;
+  return n;
+end $$;
+select cron.schedule('overdue-invoices', '15 13 * * *', 'select public.notify_overdue_invoices()');

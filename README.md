@@ -276,3 +276,12 @@ Supabase's **minimum password length is now 8** (it was 6), matching the sign-up
 ## Review photos
 
 Customers can add up to 4 photos to a review (resized automatically). Photos show as thumbnails under the review and open in a viewer; hiding a review hides its photos, and deleting a review removes the files. Uploads go to a public `review-photos` bucket where each customer can only write into their own folder, and the database only accepts photo links that point to that bucket (max 4 per review).
+
+## Invoicing & admin tools (v3)
+- **Invoices list:** "Late" (days overdue) column, per-invoice **Remind** link (opens the send panel), and **Remind all overdue** (emails every overdue customer who has an email on file).
+- **Saved items:** in the invoice editor, pick a saved line from "+ Saved item…" or click "Save line as item" to reuse it later (`invoice_presets`).
+- **Order → invoice:** the **Create invoice** button on an order pre-fills customer, items, shipping and discount.
+- **Tax report** (`#/admin/tax`): tax collected from orders and invoices by month/quarter, CSV export.
+- **Overdue alerts:** a daily job (`notify_overdue_invoices`, 13:15 UTC) adds an in-app notification for staff the first time an invoice goes overdue.
+- **Dashboard:** Receivables card (outstanding / overdue / due in 7 days), shared **Team to-do** list (`admin_tasks`), and a Recent activity card (owners/admins).
+- **Shortcuts:** `g` then `d/o/p/i/n/c/e/m` to jump around, `?` for the list, `Ctrl K` to search.

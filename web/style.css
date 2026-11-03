@@ -648,3 +648,121 @@ img{max-width:100%}
 
 .kwcheck{list-style:none;margin:0;padding:0;display:flex;gap:6px 14px;flex-wrap:wrap;font-size:.85rem}.kwcheck li{display:inline-flex;gap:5px;align-items:center}.kwcheck .ok{color:#15803d}.kwcheck .bad{color:#b45309}.kwcheck .ic{width:15px;height:15px}
 .soccard{display:grid;grid-template-columns:120px 1fr;gap:12px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#f0f2f5;color:#1c1e21;max-width:540px}.soccard img,.socph{width:120px;height:100%;min-height:90px;object-fit:cover}.socph{display:flex;align-items:center;justify-content:center;background:#d8dadf;color:#65676b;font-size:.8rem}.soccard>div:last-child{padding:10px 12px 10px 0;display:grid;gap:2px}.soccard small{text-transform:uppercase;color:#65676b;font-size:.7rem}.soccard span{font-size:.85rem;color:#65676b}
+
+/* =====================================================================
+   Trade-counter look (v2): flatter, squarer, practical. Fonts: Barlow + Barlow Condensed.
+   Admin theme choices (data-* attributes) still override these defaults.
+   ===================================================================== */
+:root{--bg:#f4f1eb;--fg:#1c1b19;--muted:#6a665e;--card:#fff;--line:#d9d3c8;--r:6px;--rb:4px;--shadow:none;
+  --font:Barlow,system-ui,-apple-system,"Segoe UI",sans-serif;--fh:"Barlow Condensed","Arial Narrow",Barlow,sans-serif;--fs:16.5px;--tabh:60px}
+@media (prefers-color-scheme:dark){:root:not([data-mode]){--bg:#151412;--fg:#f1ede6;--muted:#a09a90;--card:#1e1d1a;--line:#36332e;--shadow:none}}
+:root[data-mode=dark]{--bg:#151412;--fg:#f1ede6;--muted:#a09a90;--card:#1e1d1a;--line:#36332e;--shadow:none}
+body{letter-spacing:0;-webkit-tap-highlight-color:transparent}
+h1,h2,h3,h4{letter-spacing:.005em;font-weight:700}h1{font-size:2.3rem;line-height:1.05}h2{font-size:1.6rem}h3{font-size:1.25rem}
+/* header: solid, ruled, no blur */
+.top{background:var(--card);backdrop-filter:none;border-bottom:2px solid var(--fg)}
+.brand{font-family:var(--fh);font-weight:700;font-size:1.65rem;text-transform:uppercase;letter-spacing:.03em;display:inline-flex;align-items:center;gap:9px}
+.brand .ic{display:none}.brand:before{content:"";width:14px;height:14px;background:var(--brand);display:inline-block;transform:translateY(-1px)}
+.search input{border-radius:var(--rb);background:var(--bg);padding-left:14px}
+nav a,nav button.link{border-radius:var(--rb);font-weight:600;padding:6px 11px}nav a:hover,nav button.link:hover{background:transparent;box-shadow:inset 0 -2px 0 var(--brand)}
+nav .cart,#cartlink .cart{border-radius:var(--rb);font-family:var(--fh);font-weight:600;font-size:1.1rem;letter-spacing:.03em;text-transform:uppercase}
+nav a.signup{border-radius:var(--rb)}.userbtn{border-radius:var(--rb)}
+/* controls */
+input,textarea,select{border-radius:var(--rb)}input:focus,textarea:focus,select:focus{box-shadow:0 0 0 2px color-mix(in srgb,var(--brand) 35%,transparent)}
+.btn{border-radius:var(--rb);font-family:var(--fh);font-weight:600;font-size:1.1rem;letter-spacing:.045em;text-transform:uppercase;padding:10px 20px;line-height:1.15}.btn:active{transform:none;filter:brightness(.92)}
+.btn.ghost{border:1.5px solid var(--fg);color:var(--fg)}.btn.ghost:hover{background:var(--fg);color:var(--bg)}
+.chip,.pill,.status,.badge,.savepill,.seg,.seg button,.seg a{border-radius:var(--rb)}.chip{padding:6px 14px;font-weight:600}.chip.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.sechead h1,.dashhead h1,.shophead h1{text-transform:uppercase;letter-spacing:.015em}
+/* hero: one flat dark block, no gradient, no stripes */
+.hero{background:var(--fg);color:var(--bg);border-radius:var(--r);box-shadow:none;border-left:10px solid var(--brand);padding:54px 44px 50px;margin-bottom:0}
+:root[data-mode=dark] .hero,:root:not([data-mode]) .hero{--hx:0}
+@media (prefers-color-scheme:dark){:root:not([data-mode]) .hero{background:#26231f;color:#f1ede6}}
+:root[data-mode=dark] .hero{background:#26231f;color:#f1ede6}
+.hero .hero-art{display:none}
+.hero h1{font-size:clamp(2.5rem,6.2vw,4.6rem);text-transform:uppercase;line-height:.95;letter-spacing:.01em;max-width:13ch;margin:0 0 16px}
+.hero p{font-size:1.15rem;max-width:520px;opacity:.85;color:inherit}
+.hero .btn{margin:0}.herobtns{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}.hero .btn.ghost{border-color:currentColor;color:inherit}.hero .btn.ghost:hover{background:#fff;color:#1c1b19;border-color:#fff}
+.hero .btn:not(.ghost){background:var(--brand);color:#fff}
+/* facts strip replaces the three icon cards */
+.facts{list-style:none;margin:0 0 6px;padding:0;display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);border-top:0;background:var(--card);border-radius:0 0 var(--r) var(--r)}
+.facts li{padding:16px 20px;display:grid;gap:2px}.facts li+li{border-left:1px solid var(--line)}.facts b{font-family:var(--fh);font-size:1.2rem;text-transform:uppercase;letter-spacing:.03em}.facts span{color:var(--muted);font-size:.95rem}
+.perks{display:none}
+/* section headers: ruled, condensed */
+.sect{display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid var(--fg);padding-bottom:6px;margin:38px 0 16px}
+.sect h2{margin:0;font-size:1.55rem;text-transform:uppercase;letter-spacing:.03em}.sect a{font-weight:600;font-size:.95rem}
+/* category tiles: plain bordered rows */
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--card)}
+.tile{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:15px 18px;border:0;border-right:1px solid var(--line);border-bottom:1px solid var(--line);border-radius:0;box-shadow:none;background:transparent;text-decoration:none;color:var(--fg)}
+.tile:hover{background:var(--bg);transform:none}.tile b{font-weight:600;font-size:1.05rem}.tile small{color:var(--muted);font-variant-numeric:tabular-nums}.tile span{display:none}.tile:before,.tile:after{display:none!important}
+/* product cards: flat, ruled, photo-first */
+.card{border-radius:var(--r);box-shadow:none;border:1px solid var(--line);transition:border-color .15s}.card:hover{transform:none;border-color:var(--fg)}
+.card>a img{object-fit:contain;background:#fff;padding:10px}
+.card .pad{padding:12px 14px 14px}.card .tag{font-size:.7rem;letter-spacing:.07em;color:var(--muted)}.card h3{font-size:1.1rem;font-weight:600;line-height:1.2;margin:4px 0 2px}
+.card .price,.price{font-family:var(--fh);font-weight:700;font-size:1.55rem;letter-spacing:.01em}.price.big{font-size:2.6rem}
+.card .addbtn{border-radius:var(--rb);font-family:var(--fh);font-weight:600;font-size:1rem;letter-spacing:.05em;text-transform:uppercase;padding:7px 14px;border:1.5px solid var(--fg);background:transparent;color:var(--fg)}.card .addbtn:hover{background:var(--fg);color:var(--bg)}
+.heart{border-radius:var(--rb);box-shadow:none;border:1px solid var(--line)}.badge{font-family:var(--fh);font-size:.85rem;letter-spacing:.06em;text-transform:uppercase;padding:2px 9px}
+/* placeholder images: plain concrete grey with the spec, no gradient pill */
+.ph{background:repeating-linear-gradient(0deg,transparent 0 23px,rgba(0,0,0,.045) 23px 24px),#e8e4dc;color:var(--muted);font-family:var(--fh)}
+.ph span{background:transparent!important;box-shadow:none!important;padding:0!important;color:var(--muted)!important;font-size:2.1rem;font-weight:700;letter-spacing:.02em}
+@media (prefers-color-scheme:dark){:root:not([data-mode]) .ph{background:repeating-linear-gradient(0deg,transparent 0 23px,rgba(255,255,255,.04) 23px 24px),#27251f}}
+:root[data-mode=dark] .ph{background:repeating-linear-gradient(0deg,transparent 0 23px,rgba(255,255,255,.04) 23px 24px),#27251f}
+/* misc surfaces lose the soft shadows */
+aside,.cs,.summary,.formcard,.dcard,.kpi,.fcard,.rcard,.attnc,.packs,.filters,.curphoto{box-shadow:none}
+.packrow.best{background:transparent;border:2px solid var(--brand)}.savepill{background:var(--brand);color:#fff;font-family:var(--fh);letter-spacing:.04em;text-transform:uppercase;font-size:.85rem}
+.filters{border-radius:var(--r)}.fitem{border-radius:var(--rb)}.fitem.on{box-shadow:inset 3px 0 0 var(--brand);background:var(--bg)}
+/* footer: dark counter sign */
+footer{background:#1c1b19;color:#d8d3c9;border-top:0;margin-top:40px}footer a{color:#fff}footer b{font-family:var(--fh);text-transform:uppercase;letter-spacing:.05em;font-size:1.1rem;color:#fff}footer .muted{color:#a8a298}footer .copy{border-top:1px solid #3a3731;color:#a8a298}
+.announce{font-size:.85rem;letter-spacing:.02em}
+
+/* =====================================================================
+   App-style mobile shell
+   ===================================================================== */
+#tabbar,#msearchbtn{display:none}
+@media(max-width:760px){
+  :root{--fs:16px}body{overscroll-behavior-y:none;padding-bottom:calc(var(--tabh) + env(safe-area-inset-bottom))}
+  main{padding-bottom:28px}
+  /* slim header: brand · search · (bell) — everything else lives in the tab bar */
+  .top{border-bottom-width:1px}.bar{display:flex;gap:6px;padding-top:8px;padding-bottom:8px;flex-wrap:nowrap}
+  .brand{font-size:1.45rem;flex:1;min-width:0}.brand:before{width:12px;height:12px}
+  #cartlink{order:2}#cartlink .cart{display:none}#cartlink .bell,#cartlink .stylebtn{width:42px;height:42px}
+  #msearchbtn{display:inline-flex;order:3;align-items:center;justify-content:center;width:42px;height:42px;border:0;background:transparent;color:var(--fg);font-size:1.3rem;cursor:pointer}
+  #menubtn{display:none}
+  .search{display:none;position:absolute;left:0;right:0;top:100%;background:var(--card);padding:8px 16px 12px;border-bottom:1px solid var(--line);z-index:12}body.msearch .search{display:block}
+  .search input{width:100%}.top{position:sticky}
+  /* nav becomes a bottom sheet opened by the More tab */
+  nav#nav{display:none}body.menu-open nav#nav{display:flex;position:fixed;left:0;right:0;bottom:calc(var(--tabh) + env(safe-area-inset-bottom));max-height:62vh;overflow:auto;background:var(--card);border-top:2px solid var(--fg);box-shadow:0 -14px 40px rgba(0,0,0,.28);z-index:49;padding:10px 12px 14px;flex-direction:column;gap:2px;animation:sheetup .22s ease-out}
+  body.menu-open:after{content:"";position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:48}
+  body.menu-open nav#nav a,body.menu-open nav#nav button.link{padding:14px 12px;font-size:1.05rem;border-bottom:1px solid var(--line);border-radius:0}
+  .usermenu .umpanel{position:static;display:block;box-shadow:none;border:0}.usermenu .userbtn{display:none}
+  @keyframes sheetup{from{transform:translateY(24px);opacity:0}to{transform:none;opacity:1}}
+  /* bottom tab bar */
+  #tabbar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:50;height:calc(var(--tabh) + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom);background:var(--card);border-top:1px solid var(--line)}
+  #tabbar a,#tabbar button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:0;background:transparent;color:var(--muted);text-decoration:none;font:600 .72rem/1 var(--fh);letter-spacing:.06em;text-transform:uppercase;cursor:pointer;min-width:0;padding:6px 0}
+  #tabbar .ti{position:relative;display:inline-flex}#tabbar .ic{width:23px;height:23px}
+  #tabbar .on{color:var(--brand)}#tabbar .on:before{content:"";position:absolute;top:0;width:34px;height:3px;background:var(--brand)}#tabbar a,#tabbar button{position:relative}
+  .tbadge{position:absolute;top:-6px;right:-10px;min-width:17px;height:17px;border-radius:9px;background:var(--brand);color:#fff;font-style:normal;font-size:.68rem;line-height:17px;text-align:center;padding:0 4px;font-family:var(--font)}
+  /* keep floating things above the tab bar */
+  .buybar:not([hidden]){bottom:calc(var(--tabh) + env(safe-area-inset-bottom))}.totop{bottom:calc(var(--tabh) + 14px + env(safe-area-inset-bottom))}body:has(.buybar:not([hidden])) .totop{bottom:calc(var(--tabh) + 84px + env(safe-area-inset-bottom))}
+  #add{bottom:calc(var(--tabh) + 8px + env(safe-area-inset-bottom))!important}
+  #flash{bottom:calc(var(--tabh) + 14px + env(safe-area-inset-bottom))}
+  /* content tuned for thumbs */
+  .hero{padding:34px 22px 30px;border-left-width:6px}.hero h1{font-size:2.6rem;max-width:none}.herobtns .btn{flex:1 1 100%;text-align:center}
+  .facts{grid-template-columns:1fr}.facts li+li{border-left:0;border-top:1px solid var(--line)}
+  .tiles{grid-template-columns:1fr 1fr}.tile{padding:14px}.tile:nth-child(odd){border-right:1px solid var(--line)}
+  .grid{grid-template-columns:repeat(2,1fr);gap:10px}.card .pad{padding:10px 10px 12px}.card h3{font-size:1.02rem}.card .price{font-size:1.35rem}.card .addbtn{padding:6px 11px}
+  .gallery img.big{border-radius:0;border-left:0;border-right:0;margin:0 -16px;width:calc(100% + 32px);max-width:none}.detail h1{font-size:2rem}
+  .sect h2{font-size:1.35rem}.btn,.chip{min-height:46px}.btn{display:inline-flex;align-items:center;justify-content:center}
+  footer{margin-top:20px}.foot{padding-top:24px}
+}
+@media(max-width:760px) and (display-mode:standalone){.top{padding-top:env(safe-area-inset-top)}}
+@media(prefers-reduced-motion:reduce){body.menu-open nav#nav{animation:none}}
+/* no stripes, no zoom-on-hover, quiet icons on placeholders */
+.ph::before{display:none!important}.card:hover img,.card:hover .ph{transform:none}
+.ph span .ic{color:var(--muted)!important}
+@media(max-width:760px){
+  .announce{font-size:.78rem;padding:5px 12px}.closedbar{font-size:.8rem;padding:6px 12px;line-height:1.3;gap:4px}
+  .herobtns{display:grid;grid-template-columns:1fr 1fr;gap:8px}.herobtns .btn:first-child{grid-column:1/-1}.herobtns .btn:nth-child(3):last-child{grid-column:auto}
+  .hero h1{font-size:2.3rem}.hero p{font-size:1rem}
+  body.menu-open nav#nav a[href="#/wishlist"]:after{content:"Wishlist"}
+}
+@media(max-width:760px){.ph.big{aspect-ratio:16/10}}

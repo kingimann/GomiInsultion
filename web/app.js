@@ -5,7 +5,7 @@ const STATUSES = ['pending', 'paid', 'shipped', 'delivered', 'cancelled', 'refun
 let FREE_SHIP = 50000, SHIP = 1500;
 let SEO = {};
 let STORE = { ship_flat_cents: 1500, free_over_cents: 50000, tax_rate: 0, tax_label: 'Tax', biz: {} };
-function applyStoreCfg(v) { STORE = { ...STORE, ...(v || {}) }; FREE_SHIP = Number(STORE.free_over_cents) || 0; SHIP = Number(STORE.ship_flat_cents) || 0; renderClosedBar(); }
+function applyStoreCfg(v) { STORE = { ...STORE, ...(v || {}) }; FREE_SHIP = Number(STORE.free_over_cents) || 0; SHIP = Number(STORE.ship_flat_cents) || 0; renderClosedBar(); renderFooter(); }
 const shopClosed = () => !!STORE.closed && (!STORE.closed_until || STORE.closed_until > new Date().toISOString().slice(0, 10));
 const closedMsg = () => (STORE.closed_message || '').trim() || 'We are not taking online orders right now. You can still browse and fill your cart — please check back soon.';
 const reopenNote = () => STORE.closed_until ? ` We reopen on ${new Date(STORE.closed_until + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}.` : '';
@@ -216,6 +216,16 @@ async function loadSession() {
   renderNav(); startRealtime(); refreshUnread();
   if (!profile?.is_admin) { const pn = document.getElementById('stylepanel'); if (pn) pn.hidden = true; }
 }
+// ---- app-style bottom tab bar (phones) ----
+function renderTabbar() {
+  const tb = document.getElementById('tabbar'); if (!tb) return; const n = Object.values(getCart()).reduce((a, b) => a + b, 0), hash = location.hash.slice(1) || '/', on = (...pre) => pre.some((x) => (x === '/' ? hash === '/' || hash === '' : hash === x || hash.startsWith(x + '/') || hash.startsWith(x + '?')));
+  const tabs = [['#/', 'Home', 'home', on('/')], ['#/shop', 'Shop', 'grid', on('/shop', '/product')], ['#/cart', 'Cart', 'cart', on('/cart', '/checkout'), n], [session ? '#/account' : '#/login', session ? 'Account' : 'Log in', 'users', on('/account', '/login', '/register', '/order', '/wishlist', '/notifications', '/messages')], ...(isStaff() ? [['#/admin', 'Admin', 'sliders', on('/admin')]] : [])];
+  tb.innerHTML = tabs.map(([h, l, ic, act, badge]) => `<a href="${h}" class="${act ? 'on' : ''}" ${act ? 'aria-current="page"' : ''}><span class="ti">:ic-${ic}:${badge ? `<i class="tbadge">${badge > 99 ? '99+' : badge}</i>` : ''}</span><span>${l}</span></a>`).join('') + `<button type="button" id="tabmore" class="${document.body.classList.contains('menu-open') ? 'on' : ''}"><span class="ti">:ic-menu:</span><span>More</span></button>`;
+}
+function renderFooter() {
+  const b = STORE.biz || {}, el = document.querySelector('footer .foot > div:first-child'); if (!el) return; const nm = esc((theme.name || b.legal_name || 'Gomi Insulation'));
+  el.innerHTML = `<b>${nm}</b><p>Insulation supply — delivered to your site or ready for pickup.</p>${b.phone ? `<p style="margin:6px 0"><a href="tel:${esc(String(b.phone).replace(/[^+\d]/g, ''))}">${esc(b.phone)}</a></p>` : ''}${b.address ? `<p class="muted" style="margin:0;white-space:pre-line">${esc(b.address)}</p>` : ''}`;
+}
 function renderNav() {
   const n = Object.values(getCart()).reduce((a, b) => a + b, 0);
   document.getElementById('cartlink').innerHTML = (session ? `<button class="stylebtn bell" id="bellbtn" aria-label="Notifications">:ic-bell:${unread.all ? `<span class="dot">${unread.all > 99 ? '99+' : unread.all}</span>` : ''}</button> ` : '') + `<a class="cart" href="#/cart" aria-label="Cart, ${n} item${n === 1 ? '' : 's'}">:ic-cart: <span class="cl">Cart </span>(${n})</a>`;
@@ -227,6 +237,7 @@ function renderNav() {
         <a href="#/account">My account</a><a href="#/account">My orders</a><a href="#/notifications">Notifications</a>${isStaff() ? '<a href="#/admin">Admin dashboard</a>' : ''}${profile?.is_admin ? '<button class="link" id="stylebtn">:ic-sliders: Site style</button>' : ''}<button class="link" id="logout">Log out</button></div></div>`
       : `<a href="#/login">Log in</a><a href="#/register" class="signup">Sign up</a>`);
   document.getElementById('logout')?.addEventListener('click', async () => { await sb.auth.signOut(); location.hash = '#/'; });
+  renderTabbar();
 }
 document.addEventListener('click', (e) => {
   const ub = e.target.closest('#userbtn'), um = document.querySelector('.usermenu');
@@ -236,6 +247,10 @@ document.addEventListener('click', (e) => {
 const setMenu = (open) => { document.body.classList.toggle('menu-open', open); document.getElementById('menubtn').setAttribute('aria-expanded', String(open)); document.getElementById('menubtn').innerHTML = open ? ':ic-x:' : ':ic-menu:'; };
 document.getElementById('menubtn').addEventListener('click', () => setMenu(!document.body.classList.contains('menu-open')));
 document.getElementById('nav').addEventListener('click', (e) => { if (e.target.closest('a,button.link')) setMenu(false); });
+document.getElementById('msearchbtn').innerHTML = ':ic-search:';
+document.getElementById('msearchbtn').addEventListener('click', () => { const on = !document.body.classList.contains('msearch'); document.body.classList.toggle('msearch', on); if (on) { setMenu(false); document.querySelector('#search input').focus(); } });
+document.getElementById('tabbar').addEventListener('click', (e) => { if (e.target.closest('#tabmore')) { setMenu(!document.body.classList.contains('menu-open')); renderTabbar(); } else { if (document.body.classList.contains('menu-open')) setMenu(false); document.body.classList.remove('msearch'); } });
+window.addEventListener('hashchange', () => { document.body.classList.remove('msearch'); renderTabbar(); });
 const sugg = document.getElementById('sugg'), sinput = document.querySelector('#search input[name=q]'); let stm = null;
 sinput.addEventListener('input', () => {
   clearTimeout(stm); const t = sinput.value.trim().replace(/[%,()]/g, ''); if (t.length < 2) { sugg.hidden = true; return; }
@@ -256,11 +271,12 @@ pages.home = async () => {
   const { data, error } = await sb.from('products').select('*').eq('active', true).order('id').limit(8); if (data) await attachPacks(data); if (error) throw error;
   const catCount = {}; ((await sb.from('products').select('category').eq('active', true)).data || []).forEach((r) => (catCount[r.category] = (catCount[r.category] || 0) + 1));
   const cats = Object.keys(catCount).sort();
-  return `<section class="hero"><div class="hero-art" aria-hidden="true"></div><h1>Insulation for every build.</h1><p>Batts, spray foam, rigid board and more. Order online and get it delivered to your site.</p>
-  <div><a class="btn" href="#/shop">Shop all products</a><a class="btn ghost" href="#/quote">Request a quote</a></div><p class="hero-note">${FREE_SHIP > 0 ? `:ic-check: Free shipping over ${money(FREE_SHIP)} &nbsp;·&nbsp; ` : ''}:ic-check: Trade pricing on request</p></section>
-  <div class="perks"><div class="perk"><span class="pi">:ic-truck:</span><div>${FREE_SHIP > 0 ? `<b>Free shipping</b><small>On orders over ${money(FREE_SHIP)}</small>` : `<b>Delivered to your site</b><small>Flat ${money(SHIP)} delivery or free pickup</small>`}</div></div><div class="perk"><span class="pi">:ic-ruler:</span><div><b>Coverage calculator</b><small>Know exactly how much you need</small></div></div><div class="perk"><span class="pi">:ic-tool:</span><div><b>Bulk &amp; trade pricing</b><small>Ask for a custom quote</small></div></div></div>
-  <div class="sect"><h2>Shop by category</h2><a href="#/shop">All products →</a></div><div class="tiles">${cats.map((c) => `<a class="tile" href="#/shop?category=${encodeURIComponent(c)}"><b>${esc(c)}</b><small>${catCount[c]} product${catCount[c] === 1 ? '' : 's'}</small><span aria-hidden="true">→</span></a>`).join('')}</div>
-  <div class="sect"><h2>Featured</h2><a href="#/shop">View all →</a></div><div class="grid">${data.map(card).join('')}</div>${await recentHtml(0)}`;
+  const biz = STORE.biz || {}, tel = String(biz.phone || '').replace(/[^+\d]/g, '');
+  return `<section class="hero"><div class="hero-art" aria-hidden="true"></div><h1>Insulation, delivered to your job site.</h1><p>Batts, spray foam, rigid board and loose fill from stock. Order online, pick up, or call us for trade pricing.</p>
+  <div class="herobtns"><a class="btn" href="#/shop">Shop the catalogue</a><a class="btn ghost" href="#/quote">Get a quote</a>${tel ? `<a class="btn ghost" href="tel:${esc(tel)}">Call ${esc(biz.phone)}</a>` : ''}</div></section>
+  <ul class="facts"><li><b>${FREE_SHIP > 0 ? `Free delivery over ${money(FREE_SHIP)}` : `Delivery ${money(SHIP)} flat`}</b><span>${(STORE.ship_zones || []).length ? 'Fee depends on your postal code' : 'Or pick up at our location, free'}</span></li><li><b>Coverage calculator</b><span>Tells you how many you need</span></li><li><b>Trade pricing</b><span>Ask for a quote on big jobs</span></li></ul>
+  <div class="sect"><h2>Shop by category</h2><a href="#/shop">All products</a></div><div class="tiles">${cats.map((c) => `<a class="tile" href="#/shop?category=${encodeURIComponent(c)}"><b>${esc(c)}</b><small>${catCount[c]}</small></a>`).join('')}</div>
+  <div class="sect"><h2>Featured products</h2><a href="#/shop">View all</a></div><div class="grid">${data.map(card).join('')}</div>${await recentHtml(0)}`;
 };
 pages.shop = async (_, q) => {
   await loadRatings();
@@ -2657,7 +2673,7 @@ async function route() {
       const heads = [...t.querySelectorAll('th')].map((x) => x.textContent);
       t.querySelectorAll('tr').forEach((tr) => [...tr.children].forEach((td, i) => { if (td.tagName === 'TD') td.dataset.label = heads[i] || ''; }));
     });
-    void $app.offsetWidth; $app.classList.add('in'); addPdfButtons(); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
+    void $app.offsetWidth; $app.classList.add('in'); addPdfButtons(); renderTabbar(); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
 }
 window.addEventListener('hashchange', route);
 sb.auth.onAuthStateChange((ev) => {

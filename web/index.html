@@ -3,17 +3,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ea580c">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="format-detection" content="telephone=yes">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
 <title>Gomi Insulation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700&display=swap">
 <link rel="stylesheet" href="style.css"></head>
 <body>
 <a class="skip" href="#app">Skip to content</a>
 <header class="top"><div class="wrap bar">
   <a class="brand" href="#/"> Gomi Insulation</a>
   <form class="search" id="search"><input name="q" placeholder="Search insulation…" aria-label="Search" autocomplete="off"><div id="sugg" class="sugg" hidden></div></form>
-  <nav id="nav"></nav><span id="cartlink"></span><button id="menubtn" aria-label="Menu" aria-expanded="false"></button></div></header>
+  <nav id="nav"></nav><span id="cartlink"></span><button id="msearchbtn" aria-label="Search" type="button"></button><button id="menubtn" aria-label="Menu" aria-expanded="false"></button></div></header>
 <div class="wrap"><p id="flash" class="flash" role="status" aria-live="polite" hidden></p></div>
 <div id="stylepanel" hidden></div>
 <div id="notifpanel" class="sheet" hidden></div>
@@ -22,6 +27,7 @@
   <div><b>Shop</b><br><a href="#/shop">All products</a><br><a href="#/shop?category=Batts%20%26%20Rolls">Batts &amp; Rolls</a><br><a href="#/shop?category=Spray%20Foam">Spray Foam</a></div>
   <div><b>Help</b><br><a href="#/quote">Request a quote</a><br><a href="#/track">Track an order</a><br><a href="#/form/contact">Contact us</a><br><a href="#/account">My orders</a><br><a href="#/wishlist">Wishlist</a></div><div id="footpages"></div></div>
   <div class="wrap copy">© Gomi Insulation</div></footer>
+<nav id="tabbar" aria-label="Main"></nav>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="config.js"></script>
 <script src="icons.js"></script>

@@ -245,6 +245,9 @@ async function loadSession() {
 // ---- app-style bottom tab bar (phones) ----
 function renderTabbar() {
   const tb = document.getElementById('tabbar'); if (!tb) return; const n = cartCount(), hash = location.hash.slice(1) || '/', on = (...pre) => pre.some((x) => (x === '/' ? hash === '/' || hash === '' : hash === x || hash.startsWith(x + '/') || hash.startsWith(x + '?')));
+  const adminMode = isStaff() && /^\/admin/.test(hash);
+  const adminTabs = adminMode ? [['Dashboard', '#/admin', 'home', 'orders.view'], ['Orders', '#/admin/orders', 'receipt', 'orders.view'], ['POS', '#/admin/pos', 'store', 'pos'], ['Products', '#/admin/products', 'package', 'catalog.manage'], ['Inventory', '#/admin/inventory', 'package', 'inventory.view'], ['Invoices', '#/admin/invoices', 'card', 'invoices.view'], ['Customers', '#/admin/customers', 'users', 'customers.view']].filter((x) => can(x[3])).slice(0, 4) : [];
+  if (adminMode) { const cur = hash.split('?')[0]; tb.innerHTML = adminTabs.map(([l, h, ic]) => { const act = h === '#/admin' ? cur === '/admin' : cur === h.slice(1) || cur.startsWith(h.slice(1) + '/'); return `<a href="${h}" class="${act ? 'on' : ''}" ${act ? 'aria-current="page"' : ''}><span class="ti">:ic-${ic}:</span><span>${l}</span></a>`; }).join('') + `<button type="button" id="tabmore" class="${document.body.classList.contains('asheet-open') ? 'on' : ''}"><span class="ti">:ic-menu:</span><span>More</span></button>`; return; }
   const tabs = [['#/', 'Home', 'home', on('/')], ['#/shop', 'Shop', 'grid', on('/shop', '/product')], ['#/cart', 'Cart', 'cart', on('/cart', '/checkout'), n], [session ? '#/account' : '#/login', session ? 'Account' : 'Log in', 'users', on('/account', '/login', '/register', '/order', '/wishlist', '/notifications', '/messages')], ...(isStaff() ? [['#/admin', 'Admin', 'sliders', on('/admin')]] : [])];
   tb.innerHTML = tabs.map(([h, l, ic, act, badge]) => `<a href="${h}" class="${act ? 'on' : ''}" ${act ? 'aria-current="page"' : ''}><span class="ti">:ic-${ic}:${badge ? `<i class="tbadge">${badge > 99 ? '99+' : badge}</i>` : ''}</span><span>${l}</span></a>`).join('') + `<button type="button" id="tabmore" class="${document.body.classList.contains('menu-open') ? 'on' : ''}"><span class="ti">:ic-menu:</span><span>More</span></button>`;
 }
@@ -294,7 +297,32 @@ document.getElementById('nav').addEventListener('click', (e) => { if (e.target.c
 document.getElementById('msearchbtn').innerHTML = ':ic-search:';
 document.getElementById('msearchbtn').addEventListener('click', () => { const on = !document.body.classList.contains('msearch'); document.body.classList.toggle('msearch', on); if (on) { setMenu(false); document.querySelector('#search input').focus(); } });
 document.getElementById('tabbar').addEventListener('click', (e) => { if (e.target.closest('#tabmore')) { setMenu(!document.body.classList.contains('menu-open')); renderTabbar(); } else { if (document.body.classList.contains('menu-open')) setMenu(false); document.body.classList.remove('msearch'); } });
-window.addEventListener('hashchange', () => { document.body.classList.remove('msearch'); renderTabbar(); });
+window.addEventListener('hashchange', () => { document.body.classList.remove('msearch', 'asheet-open'); renderTabbar(); });
+// ---- app-style extras for phones: admin "More" sheet, back button, header that tucks away, pull to refresh ----
+const inAdminMode = () => isStaff() && /^#\/admin/.test(location.hash);
+function toggleAdminSheet(open) {
+  let sh = document.getElementById('asheet'); if (!sh) { sh = document.createElement('div'); sh.id = 'asheet'; sh.className = 'asheet'; document.body.appendChild(sh); }
+  document.body.classList.toggle('asheet-open', open); if (!open) return;
+  const items = CMD_LINKS.filter(([l, , perm]) => can(perm) && !/^New /.test(l));
+  sh.innerHTML = `<div class="ashead"><b>Admin</b><a href="#/">← Back to store</a></div><div class="asgrid">${items.map(([l, h]) => `<a href="${h}">${esc(l)}</a>`).join('')}</div><button type="button" class="btn ghost openpalette" style="width:100%;margin-top:10px">:ic-search: Search everything</button>`;
+}
+document.addEventListener('click', (e) => {
+  const mb = e.target.closest('#tabmore'); if (mb && inAdminMode()) { e.stopImmediatePropagation(); toggleAdminSheet(!document.body.classList.contains('asheet-open')); renderTabbar(); return; }
+  if (document.body.classList.contains('asheet-open') && e.target.isConnected && (!e.target.closest('#asheet, #tabbar') || e.target.closest('#asheet a, #asheet .openpalette'))) { toggleAdminSheet(false); renderTabbar(); }
+}, true);
+let NAVDEPTH = 0; window.addEventListener('hashchange', () => { NAVDEPTH++; });
+const ROOTS = /^#\/?((shop|cart|account|login|register|messages|notifications|admin(\/(orders|products|inventory|invoices|customers|pos))?))?(\?.*)?$/;
+function syncBackBtn() {
+  const bb = document.getElementById('backbtn'); if (!bb) return;
+  const isSub = !ROOTS.test(location.hash); document.body.classList.toggle('subpage', isSub); bb.hidden = !isSub;
+  const t = document.getElementById('subtitle'); if (t) t.textContent = (document.querySelector('#app h1')?.textContent || document.title.split(' · ')[0] || '').trim().slice(0, 40);
+}
+document.getElementById('backbtn')?.addEventListener('click', () => { if (NAVDEPTH > 0 && history.length > 1) history.back(); else { const h = location.hash.replace(/\/[^/]*$/, '').split('?')[0]; location.hash = h.length > 2 ? h : '#/'; } });
+{ let last = 0, ticking = false; window.addEventListener('scroll', () => { if (ticking) return; ticking = true; requestAnimationFrame(() => { const y = window.scrollY, d = y - last; if (Math.abs(d) > 8) { document.body.classList.toggle('hdrhide', d > 0 && y > 90 && !document.body.classList.contains('msearch')); last = y; } if (y < 40) document.body.classList.remove('hdrhide'); ticking = false; }); }, { passive: true }); }
+{ let y0 = 0, pull = 0, on = false; const ind = document.createElement('div'); ind.id = 'ptr'; ind.innerHTML = '↓'; document.body.appendChild(ind);
+  document.addEventListener('touchstart', (e) => { on = window.scrollY <= 0 && e.touches.length === 1 && matchMedia('(max-width:760px)').matches && !e.target.closest('input,textarea,select,.tablewrap,#asheet,nav#nav'); y0 = e.touches[0].clientY; pull = 0; }, { passive: true });
+  document.addEventListener('touchmove', (e) => { if (!on) return; pull = Math.max(0, e.touches[0].clientY - y0); if (window.scrollY > 0) { on = false; ind.style.transform = ''; return; } ind.style.transform = `translate(-50%,${Math.min(pull, 110) * .6 - 40}px) rotate(${Math.min(pull, 100) * 3}deg)`; ind.classList.toggle('ready', pull > 90); }, { passive: true });
+  document.addEventListener('touchend', () => { if (on && pull > 90) { ind.classList.add('spin'); route(); setTimeout(() => { ind.classList.remove('spin', 'ready'); ind.style.transform = ''; }, 700); } else ind.style.transform = ''; ind.classList.remove('ready'); on = false; }); }
 document.addEventListener('click', (e) => { if (e.target.isConnected && document.body.classList.contains('menu-open') && !e.target.closest('#nav, #tabbar, #menubtn')) { setMenu(false); renderTabbar(); } });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && document.body.classList.contains('menu-open')) { setMenu(false); renderTabbar(); } });
 // ---- search: every word must match (name, category, brand, SKU); suggestions with keyboard, recent searches, clear button ----
@@ -3053,7 +3081,7 @@ async function route() {
       const heads = [...t.querySelectorAll('th')].map((x) => x.textContent);
       t.querySelectorAll('tr').forEach((tr) => [...tr.children].forEach((td, i) => { if (td.tagName === 'TD') td.dataset.label = heads[i] || ''; }));
     });
-    void $app.offsetWidth; $app.classList.add('in'); addPdfButtons(); renderTabbar(); syncCmpBoxes(); renderCmpBar(); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
+    void $app.offsetWidth; $app.classList.add('in'); addPdfButtons(); renderTabbar(); syncCmpBoxes(); renderCmpBar(); page.after?.(args, q); window.scrollTo(0, 0); syncBackBtn(); document.body.classList.remove('hdrhide'); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
 }
 window.addEventListener('hashchange', route);
 sb.auth.onAuthStateChange((ev) => {

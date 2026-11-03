@@ -933,3 +933,35 @@ footer{background:#1c1b19;color:#d8d3c9;border-top:0;margin-top:40px}footer a{co
 .tasklist li{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .tasklist li.done span:first-child{text-decoration:line-through;opacity:.55}
 .tasklist .taskdel{font-size:1.1rem;color:var(--err,#b00);background:none;border:0;cursor:pointer}
+
+/* ===== app feel on phones ===== */
+#backbtn,#subtitle,#asheet,#ptr{display:none}
+@media(max-width:760px){
+  html{-webkit-tap-highlight-color:transparent;overscroll-behavior-y:contain}
+  body{-webkit-touch-callout:none}
+  a,button,.btn,.chip,.card,.tile,.orow,.conv{touch-action:manipulation}
+  button,.btn,.chip,#tabbar a,.tile,.card,.qlinks a,.attnc,.orow{-webkit-user-select:none;user-select:none}
+  .btn:active,.chip:active,.card:active,.tile:active,.qlinks a:active,.attnc:active,.orow:active,#tabbar a:active,#tabbar button:active{transform:scale(.97);opacity:.85;transition:transform .08s}
+  /* header: back button + page title on inner pages; tucks away while scrolling down */
+  .top{transition:transform .25s ease}body.hdrhide .top{transform:translateY(-100%)}
+  body.subpage #backbtn{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;margin-left:-8px;border:0;background:transparent;color:var(--fg);font-size:1.6rem;cursor:pointer}
+  body.subpage #subtitle{display:block;flex:1;min-width:0;font:700 1.25rem/1.1 var(--fh);text-transform:uppercase;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  body.subpage .brand{display:none}
+  /* bottom bar: frosted, bigger targets */
+  #tabbar{background:color-mix(in srgb,var(--card) 92%,transparent);backdrop-filter:blur(14px)}
+  /* admin sections sheet */
+  #asheet{position:fixed;left:0;right:0;bottom:calc(var(--tabh) + env(safe-area-inset-bottom));z-index:49;max-height:68vh;overflow:auto;background:var(--card);border-top:2px solid var(--fg);padding:14px 16px 16px;box-shadow:0 -14px 40px rgba(0,0,0,.25);transform:translateY(110%);visibility:hidden;transition:transform .22s ease,visibility .22s}
+  body.asheet-open #asheet{display:block;transform:none;visibility:visible}
+  body.asheet-open:after{content:"";position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:48}
+  #asheet .ashead{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}#asheet .ashead b{font:700 1.2rem var(--fh);text-transform:uppercase}
+  .asgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.asgrid a{padding:13px 12px;border:1px solid var(--line);background:var(--bg);color:var(--fg);text-decoration:none;font-weight:600}
+  .adminbar{display:none}
+  /* admin dashboard header: compact buttons, attention cards in 3 columns */
+  .dashhead{flex-direction:column;align-items:stretch;gap:10px}.dashhead .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.dashhead .row .btn{min-height:42px;padding:8px 10px;font-size:.9rem}.dashhead kbd{display:none}
+  .attn{grid-template-columns:repeat(3,1fr);gap:8px}.attnc{grid-template-columns:1fr;grid-template-rows:auto;justify-items:start;row-gap:2px;padding:10px}.attnc span{grid-row:auto;font-size:1.2rem}.attnc small{font-size:.74rem;line-height:1.15}
+  /* pull to refresh */
+  #ptr{display:flex;position:fixed;top:62px;left:50%;width:38px;height:38px;margin-left:-19px;border-radius:50%;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);align-items:center;justify-content:center;z-index:70;transform:translate(-50%,-80px);opacity:0;pointer-events:none;transition:opacity .15s}
+  #ptr.ready,#ptr.spin{opacity:1}#ptr.spin{animation:ptrspin .7s linear infinite}@keyframes ptrspin{to{rotate:360deg}}
+  footer .foot{display:none}footer{margin-top:10px}
+}
+@media(max-width:760px){.kpis{grid-template-columns:1fr 1fr!important;gap:8px}.kpi{padding:12px}.kpi b{font-size:1.35rem}}

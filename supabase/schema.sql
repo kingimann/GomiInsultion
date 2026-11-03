@@ -2717,3 +2717,36 @@ alter table public.pages add column if not exists unpublish_at timestamptz;
 drop policy if exists "view pages" on public.pages;
 create policy "view pages" on public.pages for select using (
   (published and (publish_at is null or publish_at <= now()) and (unpublish_at is null or unpublish_at > now())) or public.is_admin());
+
+-- ===== Reviews v2: verified purchases, store replies, moderation =====
+alter table public.reviews add column if not exists verified boolean not null default false;
+alter table public.reviews add column if not exists hidden boolean not null default false;
+alter table public.reviews add column if not exists reply text not null default '' check (length(reply) <= 1000);
+alter table public.reviews add column if not exists replied_at timestamptz;
+update public.reviews r set verified = exists (select 1 from order_items oi join orders o on o.id = oi.order_id where oi.product_id = r.product_id and o.user_id = r.user_id and o.status <> 'cancelled') where not verified;
+create or replace function public.trg_review_verify() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  new.verified := exists (select 1 from order_items oi join orders o on o.id = oi.order_id where oi.product_id = new.product_id and o.user_id = new.user_id and o.status <> 'cancelled');
+  new.hidden := false; new.reply := ''; new.replied_at := null;
+  return new;
+end $$;
+drop trigger if exists reviews_verify on public.reviews;
+create trigger reviews_verify before insert on public.reviews for each row execute function public.trg_review_verify();
+drop policy if exists "read reviews" on public.reviews;
+create policy "read reviews" on public.reviews for select using (not hidden or user_id = auth.uid() or public.has_perm('content.manage'));
+drop policy if exists "staff moderate reviews" on public.reviews;
+create policy "staff moderate reviews" on public.reviews for update using (public.has_perm('content.manage')) with check (public.has_perm('content.manage'));
+-- customers also see invoices addressed to their (confirmed) email, not only ones linked to their account
+drop policy if exists "view invoices" on public.invoices;
+create policy "view invoices" on public.invoices for select using (public.has_perm('invoices.view') or (status <> 'draft' and (customer_id = auth.uid() or (customer_email <> '' and lower(customer_email) = lower(coalesce(auth.jwt() ->> 'email', ''))))));
+
+-- fix: the link guard must read the right column for each table (it referenced a column that does not exist on the other table)
+create or replace function public.trg_links_guard() returns trigger language plpgsql as $$
+declare t text := coalesce(to_jsonb(new) ->> (tg_argv[2]), '');
+begin if public.link_count(t) > tg_argv[1]::int then raise exception 'Please remove some of the links from your message and try again.'; end if; return new; end $$;
+drop trigger if exists quotes_links on public.quotes; create trigger quotes_links before insert on public.quotes for each row execute function public.trg_links_guard('quote', '3', 'message');
+drop trigger if exists reviews_links on public.reviews; create trigger reviews_links before insert on public.reviews for each row execute function public.trg_links_guard('review', '2', 'comment');
+
+-- hidden reviews don't count towards the star rating
+create or replace view public.product_ratings as
+  select product_id, (round(avg(rating), 1))::double precision as avg, (count(*))::integer as count from public.reviews where not hidden group by product_id;

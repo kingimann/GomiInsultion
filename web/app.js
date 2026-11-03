@@ -1280,14 +1280,19 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
 `;
   }
   if (sub === 'pos') {
-    const [locs, prods, inv] = await Promise.all([sb.from('locations').select('*').eq('active', true).order('is_default', { ascending: false }).order('name'), sb.from('products').select('id,name,price_cents,unit,category').eq('active', true).order('name').then(async (r) => { if (r.data) await attachPacks(r.data); return r; }), sb.from('inventory').select('*')]);
+    const [locs, prods, inv] = await Promise.all([sb.from('locations').select('*').eq('active', true).order('is_default', { ascending: false }).order('name'), sb.from('products').select('id,name,price_cents,unit,category,sku,barcode,bags_per_bundle').eq('active', true).order('name').then(async (r) => { if (r.data) await attachPacks(r.data); return r; }), sb.from('inventory').select('*')]);
     if (!locs.data.length) return '<h1>Point of sale</h1><p>Add a location first.</p>';
-    POS = { locs: locs.data, prods: prods.data, inv: inv.data, loc: POS?.loc && locs.data.some((l) => l.id === POS.loc) ? POS.loc : locs.data[0].id, cart: {} };
-    return `<h1>Point of sale</h1><p class="muted">Record a sale made in person. Stock is taken from the location you pick.</p>
-    <div class="pos"><div><div class="row" style="margin-bottom:10px"><select id="posloc" aria-label="Location">${POS.locs.map((l) => `<option value="${l.id}" ${l.id === POS.loc ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select><input id="possearch" placeholder="Search products…" style="flex:1;min-width:160px"></div><div id="posgrid" class="posgrid"></div></div>
-    <aside><h3 style="margin-top:0">Current sale</h3><div id="poscart"></div>
-    <div class="stack" style="margin-top:12px"><input id="pos_name" placeholder="Customer name (optional)"><input id="pos_email" type="email" placeholder="Email for receipt (optional)"><input id="pos_phone" placeholder="Phone (optional)">
-    <select id="pos_pay"><option>Cash</option><option>Card</option><option>Cheque</option><option>Other</option></select><button class="btn" id="pos_done">Complete sale</button></div></aside></div>`;
+    POS = { locs: locs.data, prods: prods.data, inv: inv.data, loc: POS?.loc && locs.data.some((l) => l.id === POS.loc) ? POS.loc : locs.data[0].id, cart: {}, cat: '' };
+    return `<div class="dashhead"><h1 style="margin:0">Point of sale</h1><div class="row"><select id="posloc" aria-label="Location">${POS.locs.map((l) => `<option value="${l.id}" ${l.id === POS.loc ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select><a class="btn ghost" href="#/admin/orders?source=in_store">Today’s sales</a></div></div>
+    <div id="poslast" class="flash ok" hidden></div>
+    <div class="pos"><div><div class="row" style="margin-bottom:8px;flex-wrap:nowrap"><input id="possearch" placeholder="Search or scan a barcode / SKU…" autocomplete="off" style="flex:1;min-width:0"></div><div class="chips" id="poscats"></div><div id="posgrid" class="posgrid"></div></div>
+    <aside class="possale"><div class="poshead"><h3 style="margin:0">Current sale</h3><button type="button" class="link" id="posclear">Clear</button></div><div id="poscart"></div>
+    <div id="posctl" class="stack" style="margin-top:10px"><div class="two2"><label>Discount<input id="pos_disc" type="number" min="0" step="0.01" placeholder="0.00"></label><label>Type<select id="pos_dtype"><option value="$">$ off</option><option value="%">% off</option></select></label></div>
+    <label>Payment<select id="pos_pay"><option>Cash</option><option>Card</option><option>E-transfer</option><option>Cheque</option><option>Other</option></select></label>
+    <div id="poscash"><label>Cash received<input id="pos_tender" type="number" min="0" step="0.01" placeholder="0.00" inputmode="decimal"></label><div class="chips" id="postender"></div><p id="poschange" class="muted" style="margin:4px 0 0"></p></div>
+    <details><summary class="muted">Customer &amp; receipt (optional)</summary><div class="stack" style="margin-top:8px"><input id="pos_name" placeholder="Customer name"><input id="pos_email" type="email" placeholder="Email for receipt"><input id="pos_phone" placeholder="Phone"></div></details></div>
+    <button class="btn block" id="pos_done" style="margin-top:12px">Charge</button></aside></div>
+    <div class="posbar"><div><small class="muted" id="posbarn"></small><b id="posbartotal">$0.00</b></div><button type="button" class="btn" id="posbarbtn">Review &amp; charge</button></div>`;
   }
   if (sub === 'compare' && id) {
     const [pr, comps, prices] = await Promise.all([sb.from('products').select('id,name,price_cents').eq('id', id).single(), sb.from('competitors').select('*').order('sort'), sb.from('competitor_prices').select('*').eq('product_id', id)]);
@@ -2177,28 +2182,57 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   document.getElementById('salescsv')?.addEventListener('click', () => download('orders.csv', [['Order', 'Date', 'Location', 'Channel', 'Status', 'Customer', 'Total'], ...SALES_ROWS]));
   // point of sale
   if (document.getElementById('posgrid')) {
-    const stockAt = (pid) => POS.inv.find((r) => r.product_id === pid && r.location_id === POS.loc)?.qty || 0;
+    const $ = (i) => document.getElementById(i), stockAt = (pid) => POS.inv.find((r) => r.product_id === pid && r.location_id === POS.loc)?.qty || 0;
+    const cats = [...new Set(POS.prods.map((x) => x.category).filter(Boolean))].sort();
+    const calc = () => {
+      const lines = Object.entries(POS.cart).map(([id, qty]) => ({ p: POS.prods.find((x) => x.id === Number(id)), qty })).filter((l) => l.p);
+      const sub = lines.reduce((a, l) => a + lineTotal(l.p, l.qty), 0), dv = parseFloat($('pos_disc').value) || 0;
+      const disc = Math.min(sub, $('pos_dtype').value === '%' ? Math.round(sub * Math.min(dv, 100) / 100) : Math.round(dv * 100)), tax = Math.round((sub - disc) * (Number(STORE.tax_rate) || 0) / 100);
+      return { lines, sub, disc, tax, total: sub - disc + tax, count: lines.reduce((a, l) => a + l.qty, 0) };
+    };
     const drawGrid = () => {
-      const term = (document.getElementById('possearch').value || '').toLowerCase();
-      document.getElementById('posgrid').innerHTML = POS.prods.filter((x) => !term || x.name.toLowerCase().includes(term)).map((x) => { const st = stockAt(x.id); return `<button type="button" class="posbtn" data-id="${x.id}" ${st < 1 ? 'disabled' : ''}><b>${esc(x.name)}</b><span>${money(x.price_cents)} / ${esc(x.unit)}</span><small class="muted">${st} here</small></button>`; }).join('') || '<p class="muted">No products.</p>';
+      const term = ($('possearch').value || '').toLowerCase().trim(), words = term.split(/\s+/).filter(Boolean);
+      $('poscats').innerHTML = cats.length ? ['', ...cats].map((c) => `<button type="button" class="chip ${POS.cat === c ? 'on' : ''}" data-cat="${esc(c)}">${c ? esc(c) : 'All'}</button>`).join('') : '';
+      $('posgrid').innerHTML = POS.prods.filter((x) => (!POS.cat || x.category === POS.cat) && words.every((w) => (x.name + ' ' + (x.sku || '') + ' ' + (x.barcode || '') + ' ' + (x.category || '')).toLowerCase().includes(w))).map((x) => { const st = stockAt(x.id), N = bundleN(x), inCart = POS.cart[x.id] || 0;
+        return `<div class="poscard ${st < 1 ? 'out' : ''}"><button type="button" class="posbtn" data-id="${x.id}" ${st < 1 ? 'disabled' : ''}>${inCart ? `<i class="posq">${inCart}</i>` : ''}<b>${esc(x.name)}</b><span>${money(x.price_cents)} / ${esc(x.unit)}</span><small class="${st < 1 ? 'down' : 'muted'}">${st < 1 ? 'Out of stock' : st + ' here'}</small></button>${N > 1 && st >= N ? `<button type="button" class="posbundle" data-id="${x.id}" data-n="${N}">+ ${esc(bw(x))} (${N})</button>` : ''}</div>`; }).join('') || '<p class="muted">No products match.</p>';
     };
     const drawCart = () => {
-      const lines = Object.entries(POS.cart).map(([id, qty]) => ({ p: POS.prods.find((x) => x.id === Number(id)), qty })).filter((l) => l.p);
-      const total = lines.reduce((a, l) => a + lineTotal(l.p, l.qty), 0);
-      document.getElementById('poscart').innerHTML = lines.length ? `${lines.map((l) => `<div class="posline"><span>${esc(l.p.name)}</span><span class="row" style="flex-wrap:nowrap"><button type="button" class="btn ghost" data-q="-1" data-id="${l.p.id}" aria-label="Less">−</button><b>${l.qty}</b><button type="button" class="btn ghost" data-q="1" data-id="${l.p.id}" aria-label="More">+</button></span><span>${money(lineTotal(l.p, l.qty))}</span></div>`).join('')}<div class="posline" style="font-size:1.2rem"><b>Total</b><span></span><b>${money(total)}</b></div>` : '<p class="muted">Tap a product to add it.</p>';
+      const c = calc();
+      $('poscart').innerHTML = c.lines.length ? `${c.lines.map((l) => `<div class="posline"><span>${esc(l.p.name)}<br><small class="muted">${esc(qtyText(l.p, l.qty))}</small></span><span class="row" style="flex-wrap:nowrap;gap:4px"><button type="button" class="btn ghost" data-q="-1" data-id="${l.p.id}" aria-label="Less">−</button><input class="posqty" type="number" min="1" max="${stockAt(l.p.id)}" value="${l.qty}" data-id="${l.p.id}" aria-label="Quantity"><button type="button" class="btn ghost" data-q="1" data-id="${l.p.id}" aria-label="More">+</button></span><span><b>${money(lineTotal(l.p, l.qty))}</b></span></div>`).join('')}
+        <dl class="totals" style="margin:8px 0 0"><dt>Subtotal</dt><dd>${money(c.sub)}</dd>${c.disc ? `<dt>Discount</dt><dd>−${money(c.disc)}</dd>` : ''}${c.tax ? `<dt>${esc(STORE.tax_label || 'Tax')}</dt><dd>${money(c.tax)}</dd>` : ''}<dt><b>Total</b></dt><dd><b style="font-size:1.3rem">${money(c.total)}</b></dd></dl>` : '<p class="muted">Tap a product to add it.</p>';
+      $('posbartotal').textContent = money(c.total); $('posbarn').textContent = c.count ? `${c.count} item${c.count === 1 ? '' : 's'}` : 'Empty sale';
+      const cash = $('pos_pay').value === 'Cash'; $('poscash').hidden = !cash; $('pos_done').textContent = c.lines.length ? `Charge ${money(c.total)}` : 'Charge';
+      const near = [5, 10, 20, 50, 100].map((x) => x * 100).filter((x) => x >= c.total).slice(0, 3); $('postender').innerHTML = c.total ? [c.total, ...near.filter((x) => x !== c.total)].map((x) => `<button type="button" class="chip" data-t="${x}">${x === c.total ? 'Exact' : money(x)}</button>`).join('') : '';
+      const t = Math.round((parseFloat($('pos_tender').value) || 0) * 100); $('poschange').innerHTML = cash && t ? (t >= c.total ? `Change due: <b style="font-size:1.2rem;color:var(--ok)">${money(t - c.total)}</b>` : `<span class="down">Short by ${money(c.total - t)}</span>`) : '';
+      document.querySelector('.posbar').classList.toggle('on', !!c.lines.length);
     };
+    const add = (id, n) => { POS.cart[id] = Math.min((POS.cart[id] || 0) + n, stockAt(id)); drawCart(); drawGrid(); };
     drawGrid(); drawCart();
-    document.getElementById('posloc').addEventListener('change', (e) => { POS.loc = Number(e.target.value); POS.cart = {}; drawGrid(); drawCart(); });
-    document.getElementById('possearch').addEventListener('input', drawGrid);
-    document.getElementById('posgrid').addEventListener('click', (e) => { const b = e.target.closest('.posbtn'); if (!b) return; const id = Number(b.dataset.id); POS.cart[id] = Math.min((POS.cart[id] || 0) + 1, stockAt(id)); drawCart(); });
-    document.getElementById('poscart').addEventListener('click', (e) => { const b = e.target.closest('[data-q]'); if (!b) return; const id = Number(b.dataset.id); const n = (POS.cart[id] || 0) + Number(b.dataset.q); if (n <= 0) delete POS.cart[id]; else POS.cart[id] = Math.min(n, stockAt(id)); drawCart(); });
-    document.getElementById('pos_done').addEventListener('click', async (e) => {
-      const items = Object.entries(POS.cart).map(([id, qty]) => ({ id: Number(id), qty })); if (!items.length) return fail(new Error('Add at least one product.'));
+    $('posloc').addEventListener('change', (e) => { POS.loc = Number(e.target.value); POS.cart = {}; drawGrid(); drawCart(); });
+    $('possearch').addEventListener('input', drawGrid);
+    $('possearch').addEventListener('keydown', (e) => { if (e.key !== 'Enter') return; e.preventDefault(); const v = e.target.value.trim().toLowerCase(); if (!v) return;
+      const hit = POS.prods.find((x) => (x.barcode || '').toLowerCase() === v || (x.sku || '').toLowerCase() === v) || (() => { const m = POS.prods.filter((x) => x.name.toLowerCase().includes(v) && stockAt(x.id) > 0); return m.length === 1 ? m[0] : null; })();
+      if (!hit) return flash('No single product matches — pick one below.', 'error'); if (stockAt(hit.id) < 1) return flash(`${hit.name} is out of stock here.`, 'error'); add(hit.id, 1); e.target.value = ''; drawGrid(); });
+    $('poscats').addEventListener('click', (e) => { const b = e.target.closest('[data-cat]'); if (b) { POS.cat = b.dataset.cat; drawGrid(); } });
+    $('posgrid').addEventListener('click', (e) => { const bb = e.target.closest('.posbundle'); if (bb) return add(Number(bb.dataset.id), Number(bb.dataset.n)); const b = e.target.closest('.posbtn'); if (b) add(Number(b.dataset.id), 1); });
+    $('poscart').addEventListener('click', (e) => { const b = e.target.closest('[data-q]'); if (!b) return; const id = Number(b.dataset.id), n = (POS.cart[id] || 0) + Number(b.dataset.q); if (n <= 0) delete POS.cart[id]; else POS.cart[id] = Math.min(n, stockAt(id)); drawCart(); drawGrid(); });
+    $('poscart').addEventListener('change', (e) => { const i = e.target.closest('.posqty'); if (!i) return; const id = Number(i.dataset.id), n = parseInt(i.value, 10) || 0; if (n <= 0) delete POS.cart[id]; else POS.cart[id] = Math.min(n, stockAt(id)); drawCart(); drawGrid(); });
+    for (const i of ['pos_disc', 'pos_dtype', 'pos_pay', 'pos_tender']) $(i).addEventListener('input', drawCart);
+    $('postender').addEventListener('click', (e) => { const b = e.target.closest('[data-t]'); if (b) { $('pos_tender').value = (Number(b.dataset.t) / 100).toFixed(2); drawCart(); } });
+    $('posclear').addEventListener('click', () => { POS.cart = {}; drawCart(); drawGrid(); });
+    $('posbarbtn').addEventListener('click', () => { const a = document.querySelector('.possale'); a.classList.add('open'); a.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+    $('pos_done').addEventListener('click', async (e) => {
+      const c = calc(), items = Object.entries(POS.cart).map(([id, qty]) => ({ id: Number(id), qty })); if (!items.length) return fail(new Error('Add at least one product.'));
+      const t = Math.round((parseFloat($('pos_tender').value) || 0) * 100); if ($('pos_pay').value === 'Cash' && t && t < c.total && !confirm(`Cash received is ${money(c.total - t)} short. Record the sale anyway?`)) return;
       e.target.disabled = true;
-      const customer = { name: document.getElementById('pos_name').value.trim(), email: document.getElementById('pos_email').value.trim(), phone: document.getElementById('pos_phone').value.trim() };
-      const { data, error } = await sb.rpc('record_sale', { loc_id: POS.loc, items, customer, payment: document.getElementById('pos_pay').value });
+      const customer = { name: $('pos_name').value.trim(), email: $('pos_email').value.trim(), phone: $('pos_phone').value.trim(), discount_cents: c.disc };
+      const { data, error } = await sb.rpc('record_sale', { loc_id: POS.loc, items, customer, payment: $('pos_pay').value });
       e.target.disabled = false; if (error) return fail(error);
-      flash(`Sale #${data} recorded.`); location.hash = `#/admin/orders/${data}`;
+      const change = $('pos_pay').value === 'Cash' && t > c.total ? ` Change due ${money(t - c.total)}.` : '';
+      POS.cart = {}; for (const i of ['pos_disc', 'pos_tender', 'pos_name', 'pos_email', 'pos_phone']) $(i).value = '';
+      POS.inv.forEach((r) => { const l = c.lines.find((x) => x.p.id === r.product_id); if (l && r.location_id === POS.loc) r.qty = Math.max(0, r.qty - l.qty); });
+      const lastEl = $('poslast'); lastEl.hidden = false; lastEl.innerHTML = `:ic-check: Sale <a href="#/admin/orders/${data}">#${data}</a> recorded — <b>${money(c.total)}</b>.${change} <a href="#/admin/orders/${data}">Receipt</a>`; lastEl.scrollIntoView({ block: 'nearest' });
+      document.querySelector('.possale')?.classList.remove('open'); drawCart(); drawGrid(); $('possearch').focus();
     });
   }
   document.querySelectorAll('.pubpage').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.from('pages').update({ published: !!b.dataset.pub }).eq('id', b.dataset.id); error ? fail(error) : (loadPages(), route()); }));

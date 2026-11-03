@@ -2816,3 +2816,37 @@ begin
   return n;
 end $$;
 select cron.schedule('overdue-invoices', '15 13 * * *', 'select public.notify_overdue_invoices()');
+
+-- POS: optional in-store discount (customer->>'discount_cents')
+CREATE OR REPLACE FUNCTION public.record_sale(loc_id bigint, items jsonb, customer jsonb, payment text)
+ RETURNS bigint
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare pk record; it jsonb; p public.products; q int; sub int := 0; disc int := 0; oid bigint; item_id bigint; loc public.locations; rate numeric := public.store_cfg('tax_rate', 0); tax int; tlabel text := public.store_cfg_text('tax_label', 'Tax');
+begin
+  if not public.has_perm('pos') then raise exception 'Not allowed'; end if;
+  select * into loc from locations where id = loc_id and active;
+  if not found then raise exception 'Choose an active location'; end if;
+  if jsonb_array_length(items) = 0 then raise exception 'Add at least one product'; end if;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents, status, location_id, fulfillment, source, payment_method)
+  values (null, coalesce(customer->>'email', ''), coalesce(nullif(customer->>'name', ''), 'Walk-in customer'), coalesce(customer->>'phone', ''), 'In store: ' || loc.name,
+          coalesce(nullif(loc.city, ''), '-'), coalesce(nullif(loc.postcode, ''), '-'), coalesce(customer->>'notes', ''), 0, 0, 0, 'paid', loc.id, 'pickup', 'in_store', left(coalesce(payment, ''), 40))
+  returning id into oid;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int; select * into p from products where id = (it->>'id')::bigint for update;
+    if not found or q < 1 then raise exception 'Invalid item'; end if;
+    for pk in select * from public.pack_split(p.id, p.price_cents, q) loop
+      insert into order_items (order_id, product_id, name, price_cents, qty, pack_units, bundle_size) values (oid, p.id, p.name || case when pk.label <> '' then ' (' || pk.label || ' price)' else '' end, pk.price, pk.qty, pk.units, coalesce(p.bags_per_bundle, (select min(k.units) from product_packs k where k.product_id = p.id))) returning id into item_id;
+      begin perform public.allocate_stock(item_id, p.id, pk.qty, loc.id, true, oid);
+      exception when others then raise exception 'Not enough stock of % at %', p.name, loc.name; end;
+    end loop;
+    sub := sub + public.pack_total(p.id, p.price_cents, q);
+  end loop;
+  disc := greatest(0, least(coalesce(nullif(customer->>'discount_cents', '')::int, 0), sub));
+  tax := round((sub - disc) * rate / 100.0)::int;
+  update orders set subtotal_cents = sub, discount_cents = disc, promo_code = case when disc > 0 then 'In-store discount' else promo_code end, tax_cents = tax, tax_label = case when tax > 0 then tlabel else '' end, total_cents = sub - disc + tax where id = oid;
+  return oid;
+end $function$
+;

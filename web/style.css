@@ -968,3 +968,17 @@ footer{background:#1c1b19;color:#d8d3c9;border-top:0;margin-top:40px}footer a{co
 @media(max-width:760px){.attn:has(.attnc:nth-child(4):last-child){grid-template-columns:1fr 1fr}.cardtools{justify-content:space-between}.qvbtn .qvl{display:none}.qvbtn{min-width:40px;min-height:36px}}
 .cartbar{display:none}
 @media(max-width:760px){.cartbar{display:flex;position:fixed;left:0;right:0;bottom:calc(var(--tabh) + env(safe-area-inset-bottom));z-index:40;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;background:var(--card);border-top:2px solid var(--fg);box-shadow:0 -8px 24px rgba(0,0,0,.12)}.cartbar div{display:flex;flex-direction:column;line-height:1.1}.cartbar b{font:700 1.4rem var(--fh)}.cartbar .btn{flex:1;max-width:220px}.cartcta{display:none!important}#app:has(.cartbar){padding-bottom:84px}body:has(.cartbar) .totop{display:none}}
+
+/* point of sale v2 */
+.pos{grid-template-columns:1fr 380px}.possale{position:sticky;top:90px;padding:16px;background:var(--card);border:1px solid var(--line);border-radius:var(--r)}
+.poshead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.poscard{position:relative;display:flex;flex-direction:column;gap:4px}.poscard .posbtn{position:relative;width:100%;flex:1}.poscard.out{opacity:.55}
+.posq{position:absolute;top:6px;right:6px;min-width:24px;height:24px;border-radius:12px;background:var(--brand);color:#fff;font-style:normal;font-weight:700;font-size:.85rem;display:flex;align-items:center;justify-content:center;padding:0 6px}
+.posbundle{border:1px dashed var(--line);background:transparent;color:var(--brand);font:600 .85rem var(--fh);text-transform:uppercase;letter-spacing:.04em;padding:6px;cursor:pointer}
+.posqty{width:56px;text-align:center;padding:6px 4px}
+.posbar{display:none}
+@media(max-width:900px){.pos{grid-template-columns:1fr}.possale{position:static}.posgrid{grid-template-columns:repeat(2,1fr)}
+  .posbar.on{display:flex;position:fixed;left:0;right:0;bottom:calc(var(--tabh) + env(safe-area-inset-bottom));z-index:40;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;background:var(--card);border-top:2px solid var(--fg);box-shadow:0 -8px 24px rgba(0,0,0,.12)}
+  .posbar div{display:flex;flex-direction:column;line-height:1.1}.posbar b{font:700 1.5rem var(--fh)}.posbar .btn{flex:1;max-width:220px}
+  #app:has(.posbar.on){padding-bottom:90px}}
+@media(min-width:901px){.posbar{display:none!important}}

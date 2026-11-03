@@ -285,3 +285,6 @@ Customers can add up to 4 photos to a review (resized automatically). Photos sho
 - **Overdue alerts:** a daily job (`notify_overdue_invoices`, 13:15 UTC) adds an in-app notification for staff the first time an invoice goes overdue.
 - **Dashboard:** Receivables card (outstanding / overdue / due in 7 days), shared **Team to-do** list (`admin_tasks`), and a Recent activity card (owners/admins).
 - **Shortcuts:** `g` then `d/o/p/i/n/c/e/m` to jump around, `?` for the list, `Ctrl K` to search.
+
+## Point of sale v2
+Barcode/SKU scanning (type or scan, press Enter), category chips, search, quantity badges on products, one-tap **+ bundle**, editable quantities, in-store **discount** ($ or %), **cash received → change due** with quick-tender buttons, tax shown live, and the screen stays ready for the next sale (with a receipt link) instead of leaving the page. Phones get a sticky total bar.

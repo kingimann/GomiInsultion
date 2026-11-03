@@ -183,3 +183,7 @@ In the product editor, **Bundles & pack prices** lets you say how many bags are 
 ## Brands
 
 Products now have a **brand**. Anyone who can manage the catalog *or* the inventory (managers and warehouse staff) can add brands: pick or type one in the product editor, or use the **Brand** dropdown on each row of **Admin → Inventory** (with “+ New brand…”) and the *Brands* panel there to add, rename or delete brands. Customers see the brand on product cards and pages, can filter the shop by brand, and search matches brand names. The brand is also included in the product structured data for Google. Permissions are enforced in the database (accountants and customers are refused).
+
+## Shop layout
+
+The shop now has a filter sidebar (category and brand with product counts, price range, in stock, on sale), a sort menu, grid/list view toggle (remembered), removable filter chips with "Clear all", and on phones the filters open as a bottom sheet from a *Filters* button. Facet counts update with the other filters you've applied.

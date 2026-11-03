@@ -245,35 +245,49 @@ pages.home = async () => {
 };
 pages.shop = async (_, q) => {
   await loadRatings();
-  const category = q.get('category') || '', term = (q.get('q') || '').replace(/[%,()]/g, '');
-  const sort = q.get('sort') || 'name', instock = q.get('instock') === '1';
-  const ord = { name: ['name', true], price_asc: ['price_cents', true], price_desc: ['price_cents', false], stock: ['stock', false] }[sort] || ['name', true];
-  let req = sb.from('products').select('*').eq('active', true).order(ord[0], { ascending: ord[1] });
-  const pmin = Math.round((parseFloat(q.get('min')) || 0) * 100), pmax = Math.round((parseFloat(q.get('max')) || 0) * 100), sale = q.get('sale') === '1';
-  if (instock) req = req.gt('stock', 0); if (pmin) req = req.gte('price_cents', pmin); if (pmax) req = req.lte('price_cents', pmax);
-  if (category) req = req.eq('category', category);
-  const brand = q.get('brand') || ''; if (brand) req = req.eq('brand', brand);
+  const category = q.get('category') || '', brand = q.get('brand') || '', term = (q.get('q') || '').replace(/[%,()]/g, ''), sort = q.get('sort') || 'name';
+  const instock = q.get('instock') === '1', sale = q.get('sale') === '1', pmin = Math.round((parseFloat(q.get('min')) || 0) * 100), pmax = Math.round((parseFloat(q.get('max')) || 0) * 100);
+  let req = sb.from('products').select('*').eq('active', true).limit(1000);
   if (term) req = req.or(`name.ilike.%${term}%,description.ilike.%${term}%,category.ilike.%${term}%,brand.ilike.%${term}%`);
-  let { data, error } = await req; if (error) throw error; if (sale) data = data.filter(onSale); await attachPacks(data);
-  const allp = (await sb.from('products').select('category,brand').eq('active', true)).data || [], cats = [...new Set(allp.map((r) => r.category))].sort(), brands = [...new Set(allp.map((r) => r.brand).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  return `<h1>${esc(brand || category || 'All products')}</h1><div class="chips"><a class="chip ${!category ? 'on' : ''}" href="#/shop">All</a>
-  ${cats.map((c) => `<a class="chip ${c === category ? 'on' : ''}" href="#/shop?category=${encodeURIComponent(c)}">${esc(c)}</a>`).join('')}</div>
-  ${brands.length ? `<div class="chips brandchips" aria-label="Brands"><span class="muted">Brand</span><a class="chip ${!brand ? 'on' : ''}" href="#/shop${category ? '?category=' + encodeURIComponent(category) : ''}">All</a>${brands.map((b) => `<a class="chip ${b === brand ? 'on' : ''}" href="#/shop?${category ? 'category=' + encodeURIComponent(category) + '&' : ''}brand=${encodeURIComponent(b)}">${esc(b)}</a>`).join('')}</div>` : ''}
-  <form class="toolbar" id="filters"><span class="muted grow">${data.length} product${data.length === 1 ? '' : 's'}</span>
-  <label><input type="checkbox" name="instock" ${instock ? 'checked' : ''}> In stock only</label><label><input type="checkbox" name="sale" ${sale ? 'checked' : ''}> On sale</label>
-  <span class="pricerange"><input name="min" type="number" min="0" step="1" placeholder="Min $" value="${q.get('min') || ''}" aria-label="Minimum price"><span>–</span><input name="max" type="number" min="0" step="1" placeholder="Max $" value="${q.get('max') || ''}" aria-label="Maximum price"></span>
-  <select name="sort" aria-label="Sort">${[['name', 'Name'], ['price_asc', 'Price: low to high'], ['price_desc', 'Price: high to low'], ['stock', 'Most in stock']].map(([v, l]) => `<option value="${v}" ${v === sort ? 'selected' : ''}>${l}</option>`).join('')}</select></form>
-  ${term ? `<p class="muted">Results for “${esc(term)}”</p>` : ''}${data.length ? `<div class="grid">${data.map(card).join('')}</div>` : '<p>No products found.</p>'}`;
+  const { data: all, error } = await req; if (error) throw error; await attachPacks(all);
+  const pass = (p, skip) => (skip === 'category' || !category || p.category === category) && (skip === 'brand' || !brand || p.brand === brand) && (!instock || p.stock > 0) && (!sale || onSale(p)) && (!pmin || p.price_cents >= pmin) && (!pmax || p.price_cents <= pmax);
+  const cmp = { name: (a, b) => a.name.localeCompare(b.name), price_asc: (a, b) => a.price_cents - b.price_cents, price_desc: (a, b) => b.price_cents - a.price_cents, stock: (a, b) => b.stock - a.stock, newest: (a, b) => b.id - a.id }[sort] || ((a, b) => a.name.localeCompare(b.name));
+  const shown = all.filter((x) => pass(x)).sort(cmp);
+  const count = (key, skip) => { const m = {}; all.filter((x) => pass(x, skip)).forEach((x) => { if (x[key]) m[x[key]] = (m[x[key]] || 0) + 1; }); return m; };
+  const cats = count('category', 'category'), brands = count('brand', 'brand');
+  const link = (ch) => { const n = new URLSearchParams(q); Object.entries(ch).forEach(([k, v]) => (v ? n.set(k, v) : n.delete(k))); const t = n.toString(); return '#/shop' + (t ? '?' + t : ''); };
+  const pills = [category && ['Category: ' + category, { category: '' }], brand && ['Brand: ' + brand, { brand: '' }], instock && ['In stock', { instock: '' }], sale && ['On sale', { sale: '' }], (pmin || pmax) && [`Price ${pmin ? money(pmin) : ''}–${pmax ? money(pmax) : ''}`, { min: '', max: '' }], term && [`“${term}”`, { q: '' }]].filter(Boolean);
+  const facet = (title, map, cur, key) => Object.keys(map).length || cur ? `<fieldset class="facet"><legend>${title}</legend>${Object.entries(map).sort((a, b) => a[0].localeCompare(b[0])).map(([k, n]) => `<a class="fitem ${k === cur ? 'on' : ''}" href="${link({ [key]: k === cur ? '' : k })}"><span>${esc(k)}</span><small>${n}</small></a>`).join('')}</fieldset>` : '';
+  const nfilters = pills.length - (term ? 1 : 0);
+  return `<div class="shophead"><div><h1 style="margin:0">${esc(brand || category || 'All products')}</h1><p class="muted" style="margin:2px 0 0">${shown.length} product${shown.length === 1 ? '' : 's'}${shown.length !== all.length ? ` of ${all.length}` : ''}</p></div>
+    <div class="row shopctl"><button type="button" class="btn ghost filterbtn" id="filterbtn">:ic-sliders: Filters${nfilters ? ` (${nfilters})` : ''}</button>
+      <label class="sortlbl"><span class="muted">Sort</span><select name="sort" id="shopsort" aria-label="Sort">${[['name', 'Name A–Z'], ['price_asc', 'Price: low to high'], ['price_desc', 'Price: high to low'], ['newest', 'Newest'], ['stock', 'Most in stock']].map(([v, l]) => `<option value="${v}" ${v === sort ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <div class="seg viewseg" id="viewseg" role="group" aria-label="Layout"><button type="button" data-view="grid" aria-label="Grid view" title="Grid">:ic-grid:</button><button type="button" data-view="list" aria-label="List view" title="List">:ic-clipboard:</button></div></div></div>
+  ${pills.length ? `<div class="pills">${pills.map(([l, ch]) => `<a class="pill" href="${link(ch)}">${esc(l)} <span aria-hidden="true">×</span><span class="sr">remove filter</span></a>`).join('')}<a class="link" href="#/shop">Clear all</a></div>` : ''}
+  <div class="shoplayout"><aside class="filters" id="filters" aria-label="Filters"><div class="fhead"><b>Filters</b><button type="button" class="ibtn" id="filterclose" aria-label="Close filters">:ic-x:</button></div>
+    ${facet('Category', cats, category, 'category')}${facet('Brand', brands, brand, 'brand')}
+    <fieldset class="facet"><legend>Price</legend><div class="pricerange"><input name="min" type="number" min="0" step="1" placeholder="Min $" value="${q.get('min') || ''}" aria-label="Minimum price"><span>–</span><input name="max" type="number" min="0" step="1" placeholder="Max $" value="${q.get('max') || ''}" aria-label="Maximum price"></div></fieldset>
+    <fieldset class="facet"><legend>Availability</legend><label class="check"><input type="checkbox" name="instock" ${instock ? 'checked' : ''}> In stock only</label><label class="check"><input type="checkbox" name="sale" ${sale ? 'checked' : ''}> On sale</label></fieldset>
+    <button type="button" class="btn block" id="filterdone">Show ${shown.length} product${shown.length === 1 ? '' : 's'}</button></aside>
+  <div class="shopmain">${shown.length ? `<div class="grid shopgrid" id="shopgrid">${shown.map(card).join('')}</div>` : `<div class="emptyq">:ic-search:<p><b>No products match</b></p><p class="muted">Try removing a filter or searching for something else.</p><a class="btn" href="#/shop">Clear all filters</a></div>`}</div></div>`;
 };
 document.addEventListener('submit', async (e) => {
   if (e.target.id !== 'alertform') return; e.preventDefault();
   const { error } = await sb.rpc('notify_when_back', { pid: Number(e.target.dataset.id), addr: new FormData(e.target).get('email') });
   error ? fail(error) : (flash("Got it — we'll record your email for this product."), e.target.innerHTML = '<span class="muted">:ic-check-circle: You are on the list.</span>');
 });
-pages.shop.after = (_, q) => document.getElementById('filters')?.addEventListener('change', (e) => {
-  const f = new FormData(e.currentTarget), n = new URLSearchParams(q);
-  n.set('sort', f.get('sort')); f.get('instock') ? n.set('instock', '1') : n.delete('instock'); f.get('sale') ? n.set('sale', '1') : n.delete('sale'); ['min', 'max'].forEach((k) => (f.get(k) ? n.set(k, f.get(k)) : n.delete(k))); location.hash = `#/shop?${n}`;
-});
+pages.shop.after = (_, q) => {
+  const grid = document.getElementById('shopgrid'), setView = (v) => { grid?.classList.toggle('list', v === 'list'); document.querySelectorAll('#viewseg button').forEach((b) => b.classList.toggle('on', b.dataset.view === v)); };
+  let view = 'grid'; try { view = localStorage.getItem('shopview') || 'grid'; } catch {} setView(view);
+  document.getElementById('viewseg')?.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; try { localStorage.setItem('shopview', b.dataset.view); } catch {} setView(b.dataset.view); });
+  const apply = () => { const n = new URLSearchParams(q), g = (name) => document.querySelector(`.shophead [name=${name}], #filters [name=${name}]`);
+    n.set('sort', g('sort').value); ['instock', 'sale'].forEach((k) => (g(k).checked ? n.set(k, '1') : n.delete(k))); ['min', 'max'].forEach((k) => (g(k).value ? n.set(k, g(k).value) : n.delete(k))); location.hash = `#/shop?${n}`; };
+  document.getElementById('shopsort')?.addEventListener('change', apply);
+  document.getElementById('filters')?.addEventListener('change', (e) => { if (e.target.matches('input')) apply(); });
+  const panel = document.getElementById('filters'), setOpen = (o) => { panel.classList.toggle('open', o); document.body.classList.toggle('noscroll', o && window.innerWidth < 900); };
+  document.getElementById('filterbtn')?.addEventListener('click', () => setOpen(true)); document.getElementById('filterclose')?.addEventListener('click', () => setOpen(false)); document.getElementById('filterdone')?.addEventListener('click', () => setOpen(false));
+  window.addEventListener('hashchange', () => document.body.classList.remove('noscroll'), { once: true });
+};
 pages.product = async ([slug]) => {
   const { data: p } = await sb.from('products').select('*').eq('slug', slug).maybeSingle();
   if (!p) return '<h1>Not found</h1>';

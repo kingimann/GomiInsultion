@@ -621,7 +621,8 @@ pages.cart = async () => {
   return `<h1>Your cart</h1><div class="cartwrap"><form id="cartform"><div class="citems">${lines.map(cartLineHtml).join('')}</div></form>
   <aside class="summary"><h3>Order summary</h3>${(STORE.ship_zones || []).length ? '<p class="muted" style="margin:0">Delivery fee depends on your postal code — you will see it at checkout.</p>' : ''}${FREE_SHIP > 0 ? `<p class="muted" style="margin:0">${left > 0 ? `Add <b>${money(left)}</b> more for free shipping` : ':ic-award: You qualify for free shipping!'}</p><div class="progress"><i style="width:${Math.min(100, (t.sub - t.disc) / FREE_SHIP * 100)}%"></i></div>` : ''}
   <form id="promo" class="row" style="flex-wrap:nowrap"><input name="code" placeholder="Discount code" value="${esc(getPromo()?.code || '')}" aria-label="Discount code" style="flex:1;min-width:0"><button class="btn ghost">Apply</button></form>
-  ${totalsHtml(t)}<a class="btn block" href="#/checkout">Checkout</a><a class="muted" href="#/shop" style="text-align:center;display:block;margin-top:10px">← Continue shopping</a></aside></div>`;
+  ${totalsHtml(t)}<a class="btn block cartcta" href="#/checkout">Checkout</a><a class="muted" href="#/shop" style="text-align:center;display:block;margin-top:10px">← Continue shopping</a></aside></div>
+  <div class="cartbar"><div><small class="muted">${t.ship ? 'Total (incl. shipping)' : 'Total'}</small><b>${money(t.total)}</b></div><a class="btn" href="#/checkout">Checkout →</a></div>`;
 };
 pages.cart.after = () => {
   document.getElementById('promo')?.addEventListener('submit', async (e) => {

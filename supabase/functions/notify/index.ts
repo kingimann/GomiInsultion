@@ -6,13 +6,34 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 const money = (c: number) => `$${(c / 100).toFixed(2)}`;
 
-async function send(to: string, subject: string, html: string, replyTo?: string) {
-  const r = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${Deno.env.get('RESEND_API_KEY')}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: Deno.env.get('FROM_EMAIL'), to, subject, html, ...(replyTo ? { reply_to: replyTo } : {}) }),
-  });
-  if (!r.ok) console.error('resend', r.status, await r.text());
+type Res = { ok: boolean; detail: string };
+async function sendEmail(to: string, subject: string, html: string, replyTo?: string): Promise<Res> {
+  const key = Deno.env.get('RESEND_API_KEY'), from = Deno.env.get('FROM_EMAIL');
+  if (!key || !from) return { ok: false, detail: 'Email is not connected yet: add the RESEND_API_KEY and FROM_EMAIL secrets' };
+  if (!to) return { ok: false, detail: 'No email address' };
+  try {
+    const r = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ from, to, subject, html, ...(replyTo ? { reply_to: replyTo } : {}) }) });
+    if (r.ok) return { ok: true, detail: 'Delivered to the email service' };
+    const t = await r.text(); console.error('resend', r.status, t); let m = t; try { m = JSON.parse(t).message || t; } catch { /* keep text */ }
+    return { ok: false, detail: `Email service said: ${String(m).slice(0, 220)}` };
+  } catch (e) { return { ok: false, detail: `Could not reach the email service: ${e}` }; }
+}
+const send = async (to: string, subject: string, html: string, replyTo?: string) => { await sendEmail(to, subject, html, replyTo); };
+function e164(raw: string): string | null {
+  const d = String(raw || '').replace(/[^0-9+]/g, ''); if (d.startsWith('+')) return d.length >= 9 ? d : null;
+  const digits = d.replace(/\D/g, ''), cc = (Deno.env.get('SMS_DEFAULT_COUNTRY_CODE') || '1').replace(/\D/g, '');
+  if (digits.length === 10) return `+${cc}${digits}`; if (digits.length === 11 && digits.startsWith(cc)) return `+${digits}`; return digits.length >= 8 ? `+${digits}` : null;
+}
+async function sendSms(to: string, text: string): Promise<Res> {
+  const sid = Deno.env.get('TWILIO_ACCOUNT_SID'), tok = Deno.env.get('TWILIO_AUTH_TOKEN'), from = Deno.env.get('TWILIO_FROM'), svc = Deno.env.get('TWILIO_MESSAGING_SERVICE_SID');
+  if (!sid || !tok || (!from && !svc)) return { ok: false, detail: 'Text messaging is not connected yet: add the TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM secrets' };
+  const num = e164(to); if (!num) return { ok: false, detail: 'That phone number does not look valid' };
+  try {
+    const p = new URLSearchParams({ To: num, Body: text.slice(0, 1500) }); if (svc) p.set('MessagingServiceSid', svc); else p.set('From', from!);
+    const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, { method: 'POST', body: p, headers: { Authorization: 'Basic ' + btoa(`${sid}:${tok}`), 'Content-Type': 'application/x-www-form-urlencoded' } });
+    const j = await r.json().catch(() => ({}));
+    return r.ok ? { ok: true, detail: 'Handed to the text-message carrier' } : { ok: false, detail: `Text service said: ${String(j.message || r.status).slice(0, 220)}` };
+  } catch (e) { return { ok: false, detail: `Could not reach the text service: ${e}` }; }
 }
 
 Deno.serve(async (req) => {
@@ -28,25 +49,61 @@ Deno.serve(async (req) => {
     return new Response('ok');
   }
 
+  // ---- sending invoices / estimates / statements (email and text) with a delivery log ----
+  const siteBase = String(body.base || site || '').replace(/\/$/, '');
+  const setLog = async (id: number | null | undefined, r: Res) => { if (id) await admin.from('message_log').update({ status: r.ok ? 'sent' : 'failed', detail: r.detail }).eq('id', id); };
+  const mkLog = async (kind: string, ref: number | null, channel: string, to: string) => (await admin.from('message_log').insert({ kind, ref_id: ref, channel, to_address: to, status: 'queued' }).select('id').single()).data?.id as number | undefined;
+  const { data: stRows } = await admin.from('site_settings').select('key,value').in('key', ['store', 'theme']);
+  const cfg = Object.fromEntries((stRows || []).map((r: any) => [r.key, r.value || {}]));
+  const bizName = cfg.store?.biz?.legal_name || cfg.theme?.name || 'Gomi Insulation';
+
+  if (body.kind === 'test') {
+    const r = body.channel === 'sms' ? await sendSms(String(body.to), `${bizName}: this is a test text message. Sending works!`) : await sendEmail(String(body.to), `Test email from ${bizName}`, `<h2>It works! </h2><p>This is a test email from ${esc(bizName)}. Invoices and estimates can now be emailed to customers.</p>`);
+    await setLog(body.log_id, r); return new Response('ok');
+  }
+
+  if (body.kind === 'statement') {
+    const { data: all } = await admin.from('invoices').select('*').eq('status', 'sent');
+    const mail = String(body.email || '').toLowerCase(), nm = String(body.name || '').toLowerCase();
+    const mine = (all || []).filter((i: any) => (body.customer_id && i.customer_id === body.customer_id) || (mail && String(i.customer_email || '').toLowerCase() === mail) || (!body.customer_id && !mail && nm && String(i.customer_name).toLowerCase() === nm))
+      .filter((i: any) => i.total_cents - i.paid_cents > 0).sort((a: any, b: any) => String(a.due_date).localeCompare(String(b.due_date)));
+    const to = body.email || mine.find((i: any) => i.customer_email)?.customer_email, lid = body.log_ids?.email;
+    if (!to || !mine.length) { await setLog(lid, { ok: false, detail: !to ? 'No email address on file' : 'Nothing is owing — no statement needed' }); return new Response('nothing to send'); }
+    const today = new Date().toISOString().slice(0, 10), total = mine.reduce((a: number, i: any) => a + i.total_cents - i.paid_cents, 0);
+    const rows = mine.map((i: any) => { const bal = i.total_cents - i.paid_cents, late = i.due_date < today; return `<tr><td><a href="${siteBase}/#/invoice/${i.id}?k=${i.view_key}">${esc(i.number)}</a></td><td>${esc(i.issue_date)}</td><td style="${late ? 'color:#b42318;font-weight:bold' : ''}">${esc(i.due_date)}${late ? ' (overdue)' : ''}</td><td align="right">${money(i.total_cents)}</td><td align="right"><b>${money(bal)}</b></td></tr>`; }).join('');
+    await setLog(lid, await sendEmail(to, `Statement of account — ${money(total)} due`, `<h2>Statement of account</h2><p>Hello ${esc(mine[0].customer_name)}, here are your open invoices with ${esc(bizName)}.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left">Invoice</th><th>Issued</th><th>Due</th><th align="right">Total</th><th align="right">Balance</th></tr>${rows}</table><p><b>Total due: ${money(total)}</b></p><p>Click an invoice number to view it or pay online.</p>`));
+    return new Response('ok');
+  }
+
   if (body.kind === 'estimate_sent') {
-    const { data: est } = await admin.from('estimates').select('*, estimate_items(*)').eq('id', body.estimate_id).single();
-    if (!est || !est.customer_email) return new Response('no recipient');
-    const rows = est.estimate_items.sort((x: any, y: any) => x.sort - y.sort).map((i: any) => `<tr><td>${esc(i.description)}</td><td align="right">${Number(i.qty)}</td><td align="right">${money(Math.round(Number(i.qty) * i.unit_price_cents))}</td></tr>`).join('');
-    await send(est.customer_email, `Estimate ${est.number} — ${money(est.total_cents)}`,
-      `<h2>Estimate ${esc(est.number)}</h2><p>Hello ${esc(est.customer_name)}, here is the estimate we prepared for you.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left">Description</th><th>Qty</th><th align="right">Amount</th></tr>${rows}</table>
-       ${est.tax_cents ? `<p>${esc(est.tax_label || 'Tax')}: ${money(est.tax_cents)}</p>` : ''}<p><b>Total: ${money(est.total_cents)}</b></p><p>Valid until ${esc(est.expires_on)}.</p><p><a href="${site}/#/estimate/${est.id}?k=${est.view_key}">Review, accept or decline this estimate</a></p>`);
+    const { data: est } = await admin.from('estimates').select('*, estimate_items(*)').eq('id', body.estimate_id).single(); if (!est) return new Response('no estimate', { status: 404 });
+    const ch = body.channels || { email: true, sms: false }, ids = body.log_ids || {}, link = `${siteBase}/#/estimate/${est.id}?k=${est.view_key}`;
+    if (!siteBase) { for (const c of ['email', 'sms']) if (ch[c]) await setLog(ids[c], { ok: false, detail: 'No site address known — set the SITE_URL secret' }); return new Response('no site'); }
+    if (ch.email) {
+      const rows = est.estimate_items.sort((x: any, y: any) => x.sort - y.sort).map((i: any) => `<tr><td>${esc(i.description)}</td><td align="right">${Number(i.qty)}</td><td align="right">${money(Math.round(Number(i.qty) * i.unit_price_cents))}</td></tr>`).join('');
+      await setLog(ids.email ?? await mkLog('estimate', est.id, 'email', est.customer_email), await sendEmail(est.customer_email, `Estimate ${est.number} — ${money(est.total_cents)}`,
+        `<h2>Estimate ${esc(est.number)}</h2><p>Hello ${esc(est.customer_name)}, here is the estimate ${esc(bizName)} prepared for you.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left">Description</th><th>Qty</th><th align="right">Amount</th></tr>${rows}</table>
+         ${est.tax_cents ? `<p>${esc(est.tax_label || 'Tax')}: ${money(est.tax_cents)}</p>` : ''}<p><b>Total: ${money(est.total_cents)}</b></p><p>Valid until ${esc(est.expires_on)}.</p><p><a href="${link}">Review, accept or decline this estimate</a></p>`));
+    }
+    if (ch.sms) await setLog(ids.sms ?? await mkLog('estimate', est.id, 'sms', est.customer_phone), await sendSms(est.customer_phone, `${bizName}: Estimate ${est.number} for ${money(est.total_cents)} (valid until ${est.expires_on}). Review & accept: ${link}`));
     return new Response('ok');
   }
 
   if (body.kind === 'invoice_sent') {
-    const { data: inv } = await admin.from('invoices').select('*, invoice_items(*)').eq('id', body.invoice_id).single();
-    if (!inv || !inv.customer_email) return new Response('no recipient');
-    const rows = inv.invoice_items.sort((x: any, y: any) => x.sort - y.sort).map((i: any) => `<tr><td>${esc(i.description)}</td><td align="right">${Number(i.qty)}</td><td align="right">${money(Math.round(Number(i.qty) * i.unit_price_cents))}</td></tr>`).join('');
-    const balance = inv.total_cents - inv.paid_cents;
-    await send(inv.customer_email, `Invoice ${inv.number}${balance > 0 ? ` — ${money(balance)} due ${inv.due_date}` : ''}`,
-      `<h2>Invoice ${esc(inv.number)}</h2><p>Hello ${esc(inv.customer_name)}, here is your invoice.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left">Description</th><th>Qty</th><th align="right">Amount</th></tr>${rows}</table>
-       ${inv.discount_cents ? `<p>Discount: −${money(inv.discount_cents)}</p>` : ''}${inv.tax_cents ? `<p>${esc(inv.tax_label || 'Tax')}: ${money(inv.tax_cents)}</p>` : ''}<p><b>Total: ${money(inv.total_cents)}</b>${inv.paid_cents ? `<br>Paid: ${money(inv.paid_cents)}<br><b>Balance due: ${money(balance)}</b>` : ''}</p><p>Due date: ${esc(inv.due_date)}</p>
-       ${inv.terms ? `<p style="white-space:pre-wrap">${esc(inv.terms)}</p>` : ''}<p><a href="${site}/#/invoice/${inv.id}?k=${inv.view_key}">View or print this invoice</a></p>`);
+    const { data: inv } = await admin.from('invoices').select('*, invoice_items(*)').eq('id', body.invoice_id).single(); if (!inv) return new Response('no invoice', { status: 404 });
+    const ch = body.channels || { email: true, sms: false }, ids = body.log_ids || {}, balance = inv.total_cents - inv.paid_cents, link = `${siteBase}/#/invoice/${inv.id}?k=${inv.view_key}`;
+    if (!siteBase) { for (const c of ['email', 'sms']) if (ch[c]) await setLog(ids[c], { ok: false, detail: 'No site address known — set the SITE_URL secret' }); return new Response('no site'); }
+    if (ch.email) {
+      if (!inv.customer_email) await setLog(ids.email, { ok: false, detail: 'No email address on this invoice' });
+      else {
+        const rows = inv.invoice_items.sort((x: any, y: any) => x.sort - y.sort).map((i: any) => `<tr><td>${esc(i.description)}</td><td align="right">${Number(i.qty)}</td><td align="right">${money(Math.round(Number(i.qty) * i.unit_price_cents))}</td></tr>`).join('');
+        await setLog(ids.email ?? await mkLog('invoice', inv.id, 'email', inv.customer_email), await sendEmail(inv.customer_email, `Invoice ${inv.number}${balance > 0 ? ` — ${money(balance)} due ${inv.due_date}` : ''} from ${bizName}`,
+          `<h2>Invoice ${esc(inv.number)}</h2><p>Hello ${esc(inv.customer_name)}, here is your invoice from ${esc(bizName)}.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left">Description</th><th>Qty</th><th align="right">Amount</th></tr>${rows}</table>
+           ${inv.discount_cents ? `<p>Discount: −${money(inv.discount_cents)}</p>` : ''}${inv.tax_cents ? `<p>${esc(inv.tax_label || 'Tax')}: ${money(inv.tax_cents)}</p>` : ''}<p><b>Total: ${money(inv.total_cents)}</b>${inv.paid_cents ? `<br>Paid: ${money(inv.paid_cents)}<br><b>Balance due: ${money(balance)}</b>` : ''}</p><p>Due date: ${esc(inv.due_date)}</p>
+           ${inv.terms ? `<p style="white-space:pre-wrap">${esc(inv.terms)}</p>` : ''}<p><a href="${link}">View, print or pay this invoice</a></p>`));
+      }
+    }
+    if (ch.sms) await setLog(ids.sms ?? await mkLog('invoice', inv.id, 'sms', inv.customer_phone), await sendSms(inv.customer_phone, `${bizName}: Invoice ${inv.number} for ${money(balance)}${balance > 0 ? ` is due ${inv.due_date}` : ' (paid)'}. View${balance > 0 ? ' & pay' : ''}: ${link}`));
     return new Response('ok');
   }
 

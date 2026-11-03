@@ -4,8 +4,23 @@ const $app = document.getElementById('app');
 const STATUSES = ['pending', 'paid', 'shipped', 'delivered', 'cancelled', 'refunded'];
 let FREE_SHIP = 50000, SHIP = 1500;
 let STORE = { ship_flat_cents: 1500, free_over_cents: 50000, tax_rate: 0, tax_label: 'Tax', biz: {} };
-function applyStoreCfg(v) { STORE = { ...STORE, ...(v || {}) }; FREE_SHIP = Number(STORE.free_over_cents) || 0; SHIP = Number(STORE.ship_flat_cents) || 0; }
+function applyStoreCfg(v) { STORE = { ...STORE, ...(v || {}) }; FREE_SHIP = Number(STORE.free_over_cents) || 0; SHIP = Number(STORE.ship_flat_cents) || 0; renderClosedBar(); }
+const shopClosed = () => !!STORE.closed;
+const closedMsg = () => (STORE.closed_message || '').trim() || 'We are not taking online orders right now. You can still browse and fill your cart — please check back soon.';
+function renderClosedBar() {
+  let el = document.querySelector('.closedbar');
+  if (!shopClosed()) { el?.remove(); return; }
+  if (!el) { el = document.createElement('div'); el.className = 'closedbar'; el.setAttribute('role', 'status'); const an = document.querySelector('.announce'); an ? an.after(el) : document.body.prepend(el); }
+  el.innerHTML = ':ic-lock: <b>Shop closed</b> — ' + esc(closedMsg()) + (profile && isStaff() ? ' <a href="#/admin/settings">Reopen</a>' : '');
+}
+async function setShopClosed(closed, message) {
+  const { data } = await sb.from('site_settings').select('value').eq('key', 'store').maybeSingle();
+  const value = { ...(data?.value || {}), closed: !!closed }; if (message !== undefined) value.closed_message = message;
+  const { error } = await sb.from('site_settings').upsert({ key: 'store', value, updated_at: new Date().toISOString() }); if (error) return fail(error);
+  applyStoreCfg(value); flash(closed ? 'Shop closed — online ordering is off.' : 'Shop open — online ordering is on.'); route();
+}
 
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 // ---- themes ----
 const THEME_OPTS = {
   mode: { label: 'Mode', vals: [['', 'Auto'], ['light', 'Light'], ['dark', 'Dark']] },
@@ -49,8 +64,8 @@ function applyTheme() {
 }
 function applyBranding() {
   const name = (theme.name || '').trim() || 'Gomi Insulation';
-  const brand = document.querySelector('.brand'); if (brand) brand.textContent = '🏠 ' + name;
-  const fb = document.querySelector('footer .foot b'); if (fb) fb.textContent = '🏠 ' + name;
+  const brand = document.querySelector('.brand'); if (brand) brand.innerHTML = ':ic-home: ' + esc(name);
+  const fb = document.querySelector('footer .foot b'); if (fb) fb.innerHTML = ':ic-home: ' + esc(name);
   const text = typeof theme.announce === 'string' ? theme.announce.trim() : window.GOMI.ANNOUNCEMENT;
   let el = document.querySelector('.announce');
   if (text) { if (!el) { el = document.createElement('div'); el.className = 'announce'; document.body.prepend(el); } el.textContent = text; } else el?.remove();
@@ -68,7 +83,7 @@ async function saveSiteTheme() {
 }
 function buildStylePanel() {
   const el = document.getElementById('stylepanel'); if (!el) return;
-  el.innerHTML = `<h3>🎨 Site style</h3><p class="muted" style="margin:-4px 0 10px;font-size:.85rem">Changes apply to every visitor (admins only).</p>
+  el.innerHTML = `<h3>:ic-sliders: Site style</h3><p class="muted" style="margin:-4px 0 10px;font-size:.85rem">Changes apply to every visitor (admins only).</p>
   <fieldset><legend>Presets</legend><div class="opts">${Object.keys(PRESETS).map((n) => `<button data-preset="${n}">${n}</button>`).join('')}</div></fieldset>
   ${Object.entries(THEME_OPTS).map(([k, o]) => `<fieldset><legend>${o.label}</legend><div class="opts">${o.vals.map(([v, l]) => o.swatch
     ? `<button class="sw" data-k="${k}" data-v="${v}" style="background:${l}" aria-label="${v || 'orange'}" aria-pressed="${!theme.custom && (theme[k] || '') === v}"></button>`
@@ -97,8 +112,7 @@ document.addEventListener('change', (e) => {
 });
 
 // ---- helpers ----
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const money = (c) => `${C.CURRENCY}${(c / 100).toFixed(2)}`;
+const money = (c) => `${c < 0 ? '-' : ''}${C.CURRENCY}${(Math.abs(c) / 100).toFixed(2)}`;
 const safeUrl = (u) => (/^(https?:\/\/|\/)/.test(u || '') ? u : '');
 let session = null, profile = null;
 let unread = { all: 0, msg: 0 }, notifChan = null, threadChan = [], perms = [];
@@ -110,7 +124,7 @@ function flash(msg, type = 'ok') {
   const f = document.getElementById('flash'); f.textContent = msg; f.className = `flash ${type}`; f.hidden = false;
   clearTimeout(flash.t); flash.t = setTimeout(() => (f.hidden = true), 5000);
 }
-const img = (p, big) => (safeUrl(p.image_url) ? `<img class="${big ? 'big' : ''}" src="${esc(safeUrl(p.image_url))}" alt="${esc(p.name)}">` : `<div class="ph ${big ? 'big' : ''}"><span>${esc(p.r_value || '🧱')}</span></div>`);
+const img = (p, big) => (safeUrl(p.image_url) ? `<img class="${big ? 'big' : ''}" src="${esc(safeUrl(p.image_url))}" alt="${esc(p.name)}">` : `<div class="ph ${big ? 'big' : ''}"><span>${esc(p.r_value || ':ic-grid:')}</span></div>`);
 let RATINGS = {};
 const loadRatings = async () => { const [{ data }] = await Promise.all([sb.from('product_ratings').select('*'), loadCompare()]); RATINGS = Object.fromEntries((data || []).map((r) => [r.product_id, r])); };
 const stars = (n) => `<span class="stars" aria-label="${n} out of 5">${'★'.repeat(Math.round(n))}${'☆'.repeat(5 - Math.round(n))}</span>`;
@@ -132,7 +146,7 @@ const compareHtml = (p) => {
   const rows = c.map((x) => { const diff = x.price_cents - p.price_cents, pct = Math.round(Math.abs(diff) / x.price_cents * 100);
     const verdict = diff > 0 ? `<b class="up">You save ${money(diff)} (${pct}%)</b>` : diff < 0 ? `<span class="muted">${esc(x.name)} is ${money(-diff)} lower</span>` : '<span class="muted">Same price</span>';
     return `<tr><td>${esc(x.name)}${x.in_stock ? '' : ' <small class="muted">(out of stock)</small>'}${x.note ? `<br><small class="muted">${esc(x.note)}</small>` : ''}</td><td>${money(x.price_cents)}</td><td>${verdict}</td><td><small class="muted">${new Date(x.checked_at).toLocaleDateString()}</small>${x.url ? `<br><a href="${esc(x.url)}" target="_blank" rel="noopener nofollow">View ↗</a>` : ''}</td></tr>`; }).join('');
-  return `<div class="compare"><h3>💲 Price comparison</h3><table><tr><th>Retailer</th><th>Price</th><th>Difference</th><th>Checked</th></tr><tr class="us"><td><b>${esc(theme.name || 'Gomi Insulation')}</b></td><td><b>${money(p.price_cents)}</b></td><td></td><td></td></tr>${rows}</table>
+  return `<div class="compare"><h3>:ic-dollar: Price comparison</h3><table><tr><th>Retailer</th><th>Price</th><th>Difference</th><th>Checked</th></tr><tr class="us"><td><b>${esc(theme.name || 'Gomi Insulation')}</b></td><td><b>${money(p.price_cents)}</b></td><td></td><td></td></tr>${rows}</table>
   <p class="muted" style="font-size:.8rem;margin:6px 0 0">Other retailers' prices were checked by us on the dates shown and may have changed. Sizes, brands and pack contents can differ, so compare the item listed. Retailer names belong to their owners; we are not affiliated with them.</p></div>`;
 };
 const getRV = () => { try { return JSON.parse(localStorage.getItem('rv') || '[]'); } catch { return []; } };
@@ -146,15 +160,15 @@ async function recentHtml(excludeId) {
 const getWish = () => { try { return JSON.parse(localStorage.getItem('wish') || '[]'); } catch { return []; } };
 document.addEventListener('click', (e) => {
   const ab = e.target.closest('.addbtn');
-  if (ab) { const id = ab.dataset.id, c = getCart(), n = Math.min((c[id] || 0) + 1, Number(ab.dataset.stock) || 1); c[id] = n; setCart(c); flash(`Added ${ab.dataset.name} to your cart.`); ab.textContent = '✓ Added'; ab.classList.add('done'); setTimeout(() => { ab.textContent = '+ Add'; ab.classList.remove('done'); }, 1500); return; }
+  if (ab) { const id = ab.dataset.id, c = getCart(), n = Math.min((c[id] || 0) + 1, Number(ab.dataset.stock) || 1); c[id] = n; setCart(c); flash(`Added ${ab.dataset.name} to your cart.`); ab.innerHTML = ':ic-check: Added'; ab.classList.add('done'); setTimeout(() => { ab.textContent = '+ Add'; ab.classList.remove('done'); }, 1500); return; }
   const q = e.target.closest('.qty [data-d]');
   if (q) { const inp = q.parentElement.querySelector('input'); const v = (parseInt(inp.value, 10) || 0) + Number(q.dataset.d); inp.value = Math.max(Number(inp.min) || 0, Math.min(v, Number(inp.max) || 999)); inp.dispatchEvent(new Event('change', { bubbles: true })); return; }
   const b = e.target.closest('.heart'); if (!b) return;
   const id = Number(b.dataset.id); let w = getWish();
   w = w.includes(id) ? w.filter((x) => x !== id) : [...w, id]; localStorage.setItem('wish', JSON.stringify(w));
-  b.textContent = w.includes(id) ? '♥' : '♡'; b.style.color = w.includes(id) ? '#dc2626' : ''; renderNav(); if (location.hash.startsWith('#/wishlist')) route();
+  b.innerHTML = w.includes(id) ? ':ic-heart-fill:' : ':ic-heart:'; b.style.color = w.includes(id) ? '#dc2626' : ''; renderNav(); if (location.hash.startsWith('#/wishlist')) route();
 });
-const card = (p) => `<article class="card">${p.stock <= 0 ? '<span class="badge">Sold out</span>' : p.stock <= 10 ? '<span class="badge warn">Low stock</span>' : ''}<button class="heart" data-id="${p.id}" aria-label="Save to wishlist" style="${getWish().includes(p.id) ? 'color:#dc2626' : ''}">${getWish().includes(p.id) ? '♥' : '♡'}</button><a href="#/product/${esc(p.slug)}">${img(p)}</a><div class="pad"><span class="tag">${esc(p.category)}</span>
+const card = (p) => `<article class="card">${p.stock <= 0 ? '<span class="badge">Sold out</span>' : p.stock <= 10 ? '<span class="badge warn">Low stock</span>' : ''}<button class="heart" data-id="${p.id}" aria-label="Save to wishlist" style="${getWish().includes(p.id) ? 'color:#dc2626' : ''}">${getWish().includes(p.id) ? ':ic-heart-fill:' : ':ic-heart:'}</button><a href="#/product/${esc(p.slug)}">${img(p)}</a><div class="pad"><span class="tag">${esc(p.category)}</span>
   <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}${saveBadge(p)}<div class="cardfoot"><p class="price">${money(p.price_cents)}</p>${p.stock > 0 ? `<button class="addbtn" data-id="${p.id}" data-stock="${p.stock}" data-name="${esc(p.name)}" aria-label="Add ${esc(p.name)} to cart">+ Add</button>` : '<span class="muted" style="font-size:.85rem">Sold out</span>'}</div></div></article>`;
 const getPromo = () => { try { return JSON.parse(localStorage.getItem('promo') || 'null'); } catch { return null; } };
 const totals = (sub, pickup = false) => { const pr = getPromo(), disc = pr && sub ? Math.floor(sub * pr.percent / 100) : 0; const ship = pickup || !sub || sub - disc >= FREE_SHIP ? 0 : SHIP; const base = sub - disc + ship, tax = Math.round(base * (Number(STORE.tax_rate) || 0) / 100); return { sub, disc, code: disc ? pr.code : '', ship, tax, taxLabel: STORE.tax_label || 'Tax', total: base + tax }; };
@@ -171,13 +185,13 @@ async function loadSession() {
 }
 function renderNav() {
   const n = Object.values(getCart()).reduce((a, b) => a + b, 0);
-  document.getElementById('cartlink').innerHTML = (session ? `<button class="stylebtn bell" id="bellbtn" aria-label="Notifications">🔔${unread.all ? `<span class="dot">${unread.all > 99 ? '99+' : unread.all}</span>` : ''}</button> ` : '') + `<a class="cart" href="#/cart" aria-label="Cart, ${n} item${n === 1 ? '' : 's'}">🛒 <span class="cl">Cart </span>(${n})</a>`;
+  document.getElementById('cartlink').innerHTML = (session ? `<button class="stylebtn bell" id="bellbtn" aria-label="Notifications">:ic-bell:${unread.all ? `<span class="dot">${unread.all > 99 ? '99+' : unread.all}</span>` : ''}</button> ` : '') + `<a class="cart" href="#/cart" aria-label="Cart, ${n} item${n === 1 ? '' : 's'}">:ic-cart: <span class="cl">Cart </span>(${n})</a>`;
   const first = esc((profile?.name || 'Account').split(' ')[0]);
-  document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a>${sitePages.filter((x) => x.show_in_nav).map((x) => `<a href="#/page/${esc(x.slug)}">${esc(x.title)}</a>`).join('')}<a href="#/quote">Get a quote</a><a href="#/wishlist" aria-label="Wishlist">♡${getWish().length ? ' ' + getWish().length : ''}</a>`
-    + (session ? `<a href="#/messages" class="msglink">💬<span class="lbl"> Messages</span>${unread.msg ? ` <span class="dot">${unread.msg}</span>` : ''}</a>
-      <div class="usermenu"><button class="userbtn" id="userbtn" aria-haspopup="true" aria-expanded="false">${avatar(profile?.name || 'U')}<span class="uname">${first}</span><span class="caret">▾</span></button>
-      <div class="umpanel" id="umpanel"><div class="umhead"><b>${esc(profile?.name || 'Account')}</b><small class="muted">${esc(session.user.email)}${profile?.role && profile.role !== 'customer' ? ' · ' + esc(profile.role) : ''}</small></div>
-        <a href="#/account">My account</a><a href="#/account">My orders</a><a href="#/notifications">Notifications</a>${isStaff() ? '<a href="#/admin">Admin dashboard</a>' : ''}${profile?.is_admin ? '<button class="link" id="stylebtn">🎨 Site style</button>' : ''}<button class="link" id="logout">Log out</button></div></div>`
+  document.getElementById('nav').innerHTML = `<a href="#/shop">Shop</a>${sitePages.filter((x) => x.show_in_nav).map((x) => `<a href="#/page/${esc(x.slug)}">${esc(x.title)}</a>`).join('')}<a href="#/quote">Get a quote</a><a href="#/wishlist" aria-label="Wishlist">:ic-heart:${getWish().length ? ' ' + getWish().length : ''}</a>`
+    + (session ? `<a href="#/messages" class="msglink">:ic-chat:<span class="lbl"> Messages</span>${unread.msg ? ` <span class="dot">${unread.msg}</span>` : ''}</a>
+      <div class="usermenu"><button class="userbtn" id="userbtn" aria-haspopup="true" aria-expanded="false">${avatar(profile?.name || 'U')}<span class="uname">${first}</span><span class="caret">:ic-chevron-down:</span></button>
+      <div class="umpanel" id="umpanel"><div class="umhead"><b>${esc(profile?.name || 'Account')}</b>${profile?.username ? `<small class="muted">@${esc(profile.username)}</small>` : ''}<small class="muted">${esc(session.user.email)}${profile?.role && profile.role !== 'customer' ? ' · ' + esc(profile.role) : ''}</small></div>
+        <a href="#/account">My account</a><a href="#/account">My orders</a><a href="#/notifications">Notifications</a>${isStaff() ? '<a href="#/admin">Admin dashboard</a>' : ''}${profile?.is_admin ? '<button class="link" id="stylebtn">:ic-sliders: Site style</button>' : ''}<button class="link" id="logout">Log out</button></div></div>`
       : `<a href="#/login">Log in</a><a href="#/register" class="signup">Sign up</a>`);
   document.getElementById('logout')?.addEventListener('click', async () => { await sb.auth.signOut(); location.hash = '#/'; });
 }
@@ -186,7 +200,7 @@ document.addEventListener('click', (e) => {
   if (ub) { const open = !um.classList.contains('open'); um.classList.toggle('open', open); ub.setAttribute('aria-expanded', String(open)); return; }
   if (um && (!e.target.closest('.umpanel') || e.target.closest('.umpanel a, .umpanel button'))) um.classList.remove('open');
 });
-const setMenu = (open) => { document.body.classList.toggle('menu-open', open); document.getElementById('menubtn').setAttribute('aria-expanded', String(open)); document.getElementById('menubtn').textContent = open ? '✕' : '☰'; };
+const setMenu = (open) => { document.body.classList.toggle('menu-open', open); document.getElementById('menubtn').setAttribute('aria-expanded', String(open)); document.getElementById('menubtn').innerHTML = open ? ':ic-x:' : ':ic-menu:'; };
 document.getElementById('menubtn').addEventListener('click', () => setMenu(!document.body.classList.contains('menu-open')));
 document.getElementById('nav').addEventListener('click', (e) => { if (e.target.closest('a,button.link')) setMenu(false); });
 const sugg = document.getElementById('sugg'), sinput = document.querySelector('#search input[name=q]'); let stm = null;
@@ -210,8 +224,8 @@ pages.home = async () => {
   const catCount = {}; ((await sb.from('products').select('category').eq('active', true)).data || []).forEach((r) => (catCount[r.category] = (catCount[r.category] || 0) + 1));
   const cats = Object.keys(catCount).sort();
   return `<section class="hero"><div class="hero-art" aria-hidden="true"></div><h1>Insulation for every build.</h1><p>Batts, spray foam, rigid board and more. Order online and get it delivered to your site.</p>
-  <div><a class="btn" href="#/shop">Shop all products</a><a class="btn ghost" href="#/quote">Request a quote</a></div><p class="hero-note">✓ Free shipping over ${money(FREE_SHIP)} &nbsp;·&nbsp; ✓ Trade pricing on request</p></section>
-  <div class="perks"><div class="perk"><span class="pi">🚚</span><div><b>Free shipping</b><small>On orders over ${money(FREE_SHIP)}</small></div></div><div class="perk"><span class="pi">📐</span><div><b>Coverage calculator</b><small>Know exactly how much you need</small></div></div><div class="perk"><span class="pi">🏗️</span><div><b>Bulk &amp; trade pricing</b><small>Ask for a custom quote</small></div></div></div>
+  <div><a class="btn" href="#/shop">Shop all products</a><a class="btn ghost" href="#/quote">Request a quote</a></div><p class="hero-note">:ic-check: Free shipping over ${money(FREE_SHIP)} &nbsp;·&nbsp; :ic-check: Trade pricing on request</p></section>
+  <div class="perks"><div class="perk"><span class="pi">:ic-truck:</span><div><b>Free shipping</b><small>On orders over ${money(FREE_SHIP)}</small></div></div><div class="perk"><span class="pi">:ic-ruler:</span><div><b>Coverage calculator</b><small>Know exactly how much you need</small></div></div><div class="perk"><span class="pi">:ic-tool:</span><div><b>Bulk &amp; trade pricing</b><small>Ask for a custom quote</small></div></div></div>
   <div class="sect"><h2>Shop by category</h2><a href="#/shop">All products →</a></div><div class="tiles">${cats.map((c) => `<a class="tile" href="#/shop?category=${encodeURIComponent(c)}"><b>${esc(c)}</b><small>${catCount[c]} product${catCount[c] === 1 ? '' : 's'}</small><span aria-hidden="true">→</span></a>`).join('')}</div>
   <div class="sect"><h2>Featured</h2><a href="#/shop">View all →</a></div><div class="grid">${data.map(card).join('')}</div>${await recentHtml(0)}`;
 };
@@ -258,9 +272,9 @@ pages.product = async ([slug]) => {
   <p class="price big">${money(p.price_cents)} <small>per ${esc(p.unit)}</small></p>${p.r_value ? `<p><strong>R-value:</strong> ${esc(p.r_value)}</p>` : ''}<p>${esc(p.description)}</p>
   ${p.stock > 0 ? `<form class="row" id="add"><div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="qty" value="1" min="1" max="${p.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div><button class="btn">Add to cart</button></form>
   <p class="stockpill ${p.stock <= 10 ? 'low' : ''}"><i></i>${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : '<p class="flash error">Out of stock</p>'}
-  <ul class="trust"><li>🚚 Free shipping on orders over ${money(FREE_SHIP)}</li><li>💬 Questions? <a href="#/messages">Message us</a> or <a href="#/quote">request a quote</a></li></ul>
+  <ul class="trust"><li>:ic-truck: Free shipping on orders over ${money(FREE_SHIP)}</li><li>:ic-chat: Questions? <a href="#/messages">Message us</a> or <a href="#/quote">request a quote</a></li></ul>
   ${compareHtml(p)}
-  ${coverageOf(p) ? `<div class="calc"><h3>📐 How many do I need?</h3><div class="row"><label>Area (sq ft) <input type="number" id="area" min="1" value="200"></label>
+  ${coverageOf(p) ? `<div class="calc"><h3>:ic-ruler: How many do I need?</h3><div class="row"><label>Area (sq ft) <input type="number" id="area" min="1" value="200"></label>
   <label>Waste % <input type="number" id="waste" min="0" max="30" value="10"></label></div><p class="out" id="calcout"></p></div>` : ''}</div></div>
   <h2>Customer reviews</h2>${reviewsHtml}
   ${related.length ? `<h2>You might also need</h2><div class="grid">${related.map(card).join('')}</div>` : ''}${recent}`;
@@ -304,14 +318,14 @@ async function cartLines() {
 }
 pages.cart = async () => {
   const lines = await cartLines();
-  if (!lines.length) return '<div class="empty"><div style="font-size:3rem">🛒</div><h1>Your cart is empty</h1><p class="muted">Browse our insulation and add what you need.</p><a class="btn" href="#/shop">Start shopping</a></div>';
+  if (!lines.length) return '<div class="empty"><div style="font-size:3rem">:ic-cart:</div><h1>Your cart is empty</h1><p class="muted">Browse our insulation and add what you need.</p><a class="btn" href="#/shop">Start shopping</a></div>';
   const t = totals(lines.reduce((a, l) => a + l.price_cents * l.qty, 0));
   const left = FREE_SHIP - (t.sub - t.disc);
   return `<h1>Your cart</h1><div class="cartwrap"><form id="cartform"><div class="citems">${lines.map((l) => `<div class="citem"><a href="#/product/${esc(l.slug)}" class="cthumb">${img(l)}</a>
     <div class="cinfo"><a class="cname" href="#/product/${esc(l.slug)}">${esc(l.name)}</a><small class="muted">${money(l.price_cents)} per ${esc(l.unit)}</small></div>
     <div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="${l.id}" value="${l.qty}" min="0" max="${l.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div>
-    <b class="ctotal">${money(l.price_cents * l.qty)}</b><button type="button" class="crm" data-id="${l.id}" aria-label="Remove ${esc(l.name)}">✕</button></div>`).join('')}</div></form>
-  <aside class="summary"><h3>Order summary</h3><p class="muted" style="margin:0">${left > 0 ? `Add <b>${money(left)}</b> more for free shipping` : '🎉 You qualify for free shipping!'}</p><div class="progress"><i style="width:${Math.min(100, (t.sub - t.disc) / FREE_SHIP * 100)}%"></i></div>
+    <b class="ctotal">${money(l.price_cents * l.qty)}</b><button type="button" class="crm" data-id="${l.id}" aria-label="Remove ${esc(l.name)}">:ic-x:</button></div>`).join('')}</div></form>
+  <aside class="summary"><h3>Order summary</h3><p class="muted" style="margin:0">${left > 0 ? `Add <b>${money(left)}</b> more for free shipping` : ':ic-award: You qualify for free shipping!'}</p><div class="progress"><i style="width:${Math.min(100, (t.sub - t.disc) / FREE_SHIP * 100)}%"></i></div>
   <form id="promo" class="row" style="flex-wrap:nowrap"><input name="code" placeholder="Discount code" value="${esc(getPromo()?.code || '')}" aria-label="Discount code" style="flex:1;min-width:0"><button class="btn ghost">Apply</button></form>
   ${totalsHtml(t)}<a class="btn block" href="#/checkout">Checkout</a><a class="muted" href="#/shop" style="text-align:center;display:block;margin-top:10px">← Continue shopping</a></aside></div>`;
 };
@@ -337,6 +351,7 @@ pages.cart.after = () => {
 let SAVED = [], CHK = null;
 pages.checkout = async () => {
   const lines = await cartLines(); if (!lines.length) return '<h1>Checkout</h1><p>Your cart is empty.</p>';
+  if (shopClosed()) return `<div class="authcard"><div class="authicon">:ic-lock:</div><h1>The shop is closed</h1><p class="muted">${esc(closedMsg())}</p><a class="btn" href="#/cart">Back to cart</a> <a class="btn ghost" href="#/products">Keep browsing</a></div>`;
   SAVED = session ? (await sb.from('addresses').select('*').order('is_default', { ascending: false }).order('id')).data || [] : [];
   const d = SAVED[0] || {};
   const t = totals(lines.reduce((a, l) => a + l.price_cents * l.qty, 0));
@@ -349,12 +364,12 @@ pages.checkout = async () => {
   <section class="cs"><h3><span class="num">1</span> Contact</h3>
     ${f('name', 'Full name', d.name || profile?.name, 'required')}${f('email', 'Email', session?.user.email, 'type="email" required')}${f('phone', 'Phone', d.phone)}</section>
   <section class="cs"><h3><span class="num">2</span> ${hasPk ? 'Delivery or pickup' : 'Delivery'}</h3>
-  ${hasPk ? `<div class="choicecards"><label class="cc"><input type="radio" name="fulfillment" value="delivery" checked><span><b>🚚 Delivery</b><small>To your address</small></span></label><label class="cc"><input type="radio" name="fulfillment" value="pickup"><span><b>🏪 Pickup</b><small>Free · collect in store</small></span></label></div>
+  ${hasPk ? `<div class="choicecards"><label class="cc"><input type="radio" name="fulfillment" value="delivery" checked><span><b>:ic-truck: Delivery</b><small>To your address</small></span></label><label class="cc"><input type="radio" name="fulfillment" value="pickup"><span><b>:ic-store: Pickup</b><small>Free · collect in store</small></span></label></div>
   <div id="pickbox" hidden class="stack">${pk.map((l, i) => `<label class="check pk ${l.available ? '' : 'na'}"><input type="radio" name="location_id" value="${l.id}" ${l.available ? '' : 'disabled'} ${l.available && !pk.slice(0, i).some((x) => x.available) ? 'checked' : ''}> <span><b>${esc(l.name)}</b>${l.available ? '' : ' — not enough stock here'}<br><small class="muted">${esc([l.address, l.city].filter(Boolean).join(', '))}${l.hours ? ' · ' + esc(l.hours) : ''}${l.phone ? ' · ' + esc(l.phone) : ''}</small></span></label>`).join('')}</div>` : ''}
   <div id="addrbox" class="stack">${SAVED.length ? `<label>Use a saved address<select id="savedaddr">${SAVED.map((a, i) => `<option value="${i}">${esc(a.label)} — ${esc(a.address)}, ${esc(a.city)}</option>`).join('')}<option value="">Enter a new address</option></select></label>` : ''}
   ${f('address', 'Delivery address', d.address, 'required')}<div class="two2">${f('city', 'City', d.city, 'required')}${f('postcode', 'Postal / ZIP code', d.postcode, 'required')}</div></div></section>
   <section class="cs"><h3><span class="num">3</span> Notes &amp; payment</h3><label>Order notes (optional)<textarea name="notes" rows="3" placeholder="Gate code, delivery instructions…"></textarea></label>
-  <p class="muted" style="margin:0">${C.PAYMENTS ? '🔒 You will be taken to a secure Stripe page to pay by card.' : "Payment: we'll email you an invoice and payment options once your order is confirmed."}</p>
+  <p class="muted" style="margin:0">${C.PAYMENTS ? ':ic-lock: You will be taken to a secure Stripe page to pay by card.' : "Payment: we'll email you an invoice and payment options once your order is confirmed."}</p>
   <button class="btn block">${C.PAYMENTS ? 'Continue to payment' : 'Place order'}</button></section></form>
   <aside class="summary"><h3>Order summary</h3><ul class="olist">${lines.map((l) => `<li><span class="cthumb sm">${img(l)}</span><span>${l.qty} × ${esc(l.name)}</span><b>${money(l.qty * l.price_cents)}</b></li>`).join('')}</ul>${totalsHtml(t)}<a class="muted" href="#/cart" style="text-align:center;display:block">← Edit cart</a></aside></div>`;
 };
@@ -399,14 +414,14 @@ const orderHtml = (o, items, admin) => {
   return `<div class="printonly"><h2>${esc(STORE.biz?.legal_name || theme.name || 'Gomi Insulation')}</h2><p>${[STORE.biz?.address, STORE.biz?.phone, STORE.biz?.email].filter(Boolean).map(esc).join(' · ')}${STORE.biz?.tax_number ? `<br>${esc(STORE.tax_label || 'Tax')} no. ${esc(STORE.biz.tax_number)}` : ''}</p><p><b>Invoice for order #${o.id}</b> · ${dateOf(o.created_at)}</p></div>
   <div class="ohead"><div><h1 style="margin:0">Order #${o.id}</h1><p class="muted" style="margin:2px 0 0">Placed ${dateOf(o.created_at)} · ${kind}</p></div><span class="status big ${esc(o.status)}">${esc(o.status)}</span></div>
   ${o.status === 'cancelled' ? '' : `<ol class="timeline">${steps.map((st, i) => `<li class="${i < idx ? 'done' : i === idx ? 'on' : ''}"><i></i><span>${st}</span></li>`).join('')}</ol>`}
-  ${o.tracking_number ? `<div class="trackbox">📦 <span><b>${esc(o.tracking_carrier || 'Tracking number')}</b> · ${esc(o.tracking_number)}</span>${link ? `<a class="btn ghost noprint" href="${esc(link)}" target="_blank" rel="noopener nofollow">Track package ↗</a>` : ''}</div>` : ''}
+  ${o.tracking_number ? `<div class="trackbox">:ic-package: <span><b>${esc(o.tracking_carrier || 'Tracking number')}</b> · ${esc(o.tracking_number)}</span>${link ? `<a class="btn ghost noprint" href="${esc(link)}" target="_blank" rel="noopener nofollow">Track package ↗</a>` : ''}</div>` : ''}
   <div class="cartwrap"><div><div class="citems">${items.map((i) => `<div class="citem oi"><div class="cinfo"><b>${esc(i.name)}</b><small class="muted">${money(i.price_cents)} × ${i.qty}</small></div><b class="ctotal">${money(i.price_cents * i.qty)}</b></div>`).join('')}</div>
   ${o.notes ? `<p class="muted"><em>Notes: ${esc(o.notes)}</em></p>` : ''}</div>
   <aside class="summary">${totalsHtml({ sub: o.subtotal_cents, disc: o.discount_cents, code: o.promo_code, ship: o.shipping_cents, tax: o.tax_cents, taxLabel: o.tax_label, total: o.total_cents, refunded: o.refunded_cents })}
     <div><h3 style="margin:0 0 4px">${kind === 'Delivery' ? 'Delivering to' : kind === 'Pickup' ? 'Pickup' : 'Sold at'}</h3><p style="margin:0">${esc(o.name)}<br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br><span class="muted">${esc(o.email)} ${esc(o.phone)}</span></p>${o.payment_method ? `<p class="muted" style="margin:6px 0 0">Paid by ${esc(o.payment_method)}</p>` : ''}</div>
-    ${admin === 'ro' ? '<button class="btn ghost noprint" id="printbtn" type="button">🖨 Print</button>' : admin ? `<form class="stack" id="status"><label>Status<select name="status">${STATUSES.map((s) => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select></label><button class="btn alt">Update status</button></form>
-    <form class="stack" id="trackform"><label>Carrier<select name="carrier">${['', ...Object.keys(CARRIERS), 'Other'].map((c) => `<option value="${c}" ${c === (o.tracking_carrier || '') ? 'selected' : ''}>${c || '— none —'}</option>`).join('')}</select></label><label>Tracking number<input name="number" maxlength="60" value="${esc(o.tracking_number || '')}"></label><button class="btn ghost">Save tracking</button></form><button class="btn ghost noprint" id="printbtn" type="button">🖨 Print / packing slip</button>`
-      : `<div class="row noprint"><button class="btn ghost" id="printbtn" type="button">🖨 Print invoice</button><button class="btn" id="reorder" type="button" data-items="${esc(JSON.stringify(items.filter((i) => i.product_id).map((i) => [i.product_id, i.qty])))}">↻ Order again</button></div>`}</aside></div>`;
+    ${admin === 'ro' ? '<button class="btn ghost noprint" id="printbtn" type="button">:ic-print: Print</button>' : admin ? `<form class="stack" id="status"><label>Status<select name="status">${STATUSES.map((s) => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('')}</select></label><button class="btn alt">Update status</button></form>
+    <form class="stack" id="trackform"><label>Carrier<select name="carrier">${['', ...Object.keys(CARRIERS), 'Other'].map((c) => `<option value="${c}" ${c === (o.tracking_carrier || '') ? 'selected' : ''}>${c || '— none —'}</option>`).join('')}</select></label><label>Tracking number<input name="number" maxlength="60" value="${esc(o.tracking_number || '')}"></label><button class="btn ghost">Save tracking</button></form><button class="btn ghost noprint" id="printbtn" type="button">:ic-print: Print / packing slip</button>`
+      : `<div class="row noprint"><button class="btn ghost" id="printbtn" type="button">:ic-print: Print invoice</button><button class="btn" id="reorder" type="button" data-items="${esc(JSON.stringify(items.filter((i) => i.product_id).map((i) => [i.product_id, i.qty])))}">:ic-refresh: Order again</button></div>`}</aside></div>`;
 };
 pages.order = async ([id], q) => {
   if (q.get('paid')) flash('Payment received. Thank you! Your order will update to "paid" in a moment.');
@@ -425,7 +440,7 @@ pages.order.after = () => {
     setCart(cart); flash(added ? `Added ${added} item${added === 1 ? '' : 's'} to your cart${skipped ? ` (${skipped} no longer available)` : ''}.` : 'Those items are no longer available.', added ? 'ok' : 'error'); if (added) location.hash = '#/cart';
   });
 };
-pages.track = (a, q) => `<div class="authcard"><div class="authicon">📦</div><h1>Track your order</h1><p class="muted">Enter your order number and the email you used when ordering.</p>
+pages.track = (a, q) => `<div class="authcard"><div class="authicon">:ic-package:</div><h1>Track your order</h1><p class="muted">Enter your order number and the email you used when ordering.</p>
   <form id="trk" class="stack"><label>Order number<input name="oid" inputmode="numeric" required placeholder="e.g. 1042" value="${esc(q.get('order') || '')}"></label><label>Email<input name="email" type="email" required autocomplete="email"></label><button class="btn block">Find my order</button></form></div><div id="trkout" style="margin-top:24px"></div>`;
 pages.track.after = () => document.getElementById('trk')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const out = document.getElementById('trkout');
@@ -434,12 +449,12 @@ pages.track.after = () => document.getElementById('trk')?.addEventListener('subm
   out.innerHTML = orderHtml(data, data.items, false); pages.order.after();
 });
 
-const authForm = (reg) => `<div class="authcard"><div class="authicon">${reg ? '✨' : '👋'}</div><h1>${reg ? 'Create your account' : 'Welcome back'}</h1><p class="muted" style="margin-top:-6px">${reg ? 'Track orders, save addresses and message our team.' : 'Log in to see your orders and messages.'}</p><form id="auth" class="stack">
-  ${reg ? '<label>Name<input name="name" required></label>' : ''}<label>Email<input type="email" name="email" required></label>
+const authForm = (reg) => `<div class="authcard"><div class="authicon">${reg ? ':ic-star:' : ':ic-smile:'}</div><h1>${reg ? 'Create your account' : 'Welcome back'}</h1><p class="muted" style="margin-top:-6px">${reg ? 'Track orders, save addresses and message our team.' : 'Log in to see your orders and messages.'}</p><form id="auth" class="stack">
+  ${reg ? '<label>Name<input name="name" required autocomplete="name"></label><label>Username<input name="username" required minlength="3" maxlength="30" pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{2,29}" autocomplete="username" placeholder="e.g. sam_builds" autocapitalize="none" spellcheck="false"><small id="unhint" class="muted">3–30 letters, numbers, dots, dashes or underscores</small></label><label>Email<input type="email" name="email" required autocomplete="email"></label>' : '<label>Email or username<input name="email" required autocomplete="username" autocapitalize="none" spellcheck="false"></label>'}
   <label>Password<input type="password" name="password" required minlength="${reg ? 8 : 1}"></label><button class="btn block">${reg ? 'Sign up' : 'Log in'}</button></form>
   ${reg ? '' : '<p><a href="#/forgot">Forgot your password?</a></p>'}
   <p>${reg ? 'Have an account? <a href="#/login">Log in</a>' : 'New here? <a href="#/register">Create an account</a>'}</p></div>`;
-pages.forgot = () => `<div class="authcard"><div class="authicon">🔑</div><h1>Reset your password</h1><p class="muted">Enter your email and we'll send you a link to choose a new password.</p>
+pages.forgot = () => `<div class="authcard"><div class="authicon">:ic-key:</div><h1>Reset your password</h1><p class="muted">Enter your email and we'll send you a link to choose a new password.</p>
   <form id="ff" class="stack"><label>Email<input type="email" name="email" required autocomplete="email"></label><button class="btn">Send reset link</button></form><p><a href="#/login">Back to log in</a></p></div>`;
 pages.forgot.after = () => document.getElementById('ff')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const email = new FormData(e.target).get('email').trim();
@@ -457,14 +472,33 @@ pages.reset.after = () => document.getElementById('rp')?.addEventListener('submi
   if (error) return fail(error); flash('Password updated.'); location.hash = '#/account';
 });
 pages.login = () => authForm(false); pages.register = () => authForm(true);
-const authAfter = (reg) => () => document.getElementById('auth')?.addEventListener('submit', async (e) => {
-  e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
-  const r = reg ? await sb.auth.signUp({ email: f.email, password: f.password, options: { data: { name: f.name } } })
-    : await sb.auth.signInWithPassword({ email: f.email, password: f.password });
-  if (r.error) return fail(r.error);
-  if (reg && !r.data.session) { flash('Check your email to confirm your account, then log in.'); return (location.hash = '#/login'); }
-  await loadSession(); flash(reg ? 'Welcome! Your account is ready.' : 'Logged in.'); location.hash = '#/account';
-});
+const UN_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{2,29}$/;
+const checkUsername = async (u, hint) => {
+  if (!UN_RE.test(u)) { hint.textContent = u ? '3–30 letters, numbers, dots, dashes or underscores — start with a letter or number' : ''; hint.className = 'muted'; return false; }
+  const { data } = await sb.rpc('username_available', { u }); hint.innerHTML = data ? `:ic-check: @${esc(u)} is available` : `:ic-x-circle: @${esc(u)} is taken or reserved`; hint.className = data ? 'up' : 'down'; return !!data;
+};
+const edgeError = async (error, data) => { let m = data?.error; if (!m && error?.context?.json) { try { m = (await error.context.json()).error; } catch {} } return m || (error?.context?.status === 404 ? "Username sign-in isn't available yet — please use your email address." : error?.message) || 'Could not sign in.'; };
+const authAfter = (reg) => () => {
+  const hint = document.getElementById('unhint'), un = document.querySelector('#auth [name=username]'); let t = null;
+  un?.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => checkUsername(un.value.trim(), hint), 300); });
+  document.getElementById('auth')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), btn = e.target.querySelector('button'); btn.disabled = true; let r;
+    try {
+      if (reg) {
+        if (!(await checkUsername(f.username.trim(), hint))) return fail(new Error('Please choose a different username.'));
+        r = await sb.auth.signUp({ email: f.email.trim(), password: f.password, options: { data: { name: f.name, username: f.username.trim() } } });
+      } else if (f.email.includes('@')) r = await sb.auth.signInWithPassword({ email: f.email.trim(), password: f.password });
+      else {
+        const { data, error } = await sb.functions.invoke('username-login', { body: { identifier: f.email.trim(), password: f.password } });
+        if (!data?.access_token) return fail(new Error(await edgeError(error, data)));
+        r = await sb.auth.setSession({ access_token: data.access_token, refresh_token: data.refresh_token });
+      }
+      if (r.error) return fail(r.error);
+      if (reg && !r.data.session) { flash('Check your email to confirm your account, then log in with your email or username.'); return (location.hash = '#/login'); }
+      await loadSession(); flash(reg ? 'Welcome! Your account is ready.' : 'Logged in.'); location.hash = '#/account';
+    } finally { btn.disabled = false; }
+  });
+};
 pages.login.after = authAfter(false); pages.register.after = authAfter(true);
 
 const ordersTable = (os, base, locNames) => os.length ? `<table><tr><th>Order</th><th>Date</th>${locNames ? '<th>Location</th>' : ''}<th>Status</th><th>Total</th></tr>${os.map((o) => `<tr><td><a href="${base}/${o.id}">#${o.id}</a>${base.includes('admin') ? ' · ' + esc(o.name) : ''}</td><td>${dateOf(o.created_at)}</td>${locNames ? `<td>${esc(locNames[o.location_id] || '')}${o.source === 'in_store' ? ' · in store' : o.fulfillment === 'pickup' ? ' · pickup' : ''}</td>` : ''}<td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}</td></tr>`).join('')}</table>` : '<p>No orders yet.</p>';
@@ -474,14 +508,18 @@ pages.account = async () => {
   const { data } = await sb.from('orders').select('*').eq('user_id', session.user.id).order('id', { ascending: false });
   const addrs = (await sb.from('addresses').select('*').order('is_default', { ascending: false }).order('id')).data;
   const wl = getWish().length;
-  return `<div class="acchead">${avatar(profile?.name || 'U')}<div><h1 style="margin:0">${esc(profile?.name || 'My account')}</h1><span class="muted">${esc(session.user.email)}</span></div></div>
-  <div class="attn"><a class="attnc" href="#/account"><span>🧾</span><b>${data.length}</b><small>orders</small></a><a class="attnc ${unread.msg ? 'on' : ''}" href="#/messages"><span>💬</span><b>${unread.msg}</b><small>unread messages</small></a><a class="attnc ${unread.all ? 'on' : ''}" href="#/notifications"><span>🔔</span><b>${unread.all}</b><small>notifications</small></a><a class="attnc" href="#/wishlist"><span>♡</span><b>${wl}</b><small>saved items</small></a></div>
+  const myInv = (await sb.from('invoices').select('id,number,due_date,status,total_cents,paid_cents').eq('customer_id', session.user.id).order('id', { ascending: false })).data || [];
+  return `<div class="acchead">${avatar(profile?.name || 'U')}<div><h1 style="margin:0">${esc(profile?.name || 'My account')}</h1><span class="muted">${profile?.username ? `@${esc(profile.username)} · ` : ''}${esc(session.user.email)}</span></div></div>
+  ${profile?.username ? '' : '<p class="flash ok" style="margin:0 0 14px">:ic-smile: Choose a username below — you can then log in with it instead of your email.</p>'}
+  <div class="attn"><a class="attnc" href="#/account"><span>:ic-receipt:</span><b>${data.length}</b><small>orders</small></a><a class="attnc ${unread.msg ? 'on' : ''}" href="#/messages"><span>:ic-chat:</span><b>${unread.msg}</b><small>unread messages</small></a><a class="attnc ${unread.all ? 'on' : ''}" href="#/notifications"><span>:ic-bell:</span><b>${unread.all}</b><small>notifications</small></a><a class="attnc" href="#/wishlist"><span>:ic-heart:</span><b>${wl}</b><small>saved items</small></a></div>
   <section class="cs"><h3>Order history</h3>${ordersTable(data, '#/order')}</section>
+  ${myInv.length ? `<section class="cs"><h3>Invoices</h3><table><tr><th>Invoice</th><th>Due</th><th>Total</th><th>Balance</th><th>Status</th></tr>${myInv.map((i) => `<tr><td><a href="#/invoice/${i.id}"><b>${esc(i.number)}</b></a></td><td>${esc(i.due_date)}</td><td>${money(i.total_cents)}</td><td>${money(invBal(i))}</td><td><span class="status ${invEff(i) === 'overdue' ? 'cancelled' : invEff(i)}">${invEff(i)}</span></td></tr>`).join('')}</table></section>` : ''}
   <section class="cs"><h3>Saved addresses</h3>${addrs.length ? addrs.map((a) => `<div class="addr"><b>${esc(a.label)}</b>${a.is_default ? ' <span class="status paid">default</span>' : ''}<br>${esc(a.name)}<br>${esc(a.address)}, ${esc(a.city)} ${esc(a.postcode)}${a.phone ? '<br>' + esc(a.phone) : ''}<br>
   ${a.is_default ? '' : `<button class="link defaddr" data-id="${a.id}" style="color:var(--brand)">Make default</button> · `}<button class="link deladdr" data-id="${a.id}" style="color:var(--err)">Delete</button></div>`).join('') : '<p class="muted">No saved addresses yet.</p>'}
   <details class="more"><summary>+ Add an address</summary><form id="af" class="stack narrow" style="margin-top:10px"><label>Label<input name="label" value="Home" maxlength="60"></label><label>Full name<input name="name" required value="${esc(profile?.name || '')}"></label><label>Phone<input name="phone"></label>
   <label>Address<input name="address" required></label><label>City<input name="city" required></label><label>Postal / ZIP code<input name="postcode" required></label>
   <label class="check"><input type="checkbox" name="is_default" ${addrs.length ? '' : 'checked'}> Make this my default</label><button class="btn">Save address</button></form></details></section>
+  <section class="cs"><h3>Username</h3><form id="unform" class="stack narrow"><label>${profile?.username ? 'Your username' : 'Choose a username'}<input name="username" value="${esc(profile?.username || '')}" required minlength="3" maxlength="30" pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{2,29}" autocomplete="username" autocapitalize="none" spellcheck="false"><small id="unhint" class="muted">3–30 letters, numbers, dots, dashes or underscores. You can log in with this or your email.</small></label><button class="btn ghost">Save username</button></form></section>
   <section class="cs"><h3>Password</h3><form id="cpw" class="row"><input type="password" name="password" minlength="8" placeholder="New password (8+ characters)" autocomplete="new-password" required><button class="btn ghost">Change password</button></form></section>`;
 };
 
@@ -517,13 +555,13 @@ const fieldHtml = (f) => {
 let CURFORM = null;
 pages.form = async ([slug]) => {
   const { data: f } = await sb.from('forms').select('*').eq('slug', slug).eq('active', true).maybeSingle();
-  if (!f) return '<h1>Form not found</h1><p><a href="#/">Back home</a></p>';
+  if (!f) return '<div class="formcard"><h1>Form not found</h1><p><a href="#/">Back home</a></p></div>';
   const st = (await sb.rpc('form_status', { form_slug: slug })).data || { open: true };
-  const head = `<h1>${esc(f.title)}</h1>${f.description ? `<p class="muted" style="white-space:pre-wrap">${esc(f.description)}</p>` : ''}`;
-  if (!st.open) return `<div class="narrow">${head}<p class="flash error" style="margin-top:0">${st.reason === 'full' ? 'This form has reached its response limit.' : 'This form is closed and is no longer accepting responses.'}</p></div>`;
-  if (f.require_login && !session) return `<div class="narrow">${head}<p>Please <a href="#/login">log in</a> or <a href="#/register">create an account</a> to fill in this form.</p></div>`;
+  const head = `<div class="fhdr"><h1>${esc(f.title)}</h1>${f.description ? `<p class="muted" style="white-space:pre-wrap;margin:6px 0 0">${esc(f.description)}</p>` : ''}${f.closes_at && st.open ? `<p class="muted" style="margin:8px 0 0;font-size:.88rem">:ic-clock: Open until ${new Date(f.closes_at).toLocaleString()}</p>` : ''}</div>`;
+  if (!st.open) return `<div class="formcard">${head}<p class="flash error" style="margin:0">${st.reason === 'full' ? 'This form has reached its response limit.' : 'This form is closed and is no longer accepting responses.'}</p></div>`;
+  if (f.require_login && !session) return `<div class="formcard">${head}<p style="margin:0">Please <a href="#/login">log in</a> or <a href="#/register">create an account</a> to fill in this form.</p></div>`;
   CURFORM = f;
-  return `<div class="narrow">${head}${f.closes_at ? `<p class="muted">Open until ${new Date(f.closes_at).toLocaleString()}</p>` : ''}<form id="cf2" class="stack" data-slug="${esc(f.slug)}" data-ok="${esc(f.success_message)}">${f.fields.map(fieldHtml).join('')}<button class="btn">${esc(f.submit_label || 'Submit')}</button></form></div>`;
+  return `<div class="formcard">${head}<form id="cf2" class="stack" data-slug="${esc(f.slug)}" data-ok="${esc(f.success_message)}">${f.fields.map(fieldHtml).join('')}<button class="btn block">${esc(f.submit_label || 'Submit')}</button></form></div>`;
 };
 pages.form.after = () => document.getElementById('cf2')?.addEventListener('submit', async (e) => {
   e.preventDefault(); const form = e.target, answers = {}; const btn = form.querySelector('button'); btn.disabled = true;
@@ -547,11 +585,11 @@ pages.form.after = () => document.getElementById('cf2')?.addEventListener('submi
   }
   const { error } = await sb.rpc('submit_form', { form_slug: form.dataset.slug, answers });
   btn.disabled = false; if (error) return fail(error);
-  form.outerHTML = `<p class="flash ok" style="margin-top:0">${esc(form.dataset.ok)}</p>`;
+  form.outerHTML = `<div class="fdone"><div class="authicon">:ic-check-circle:</div><h2 style="margin:0">${esc(form.dataset.ok)}</h2><p class="muted" style="margin:0">Your response has been received.</p></div>`;
 });
 pages.wishlist = async () => {
   await loadRatings();
-  const ids = getWish(); if (!ids.length) return '<h1>Wishlist</h1><p>Nothing saved yet. Tap the ♡ on a product.</p>';
+  const ids = getWish(); if (!ids.length) return '<h1>Wishlist</h1><p>Nothing saved yet. Tap the :ic-heart: on a product.</p>';
   const { data } = await sb.from('products').select('*').in('id', ids).eq('active', true);
   return `<h1>Wishlist</h1><div class="grid">${data.map(card).join('')}</div>`;
 };
@@ -566,6 +604,12 @@ pages.quote.after = () => document.getElementById('qf')?.addEventListener('submi
 });
 
 pages.account.after = () => {
+  const un = document.querySelector('#unform [name=username]'), hint = document.getElementById('unhint'); let ut = null;
+  un?.addEventListener('input', () => { clearTimeout(ut); ut = setTimeout(() => { if (un.value.trim().toLowerCase() !== (profile?.username || '').toLowerCase()) checkUsername(un.value.trim(), hint); }, 300); });
+  document.getElementById('unform')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const v = un.value.trim(); if (v === profile?.username) return;
+    const { error } = await sb.rpc('set_username', { u: v }); if (error) return fail(error); await loadSession(); flash('Username saved.'); route();
+  });
   document.getElementById('cpw')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const { error } = await sb.auth.updateUser({ password: new FormData(e.target).get('password') });
     error ? fail(error) : (flash('Password changed.'), e.target.reset());
@@ -591,27 +635,31 @@ const salesChart = (orders) => {
 const RESP_STATUS = { new: 'New', in_progress: 'In progress', done: 'Done' };
 let FB = null, PG = null;
 const SECTION_PERM = { orders: 'orders.view', products: 'catalog.manage', inventory: 'inventory.view', locations: 'inventory.view', sales: 'reports.view', pos: 'pos', customers: 'customers.view', forms: 'content.manage', pages: 'content.manage', codes: 'content.manage',
-  compare: 'catalog.manage', purchasing: 'purchasing.view', suppliers: 'purchasing.view', invoices: 'invoices.view', team: 'team.manage', settings: 'team.manage', activity: 'team.manage', quotes: 'customers.view', estimates: 'invoices.view' };
+  compare: 'catalog.manage', purchasing: 'purchasing.view', suppliers: 'purchasing.view', invoices: 'invoices.view', team: 'team.manage', settings: 'team.manage', activity: 'team.manage', quotes: 'customers.view', estimates: 'invoices.view', seo: 'content.manage', statements: 'invoices.view', expenses: 'expenses.view', profit: 'expenses.view' };
 const ROLES = { owner: 'Owner — full access, including who is an admin', admin: 'Admin — full access (cannot change owners/admins)', manager: 'Manager — orders, refunds, products, inventory, purchasing, content, customers, reports',
   staff: 'Staff — in-store sales (POS), view orders, customers and stock, messages', warehouse: 'Warehouse — pick & ship orders, manage stock and purchase orders', accountant: 'Accountant — invoicing, reports, view orders and customers',
   support: 'Support — messages, view orders and customers', customer: 'Customer — no admin access' }; // form being edited in the builder
 const form_inv = (f) => [...f.querySelectorAll('input[name^="inv_"]')];
 const slugify = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 const formUrl = (slug) => `${location.origin}${location.pathname}#/form/${slug}`;
+const TYPE_ICON = { text: 'edit', textarea: 'file', email: 'mail', tel: 'chat', url: 'link', number: 'chart', date: 'clock', time: 'clock', select: 'chevron-down', radio: 'check-circle', multi: 'clipboard', checkbox: 'check', rating: 'star', file: 'image', heading: 'tag', paragraph: 'file', divider: 'menu' };
+const shortType = (t) => FIELD_TYPES[t].replace(/ \(.*\)$/, '');
 function fieldRows() {
   const NUMERIC = ['text', 'textarea', 'email', 'tel', 'url', 'number'];
-  return FB.fields.map((f, i) => `<div class="fld" data-i="${i}"><div class="row">
-    ${f.type === 'paragraph' ? `<textarea data-f="label" rows="2" placeholder="Text to show" style="flex:1;min-width:160px">${esc(f.label)}</textarea>` : `<input data-f="label" value="${esc(f.label)}" placeholder="${f.type === 'heading' ? 'Heading text' : 'Question'}" style="flex:1;min-width:160px">`}
-    <select data-f="type">${Object.entries(FIELD_TYPES).map(([k, l]) => `<option value="${k}" ${k === f.type ? 'selected' : ''}>${l}</option>`).join('')}</select>
-    ${DISPLAY_TYPES.includes(f.type) ? '' : `<label class="check"><input type="checkbox" data-f="required" ${f.required ? 'checked' : ''}> Required</label>`}
-    <button type="button" class="btn ghost" data-act="up" aria-label="Move up">↑</button><button type="button" class="btn ghost" data-act="down" aria-label="Move down">↓</button>
-    <button type="button" class="btn ghost" data-act="del" aria-label="Delete question" style="color:var(--err)">✕</button></div>
-    ${CHOICE_TYPES.includes(f.type) ? `<textarea data-f="options" rows="3" placeholder="One option per line" style="width:100%;margin-top:8px">${esc((f.options || []).join('\n'))}</textarea>` : ''}
-    ${DISPLAY_TYPES.includes(f.type) ? '' : `<details class="more"><summary>More options</summary><div class="row" style="margin-top:8px">
+  return FB.fields.map((f, i) => { const disp = DISPLAY_TYPES.includes(f.type);
+    return `<div class="fld" data-i="${i}"><div class="fldtop"><span class="fnum">${i + 1}</span>
+    ${f.type === 'paragraph' ? `<textarea class="flabel" data-f="label" rows="2" placeholder="Text to show">${esc(f.label)}</textarea>` : `<input class="flabel" data-f="label" value="${esc(f.label)}" placeholder="${f.type === 'heading' ? 'Heading text' : 'Type your question'}" aria-label="Question">`}
+    <select data-f="type" class="ftype" aria-label="Question type">${Object.entries(FIELD_TYPES).map(([k, l]) => `<option value="${k}" ${k === f.type ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    ${CHOICE_TYPES.includes(f.type) ? `<label class="opts"><span class="muted">Choices — one per line</span><textarea data-f="options" rows="${Math.min(6, Math.max(3, (f.options || []).length + 1))}" placeholder="Option 1&#10;Option 2">${esc((f.options || []).join('\n'))}</textarea></label>` : ''}
+    <div class="fldbar">${disp ? '<span class="muted">Display only — visitors don’t answer this</span>' : `<label class="switch"><input type="checkbox" data-f="required" ${f.required ? 'checked' : ''}><span class="track"></span><span>Required</span></label>`}<span class="grow"></span>
+      <button type="button" class="ibtn" data-act="up" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>:ic-arrow-up:</button><button type="button" class="ibtn" data-act="down" aria-label="Move down" ${i === FB.fields.length - 1 ? 'disabled' : ''}>:ic-arrow-down:</button>
+      <button type="button" class="ibtn" data-act="dup" aria-label="Duplicate question" title="Duplicate">:ic-clipboard:</button><button type="button" class="ibtn danger" data-act="del" aria-label="Delete question" title="Delete">:ic-x:</button></div>
+    ${disp ? '' : `<details class="more"><summary>More options</summary><div class="row" style="margin-top:8px">
       <input data-f="help" value="${esc(f.help || '')}" placeholder="Help text (shown under the question)" style="flex:1;min-width:200px">
       ${NUMERIC.includes(f.type) && f.type !== 'number' ? `<input data-f="placeholder" value="${esc(f.placeholder || '')}" placeholder="Placeholder">` : ''}
       ${f.type === 'number' ? `<input data-f="min" type="number" step="any" value="${esc(f.min ?? '')}" placeholder="Min" style="width:100px"><input data-f="max" type="number" step="any" value="${esc(f.max ?? '')}" placeholder="Max" style="width:100px">` : ''}
-      ${['text', 'textarea', 'email', 'tel', 'url'].includes(f.type) ? `<input data-f="maxlength" type="number" min="1" max="5000" value="${esc(f.maxlength ?? '')}" placeholder="Max length" style="width:120px">` : ''}</div></details>`}</div>`).join('') || '<p class="muted">No questions yet. Add one below.</p>';
+      ${['text', 'textarea', 'email', 'tel', 'url'].includes(f.type) ? `<input data-f="maxlength" type="number" min="1" max="5000" value="${esc(f.maxlength ?? '')}" placeholder="Max length" style="width:120px">` : ''}</div></details>`}</div>`; }).join('')
+    || '<div class="emptyq">:ic-clipboard:<p><b>No questions yet</b></p><p class="muted">Pick a question type below to get started.</p></div>';
 }
 const toLocalInput = (d) => { const t = new Date(d); return new Date(t - t.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
 pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
@@ -630,38 +678,53 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
       ${remaining > 0 && can('orders.refund') ? `<form id="refundform" class="row"><input name="amount" type="number" step="0.01" min="0.01" max="${(remaining / 100).toFixed(2)}" placeholder="Amount (up to ${money(remaining)})" required style="width:210px"><input name="reason" maxlength="300" placeholder="Reason" style="flex:1;min-width:160px"><button class="btn ghost" style="color:var(--err)">Issue refund</button></form><small class="muted">Recording a refund doesn't move money — refund the customer through your payment provider, then record it here. It lowers your revenue reports.</small>` : '<p class="muted" style="margin:0">Fully refunded.</p>'}</section>`;
   }
   if (sub === 'forms' && id && extra === 'responses') {
-    const f = (await sb.from('forms').select('*').eq('id', id).single()).data;
-    const all = (await sb.from('form_submissions').select('*').eq('form_id', id).order('id', { ascending: false })).data;
-    const filter = q.get('status') || '', rows = filter ? all.filter((r) => r.status === filter) : all;
-    const cnt = (st) => all.filter((r) => r.status === st).length;
-    return `<h1>${esc(f.title)} — responses</h1><p><a href="#/admin/forms">← All forms</a> · <button class="btn ghost" id="fcsv" data-id="${f.id}">⬇ Export CSV</button></p>
-    <div class="chips"><a class="chip ${!filter ? 'on' : ''}" href="#/admin/forms/${f.id}/responses">All (${all.length})</a>${Object.entries(RESP_STATUS).map(([k, l]) => `<a class="chip ${filter === k ? 'on' : ''}" href="#/admin/forms/${f.id}/responses?status=${k}">${l} (${cnt(k)})</a>`).join('')}</div>
-    ${rows.length ? `<table><tr><th>Received</th>${dataFields(f).map((x) => `<th>${esc(x.label)}</th>`).join('')}<th>Status</th><th>Notes</th><th></th></tr>${rows.map((r) => `<tr><td>${dateOf(r.created_at)}</td>${dataFields(f).map((x) => x.type === 'file' ? `<td>${r.data[x.id] ? `<button class="link dlfile" data-path="${esc(r.data[x.id])}" style="color:var(--brand)">⬇ ${esc(r.data[x.id].split('/').pop().replace(/^[0-9a-f-]{36}-/, ''))}</button>` : ''}</td>` : `<td style="white-space:pre-wrap">${esc(showVal(x, r.data[x.id]))}</td>`).join('')}<td><select class="rstatus" data-id="${r.id}" aria-label="Status">${Object.entries(RESP_STATUS).map(([k, l]) => `<option value="${k}" ${k === r.status ? 'selected' : ''}>${l}</option>`).join('')}</select></td><td><textarea class="rnotes" data-id="${r.id}" rows="2" maxlength="5000" placeholder="Add a note…" aria-label="Notes">${esc(r.notes)}</textarea></td><td><button class="link delresp" data-id="${r.id}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No responses yet.</p>'}`;
+    const f = (await sb.from('forms').select('*').eq('id', id).single()).data, view = q.get('view') === 'table' ? 'table' : 'cards';
+    const all = (await sb.from('form_submissions').select('*').eq('form_id', id).order('id', { ascending: false })).data || [];
+    const filter = q.get('status') || '', rows = filter ? all.filter((r) => r.status === filter) : all, cnt = (st) => all.filter((r) => r.status === st).length, df = dataFields(f);
+    const nameOf = (r) => { const fl = df.find((x) => ['text', 'email'].includes(x.type) && r.data[x.id]); return fl ? r.data[fl.id] : `Response #${r.id}`; };
+    const statusSel = (r) => `<select class="rstatus" data-id="${r.id}" aria-label="Status">${Object.entries(RESP_STATUS).map(([k, l]) => `<option value="${k}" ${k === r.status ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+    const answer = (x, v) => (x.type === 'file' ? `<button class="link dlfile" data-path="${esc(v)}" style="color:var(--brand)">:ic-download: ${esc(String(v).split('/').pop().replace(/^[0-9a-f-]{36}-/, ''))}</button>` : esc(showVal(x, v)));
+    const link = (extra2) => { const n = new URLSearchParams(q); Object.entries(extra2).forEach(([k, v]) => (v ? n.set(k, v) : n.delete(k))); const t = n.toString(); return `#/admin/forms/${f.id}/responses${t ? '?' + t : ''}`; };
+    const cardsHtml = rows.map((r) => `<article class="rcard"><div class="rhead"><div><b>${esc(nameOf(r))}</b><br><small class="muted" title="${esc(dateOf(r.created_at))}">${ago(r.created_at)}</small></div><div class="row" style="flex-wrap:nowrap">${statusSel(r)}<button class="link delresp" data-id="${r.id}" style="color:var(--err)" aria-label="Delete response">:ic-x:</button></div></div>
+      <dl class="ans">${df.map((x) => (r.data[x.id] == null || r.data[x.id] === '' ? '' : `<div class="${x.type === 'textarea' ? 'wide' : ''}"><dt>${esc(x.label)}</dt><dd>${answer(x, r.data[x.id])}</dd></div>`)).join('')}</dl>
+      <textarea class="rnotes" data-id="${r.id}" rows="2" maxlength="5000" placeholder="Add a private note…" aria-label="Notes">${esc(r.notes)}</textarea></article>`).join('');
+    const tableHtml = `<table><tr><th>Received</th>${df.map((x) => `<th>${esc(x.label)}</th>`).join('')}<th>Status</th><th>Notes</th><th></th></tr>${rows.map((r) => `<tr><td>${dateOf(r.created_at)}</td>${df.map((x) => `<td style="white-space:pre-wrap">${r.data[x.id] ? answer(x, r.data[x.id]) : ''}</td>`).join('')}<td>${statusSel(r)}</td><td><textarea class="rnotes" data-id="${r.id}" rows="2" maxlength="5000" placeholder="Add a note…" aria-label="Notes">${esc(r.notes)}</textarea></td><td><button class="link delresp" data-id="${r.id}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>`;
+    return `<div class="dashhead"><div><h1 style="margin:0">${esc(f.title)}</h1><p class="muted" style="margin:2px 0 0">${all.length} response${all.length === 1 ? '' : 's'} · ${cnt('new')} new</p></div><div class="row"><a class="btn ghost" href="#/admin/forms">← All forms</a><a class="btn ghost" href="#/admin/forms/${f.id}">:ic-edit: Edit form</a><button class="btn ghost" id="fcsv" data-id="${f.id}">:ic-download: Export CSV</button></div></div>
+    <div class="row" style="justify-content:space-between;margin-bottom:12px"><div class="chips" style="margin:0"><a class="chip ${!filter ? 'on' : ''}" href="${link({ status: '' })}">All (${all.length})</a>${Object.entries(RESP_STATUS).map(([k, l]) => `<a class="chip ${filter === k ? 'on' : ''}" href="${link({ status: k })}">${l} (${cnt(k)})</a>`).join('')}</div>
+      <div class="seg"><a class="${view === 'cards' ? 'on' : ''}" href="${link({ view: '' })}">Cards</a><a class="${view === 'table' ? 'on' : ''}" href="${link({ view: 'table' })}">Table</a></div></div>
+    ${rows.length ? (view === 'table' ? tableHtml : `<div class="rgrid">${cardsHtml}</div>`) : `<div class="emptyq">:ic-clipboard:<p><b>${all.length ? 'No responses with this status' : 'No responses yet'}</b></p><p class="muted">${all.length ? 'Try another filter.' : 'Share the form link to start collecting responses.'}</p></div>`}`;
   }
   if (sub === 'forms' && id) {
     const f = id === 'new' ? { title: '', slug: '', description: '', success_message: 'Thanks! We received your response.', active: true, notify: true, submit_label: 'Submit', closes_at: null, max_responses: null, require_login: false, fields: [] } : (await sb.from('forms').select('*').eq('id', id).single()).data;
-    FB = { ...f, fields: (f.fields || []).map((x) => ({ ...x })) };
-    return `<h1>${f.id ? 'Edit form' : 'New form'}</h1><div class="narrow stack" id="fbuilder">
-    <label>Title<input id="fb_title" value="${esc(f.title)}" maxlength="200"></label>
-    <label>Link name<input id="fb_slug" value="${esc(f.slug)}" maxlength="60" placeholder="auto from title (letters, numbers, dashes)"></label>
-    <label>Description (optional)<textarea id="fb_desc" rows="3" maxlength="2000">${esc(f.description)}</textarea></label>
-    <label>Message shown after submitting<input id="fb_ok" value="${esc(f.success_message)}" maxlength="1000"></label>
-    <label class="check"><input type="checkbox" id="fb_active" ${f.active ? 'checked' : ''}> Published (visible to visitors)</label>
-    <label>Submit button text<input id="fb_submit" value="${esc(f.submit_label || 'Submit')}" maxlength="60"></label>
-    <label>Closes on (optional)<input type="datetime-local" id="fb_closes" value="${f.closes_at ? toLocalInput(f.closes_at) : ''}"></label>
-    <label>Stop accepting after this many responses (optional)<input type="number" id="fb_max" min="1" value="${f.max_responses ?? ''}"></label>
-    <label class="check"><input type="checkbox" id="fb_login" ${f.require_login ? 'checked' : ''}> Require visitors to be logged in</label>
-    <label class="check"><input type="checkbox" id="fb_notify" ${f.notify !== false ? 'checked' : ''}> Email me when someone submits this form</label>
-    <h3 style="margin-bottom:0">Questions</h3><div id="fields">${fieldRows()}</div>
-    <div class="row"><select id="fb_newtype">${Object.entries(FIELD_TYPES).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select><button type="button" class="btn alt" id="fb_add">+ Add question</button></div>
-    <div class="row"><button type="button" class="btn" id="fb_save">Save form</button>${f.id ? `<a class="btn ghost" href="${esc(formUrl(f.slug))}" target="_blank" rel="noopener">View form ↗</a>` : ''}</div>
-    ${f.id ? `<p class="muted">Share this link: <code>${esc(formUrl(f.slug))}</code></p>` : ''}</div>`;
+    FB = { ...f, fields: (f.fields || []).map((x) => ({ ...x })) }; const url = f.slug ? formUrl(f.slug) : '';
+    const sw = (idn, label, on, hint = '') => `<label class="switch row2"><input type="checkbox" id="${idn}" ${on ? 'checked' : ''}><span class="track"></span><span><b>${label}</b>${hint ? `<br><small class="muted">${hint}</small>` : ''}</span></label>`;
+    return `<div class="dashhead"><div><h1 style="margin:0">${f.id ? 'Edit form' : 'New form'}</h1><p class="muted" style="margin:2px 0 0">${f.id ? `Link: <code>${esc(url)}</code>` : 'Add your questions, check the preview, then publish.'}</p></div>
+      <div class="row"><a class="btn ghost" href="#/admin/forms">← All forms</a>${f.id ? `<a class="btn ghost" href="${esc(url)}" target="_blank" rel="noopener">View form ↗</a><a class="btn ghost" href="#/admin/forms/${f.id}/responses">Responses</a>` : ''}</div></div>
+    <div class="fbwrap" id="fbuilder">
+      <div class="fbmain"><section class="cs"><div class="sechead"><h3 style="margin:0">Questions <span class="muted" id="qcount" style="font-weight:400"></span></h3></div><div id="fields">${fieldRows()}</div>
+        <div><div class="muted" style="margin:6px 0 8px;font-weight:600">Add a question</div><div class="palette">${Object.keys(FIELD_TYPES).map((k) => `<button type="button" class="ptype" data-addtype="${k}">:ic-${TYPE_ICON[k]}: ${esc(shortType(k))}</button>`).join('')}</div></div></section></div>
+      <aside class="fbside"><div class="tabs" role="tablist"><button type="button" class="tab on" data-tab="settings" role="tab">Settings</button><button type="button" class="tab" data-tab="preview" role="tab">Preview</button></div>
+        <div id="tab_settings" class="cs"><label>Title<input id="fb_title" value="${esc(f.title)}" maxlength="200" placeholder="e.g. Request a site survey"></label>
+          <label>Link name<input id="fb_slug" value="${esc(f.slug)}" maxlength="60" placeholder="auto from title"><small class="muted">Letters, numbers and dashes — becomes the form’s web address.</small></label>
+          <label>Description <small class="muted">(optional)</small><textarea id="fb_desc" rows="3" maxlength="2000">${esc(f.description)}</textarea></label>
+          <label>Message after submitting<input id="fb_ok" value="${esc(f.success_message)}" maxlength="1000"></label><label>Submit button text<input id="fb_submit" value="${esc(f.submit_label || 'Submit')}" maxlength="60"></label>
+          <div class="two2"><label>Closes on <small class="muted">(optional)</small><input type="datetime-local" id="fb_closes" value="${f.closes_at ? toLocalInput(f.closes_at) : ''}"></label><label>Response limit <small class="muted">(optional)</small><input type="number" id="fb_max" min="1" value="${f.max_responses ?? ''}"></label></div>
+          <div class="switches">${sw('fb_active', 'Published', f.active, 'Visitors can open the form')}${sw('fb_login', 'Require login', f.require_login, 'Only logged-in customers can submit')}${sw('fb_notify', 'Email me new responses', f.notify !== false)}</div></div>
+        <div id="tab_preview" class="cs" hidden><div class="formcard flat" id="fb_preview" inert></div></div></aside></div>
+    <div class="savebar"><button class="btn" id="fb_save" type="button">Save form</button><span class="muted">${f.id ? 'Changes go live as soon as you save.' : 'Nothing is public until you save and publish.'}</span></div>`;
   }
   if (sub === 'forms') {
-    const fs = (await sb.from('forms').select('*').order('id', { ascending: false })).data;
-    const counts = {}; ((await sb.from('form_submissions').select('form_id')).data || []).forEach((r) => (counts[r.form_id] = (counts[r.form_id] || 0) + 1));
-    const fresh = {}; ((await sb.from('form_submissions').select('form_id').eq('status', 'new')).data || []).forEach((r) => (fresh[r.form_id] = (fresh[r.form_id] || 0) + 1));
-    return `<h1>Forms</h1><p><a class="btn" href="#/admin/forms/new">+ New form</a></p>${fs.length ? `<table><tr><th>Form</th><th>Link</th><th>Status</th><th>Responses</th><th></th></tr>${fs.map((f) => `<tr><td><a href="#/admin/forms/${f.id}">${esc(f.title)}</a></td><td><code>#/form/${esc(f.slug)}</code></td><td>${f.active ? 'Published' : 'Draft'}</td><td><a href="#/admin/forms/${f.id}/responses">${counts[f.id] || 0}</a>${fresh[f.id] ? ` <span class="status pending">${fresh[f.id]} new</span>` : ''}</td><td><button class="link delform" data-id="${f.id}" data-title="${esc(f.title)}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No forms yet.</p>'}`;
+    const fs = (await sb.from('forms').select('*').order('id', { ascending: false })).data || [];
+    const counts = {}, fresh = {}; ((await sb.from('form_submissions').select('form_id,status')).data || []).forEach((r) => { counts[r.form_id] = (counts[r.form_id] || 0) + 1; if (r.status === 'new') fresh[r.form_id] = (fresh[r.form_id] || 0) + 1; });
+    const totalNew = Object.values(fresh).reduce((a, v) => a + v, 0);
+    return `<div class="dashhead"><div><h1 style="margin:0">Forms</h1><p class="muted" style="margin:2px 0 0">Contact forms, surveys, site-visit requests — build your own and share the link.</p></div><a class="btn" href="#/admin/forms/new">+ New form</a></div>
+    <div class="kpis"><div class="kpi"><span class="lbl">Forms</span><b>${fs.length}</b></div><div class="kpi"><span class="lbl">Published</span><b>${fs.filter((x) => x.active).length}</b></div><div class="kpi"><span class="lbl">New responses</span><b class="${totalNew ? 'up' : ''}">${totalNew}</b></div></div>
+    ${fs.length ? `<div class="formgrid">${fs.map((f) => `<article class="fcard"><div class="fcardhead"><h3><a href="#/admin/forms/${f.id}">${esc(f.title)}</a></h3><span class="status ${f.active ? 'paid' : ''}">${f.active ? 'Published' : 'Draft'}</span></div>
+      <p class="muted" style="margin:0">${(f.fields || []).filter((x) => !DISPLAY_TYPES.includes(x.type)).length} question${(f.fields || []).filter((x) => !DISPLAY_TYPES.includes(x.type)).length === 1 ? '' : 's'}${f.description ? ' · ' + esc(f.description.slice(0, 70)) + (f.description.length > 70 ? '…' : '') : ''}</p>
+      <div class="flink"><code>#/form/${esc(f.slug)}</code><button type="button" class="btn ghost copyform" data-url="${esc(formUrl(f.slug))}" style="padding:4px 10px;min-height:0">:ic-link: Copy</button></div>
+      <a class="fstat" href="#/admin/forms/${f.id}/responses"><b>${counts[f.id] || 0}</b><span>response${(counts[f.id] || 0) === 1 ? '' : 's'}</span>${fresh[f.id] ? `<span class="status pending">${fresh[f.id]} new</span>` : ''}<span class="grow"></span>:ic-chevron-down:</a>
+      <div class="row"><a class="btn ghost" href="#/admin/forms/${f.id}">:ic-edit: Edit</a><a class="btn ghost" href="#/form/${esc(f.slug)}" target="_blank" rel="noopener">View ↗</a><button class="link dupform" data-id="${f.id}">Duplicate</button><button class="link delform" data-id="${f.id}" data-title="${esc(f.title)}" style="color:var(--err);margin-left:auto">Delete</button></div></article>`).join('')}</div>`
+      : '<div class="emptyq">:ic-clipboard:<p><b>No forms yet</b></p><p class="muted">Create your first form — for example a “Request a quote” or “Book a site visit” form.</p><a class="btn" href="#/admin/forms/new">+ New form</a></div>'}`;
   }
   if (sub === 'pages' && id) {
     const pg = id === 'new' ? { title: '', slug: '', body: '# New page\n\nWrite your content here.', published: false, show_in_nav: false, show_in_footer: true, sort: 0 } : (await sb.from('pages').select('*').eq('id', id).single()).data;
@@ -675,8 +738,8 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
       <label class="check"><input type="checkbox" id="pg_foot" ${pg.show_in_footer ? 'checked' : ''}> Show in footer</label>
       <label class="check">Order <input type="number" id="pg_sort" value="${pg.sort ?? 0}" style="width:80px"></label></div>
       <div class="mdbar row"><button type="button" class="btn ghost" data-md="# ">H1</button><button type="button" class="btn ghost" data-md="## ">H2</button><button type="button" class="btn ghost" data-wrap="**">B</button><button type="button" class="btn ghost" data-wrap="*"><i>I</i></button>
-      <button type="button" class="btn ghost" data-md="- ">• List</button><button type="button" class="btn ghost" data-md="> ">❝ Quote</button><button type="button" class="btn ghost" data-ins="[link text](https://)">🔗 Link</button>
-      <button type="button" class="btn ghost" data-ins="{{button: Label | #/shop}}">Button</button><label class="btn ghost" style="cursor:pointer">🖼 Image<input type="file" id="pg_img" accept="image/jpeg,image/png,image/webp,image/gif" hidden></label></div>
+      <button type="button" class="btn ghost" data-md="- ">• List</button><button type="button" class="btn ghost" data-md="> ">:ic-quote: Quote</button><button type="button" class="btn ghost" data-ins="[link text](https://)">:ic-link: Link</button>
+      <button type="button" class="btn ghost" data-ins="{{button: Label | #/shop}}">Button</button><label class="btn ghost" style="cursor:pointer">:ic-image: Image<input type="file" id="pg_img" accept="image/jpeg,image/png,image/webp,image/gif" hidden></label></div>
       <textarea id="pg_body" rows="18" style="font-family:ui-monospace,Menlo,monospace;font-size:.9rem" maxlength="100000">${esc(pg.body)}</textarea>
       <div class="row"><button type="button" class="btn" id="pg_save">Save page</button>${pg.id ? `<a class="btn ghost" href="#/page/${esc(pg.slug)}" target="_blank" rel="noopener">View ↗</a>` : ''}</div>
       <details class="more"><summary>Formatting help</summary><p class="muted" style="white-space:pre-wrap"># Heading   ## Smaller heading
@@ -687,7 +750,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   }
   if (sub === 'pages') {
     const ps = (await sb.from('pages').select('*').order('sort').order('title')).data;
-    return `<h1>Pages</h1><p><a class="btn" href="#/admin/pages/new">+ New page</a></p>${ps.length ? `<table><tr><th>Page</th><th>Link</th><th>Status</th><th>Menu</th><th>Footer</th><th></th></tr>${ps.map((x) => `<tr><td><a href="#/admin/pages/${x.id}">${esc(x.title)}</a></td><td><code>#/page/${esc(x.slug)}</code></td><td>${x.published ? 'Published' : 'Draft'}</td><td>${x.show_in_nav ? '✓' : ''}</td><td>${x.show_in_footer ? '✓' : ''}</td><td><a href="#/page/${esc(x.slug)}">View</a> · <button class="link delpage" data-id="${x.id}" data-title="${esc(x.title)}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No pages yet.</p>'}`;
+    return `<h1>Pages</h1><p><a class="btn" href="#/admin/pages/new">+ New page</a></p>${ps.length ? `<table><tr><th>Page</th><th>Link</th><th>Status</th><th>Menu</th><th>Footer</th><th></th></tr>${ps.map((x) => `<tr><td><a href="#/admin/pages/${x.id}">${esc(x.title)}</a></td><td><code>#/page/${esc(x.slug)}</code></td><td>${x.published ? 'Published' : 'Draft'}</td><td>${x.show_in_nav ? ':ic-check:' : ''}</td><td>${x.show_in_footer ? ':ic-check:' : ''}</td><td><a href="#/page/${esc(x.slug)}">View</a> · <button class="link delpage" data-id="${x.id}" data-title="${esc(x.title)}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No pages yet.</p>'}`;
   }
   if (sub === 'locations' && id) {
     const l = id === 'new' ? { name: '', kind: 'store', address: '', city: '', postcode: '', phone: '', email: '', hours: '', active: true, pickup_enabled: true, is_default: false } : (await sb.from('locations').select('*').eq('id', id).single()).data;
@@ -706,7 +769,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const ls = (await sb.from('locations').select('*').order('is_default', { ascending: false }).order('name')).data;
     const units = {}; ((await sb.from('inventory').select('location_id,qty')).data || []).forEach((r) => (units[r.location_id] = (units[r.location_id] || 0) + r.qty));
     return `<h1>Locations</h1><p><a class="btn" href="#/admin/locations/new">+ New location</a> <a class="btn ghost" href="#/admin/inventory">Inventory</a></p>
-    <table><tr><th>Name</th><th>Type</th><th>Address</th><th>Units in stock</th><th>Pickup</th><th>Status</th></tr>${ls.map((l) => `<tr><td><a href="#/admin/locations/${l.id}">${esc(l.name)}</a>${l.is_default ? ' <span class="status paid">default</span>' : ''}</td><td>${KINDS[l.kind] || ''}</td><td>${esc([l.address, l.city, l.postcode].filter(Boolean).join(', '))}</td><td>${units[l.id] || 0}</td><td>${l.pickup_enabled ? '✓' : ''}</td><td>${l.active ? 'Active' : 'Inactive'}</td></tr>`).join('')}</table>`;
+    <table><tr><th>Name</th><th>Type</th><th>Address</th><th>Units in stock</th><th>Pickup</th><th>Status</th></tr>${ls.map((l) => `<tr><td><a href="#/admin/locations/${l.id}">${esc(l.name)}</a>${l.is_default ? ' <span class="status paid">default</span>' : ''}</td><td>${KINDS[l.kind] || ''}</td><td>${esc([l.address, l.city, l.postcode].filter(Boolean).join(', '))}</td><td>${units[l.id] || 0}</td><td>${l.pickup_enabled ? ':ic-check:' : ''}</td><td>${l.active ? 'Active' : 'Inactive'}</td></tr>`).join('')}</table>`;
   }
   if (sub === 'inventory') {
     const [prods, locs, inv, log] = await Promise.all([sb.from('products').select('id,name,category,active').order('name'), sb.from('locations').select('*').order('is_default', { ascending: false }).order('name'),
@@ -714,7 +777,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const P = prods.data, L = locs.data, qty = {}; inv.data.forEach((r) => (qty[`${r.product_id}:${r.location_id}`] = r.qty));
     const pname = Object.fromEntries(P.map((x) => [x.id, x.name])), lname = Object.fromEntries(L.map((x) => [x.id, x.name]));
     const KIND_L = { adjust: 'Adjusted', sale: 'Sale', restock: 'Restocked', transfer_in: 'Transfer in', transfer_out: 'Transfer out' };
-    return `<h1>Inventory</h1><p><a class="btn ghost" href="#/admin/locations">Manage locations</a> <button class="btn ghost" id="invcsv">⬇ Export CSV</button></p>
+    return `<h1>Inventory</h1><p><a class="btn ghost" href="#/admin/locations">Manage locations</a> <button class="btn ghost" id="invcsv">:ic-download: Export CSV</button></p>
     <div class="row" style="margin-bottom:8px"><input id="invsearch" placeholder="Filter products…" aria-label="Filter products" style="flex:1;max-width:320px"></div>
     <table id="invtable"><tr><th>Product</th>${L.map((l) => `<th>${esc(l.name)}${l.active ? '' : ' (inactive)'}</th>`).join('')}<th>Total</th></tr>
     ${P.map((x) => { const tot = L.reduce((a, l) => a + (qty[`${x.id}:${l.id}`] || 0), 0); return `<tr data-name="${esc(x.name.toLowerCase())}"><td><b>${esc(x.name)}</b>${x.active ? '' : ' <span class="muted">(hidden)</span>'}<br><small class="muted">${esc(x.category)}</small></td>${L.map((l) => `<td><input type="number" min="0" class="invq" data-p="${x.id}" data-l="${l.id}" value="${qty[`${x.id}:${l.id}`] || 0}" aria-label="${esc(x.name)} at ${esc(l.name)}"></td>`).join('')}<td class="invtot ${tot <= 10 ? 'lowtot' : ''}">${tot}</td></tr>`; }).join('')}</table>
@@ -745,7 +808,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     return `<h1>Sales</h1>${rangeChips('#/admin/sales', q)}
     <div class="row" style="margin-bottom:14px"><select id="salesloc" aria-label="Location"><option value="">All locations</option>${locs.map((l) => `<option value="${l.id}" ${String(l.id) === locF ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select>
     <select id="salessrc" aria-label="Channel"><option value="">All channels</option><option value="online" ${srcF === 'online' ? 'selected' : ''}>Online</option><option value="in_store" ${srcF === 'in_store' ? 'selected' : ''}>In store</option></select>
-    <button class="btn ghost" id="salescsv">⬇ Export orders CSV</button></div>
+    <button class="btn ghost" id="salescsv">:ic-download: Export orders CSV</button></div>
     <div class="stats"><div><b>${money(revenue)}</b>revenue (excl. tax, after refunds)</div><div><b>${orders.length}</b>orders</div><div><b>${units}</b>units sold</div><div><b>${money(orders.length ? Math.round(revenue / orders.length) : 0)}</b>average order</div>
     ${hasCost ? `<div><b>${money(profit)}</b>gross profit (est.)</div><div><b>${itemRev ? Math.round(profit / itemRev * 100) : 0}%</b>margin</div>` : ''}${taxTotal ? `<div><b>${money(taxTotal)}</b>tax collected</div>` : ''}${refundTotal ? `<div><b>${money(refundTotal)}</b>refunded</div>` : ''}</div>
     ${hasCost ? '' : '<p class="muted">Add a unit cost to your products to see profit and margin here.</p>'}
@@ -783,7 +846,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const staleN = prices.data.filter((r) => new Date(r.checked_at) < cut).length;
     return `<h1>Price comparison</h1><p class="muted">Enter what competitors charge for a comparable item. Customers see these on product pages (with the date checked) only while they are less than ${CMP_DAYS()} days old.</p>
     ${staleN ? `<p class="flash error" style="margin-top:0">${staleN} price${staleN === 1 ? ' is' : 's are'} older than ${CMP_DAYS()} days and hidden from customers until re-checked.</p>` : ''}
-    <div class="row" style="margin-bottom:10px"><input id="cmpsearch" placeholder="Filter products…" style="flex:1;max-width:300px"><button class="btn ghost" id="cmpall">✓ Mark all as checked today</button></div>
+    <div class="row" style="margin-bottom:10px"><input id="cmpsearch" placeholder="Filter products…" style="flex:1;max-width:300px"><button class="btn ghost" id="cmpall">:ic-check: Mark all as checked today</button></div>
     <table id="cmptable"><tr><th>Product</th><th>Our price</th>${comps.data.map((c) => `<th>${esc(c.name)}${c.active ? '' : ' (hidden)'}</th>`).join('')}<th></th></tr>
     ${prods.data.map((x) => `<tr data-name="${esc(x.name.toLowerCase())}"><td><b>${esc(x.name)}</b><br><small class="muted">${esc(x.category)}</small></td><td>${money(x.price_cents)}</td>${comps.data.map((c) => { const r = map[`${x.id}:${c.id}`]; const stale = r && new Date(r.checked_at) < cut;
       return `<td><input type="number" step="0.01" min="0" class="cmpq" data-p="${x.id}" data-c="${c.id}" value="${r ? (r.price_cents / 100).toFixed(2) : ''}" placeholder="—" aria-label="${esc(x.name)} at ${esc(c.name)}">${r ? `<br><small class="${stale ? 'down' : 'muted'}">${stale ? 'stale · ' : ''}${new Date(r.checked_at).toLocaleDateString()}</small>` : ''}</td>`; }).join('')}<td><a href="#/admin/compare/${x.id}">Details</a></td></tr>`).join('')}</table>
@@ -791,9 +854,13 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <form id="addcomp" class="row"><input name="name" placeholder="Add a retailer (e.g. Lowe's)" maxlength="80" required><button class="btn ghost">Add</button></form>`;
   }
   if (sub === 'settings') {
-    const b = STORE.biz || {};
+    const b = STORE.biz || {}, msgReady = (await sb.rpc('messaging_ready')).data === true, msgLog = (await sb.from('message_log').select('*').order('id', { ascending: false }).limit(8)).data || [];
     return `<h1>Store settings</h1><p class="muted">These apply to the whole store: shipping and tax at checkout, and the details printed on invoices.</p>
-    <form id="setf" class="stack narrow"><fieldset class="cmpset"><legend>Shipping</legend>
+    <form id="setf" class="stack narrow"><fieldset class="cmpset"><legend>Shop status</legend>
+      <label class="switch"><input type="checkbox" name="closed" ${STORE.closed ? 'checked' : ''}><span class="track"></span><span>Shop closed — turn off online ordering</span></label>
+      <label>Message shown to customers<textarea name="closed_message" rows="2" maxlength="300" placeholder="We're closed for the holidays and will reopen Monday.">${esc(STORE.closed_message || '')}</textarea></label>
+      <small class="muted">While closed, customers can browse and fill a cart but cannot check out. In-store sales (POS) and invoices still work for your team.</small></fieldset>
+    <fieldset class="cmpset"><legend>Shipping</legend>
       <label>Flat delivery fee ($)<input name="ship" type="number" step="0.01" min="0" value="${((STORE.ship_flat_cents || 0) / 100).toFixed(2)}"></label>
       <label>Free delivery on orders over ($) <small class="muted">0 = never free</small><input name="free" type="number" step="0.01" min="0" value="${((STORE.free_over_cents || 0) / 100).toFixed(2)}"></label></fieldset>
     <fieldset class="cmpset"><legend>Sales tax</legend>
@@ -806,18 +873,26 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <fieldset class="cmpset"><legend>Invoicing</legend>
       <div class="two2"><label>Invoice number prefix<input name="invoice_prefix" maxlength="10" value="${esc(STORE.invoice_prefix || 'INV')}"></label><label>Default days until due<input name="invoice_due_days" type="number" min="0" max="365" value="${Number(STORE.invoice_due_days) || 14}"></label></div>
       <label>Default terms<textarea name="invoice_terms" rows="2" maxlength="1000" placeholder="e.g. Payment due within 14 days. Late balances accrue 2% monthly.">${esc(STORE.invoice_terms || '')}</textarea></label>
+      <label class="check"><input type="checkbox" name="invoice_allow_partial" ${STORE.invoice_allow_partial === false ? '' : 'checked'}> Let customers pay part of an invoice online</label>
       <label>How customers can pay<textarea name="invoice_pay_info" rows="3" maxlength="1000" placeholder="e-Transfer to pay@yourshop.com, or cheque payable to…">${esc(STORE.invoice_pay_info || '')}</textarea></label></fieldset>
-    <button class="btn">Save settings</button></form>`;
+    <button class="btn">Save settings</button></form>
+    <section class="cs" style="margin-top:20px;max-width:760px"><h3>Messaging — email &amp; text</h3>
+      <p style="margin:0">${msgReady ? ':ic-check-circle: The database is connected to the sending service.' : ':ic-alert: The sending service isn’t connected yet.'} Emails and texts to customers (invoices, estimates, statements) go through two providers you control:</p>
+      <ul class="plain"><li><span><b>Email</b> — <a href="https://resend.com" target="_blank" rel="noopener">Resend</a> (free tier). Add secrets <code>RESEND_API_KEY</code> and <code>FROM_EMAIL</code> (e.g. <code>${esc(theme.name || 'Gomi Insulation')} &lt;invoices@yourdomain.com&gt;</code>). Verify your domain in Resend to email any customer; until then Resend only delivers to your own address.</span></li>
+        <li><span><b>Text messages</b> — <a href="https://www.twilio.com" target="_blank" rel="noopener">Twilio</a>. Add <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code> and <code>TWILIO_FROM</code> (your Twilio number). Optional: <code>SMS_DEFAULT_COUNTRY_CODE</code> (default 1).</span></li></ul>
+      <p class="muted" style="margin:0">Add secrets in Supabase → <b>Edge Functions → Secrets</b> (they’re never shown to the website). Then send yourself a test:</p>
+      <form id="msgtest" class="row"><select name="channel" aria-label="Channel"><option value="email">Email</option><option value="sms">Text</option></select><input name="to" required placeholder="your email or mobile number" style="flex:1;min-width:180px"><button class="btn ghost">Send test</button></form>
+      ${logHtml(msgLog)}</section>`;
   }
   if (sub === 'team') {
     const term = (q.get('search') || '').trim().replace(/[%,()]/g, '');
-    let uq = sb.from('profiles').select('id,name,email,role,created_at').limit(300); if (term) uq = uq.or(`name.ilike.%${term}%,email.ilike.%${term}%`);
+    let uq = sb.from('profiles').select('id,name,email,username,role,created_at').limit(300); if (term) uq = uq.or(`name.ilike.%${term}%,email.ilike.%${term}%,username.ilike.%${term}%`);
     const us = ((await uq).data || []).sort((a, b) => (a.role === 'customer') - (b.role === 'customer') || (a.name || a.email).localeCompare(b.name || b.email)), meOwner = profile.role === 'owner';
     return `<h1>Team &amp; roles</h1><p class="muted">Give people on your team the access they need — and nothing more. They sign up on the site like a customer first, then you assign a role here. These limits are enforced by the database, not just hidden menus.</p>
     <section class="cs"><h3>What each role can do</h3><ul class="plain">${Object.entries(ROLES).filter(([r]) => r !== 'customer').map(([r, d]) => `<li><span><b style="text-transform:capitalize">${r}</b> — ${esc(d.split(' — ')[1])}</span></li>`).join('')}</ul></section>
-    <form id="teamsearch" class="row" style="margin:16px 0 10px;flex-wrap:nowrap"><input name="search" value="${esc(term)}" placeholder="Find a person by name or email…" style="flex:1;min-width:0"><button class="btn ghost">Search</button></form>
+    <form id="teamsearch" class="row" style="margin:16px 0 10px;flex-wrap:nowrap"><input name="search" value="${esc(term)}" placeholder="Find a person by name, username or email…" style="flex:1;min-width:0"><button class="btn ghost">Search</button></form>
     <table><tr><th>Person</th><th>Role</th><th>Joined</th></tr>${us.map((u) => { const locked = !meOwner && (u.role === 'owner' || u.role === 'admin');
-      return `<tr><td><b>${esc(u.name || u.email)}</b><br><small class="muted">${esc(u.email)}${u.id === session.user.id ? ' · you' : ''}</small></td><td><select class="rolesel" data-id="${u.id}" ${locked ? 'disabled' : ''} aria-label="Role for ${esc(u.email)}">${Object.keys(ROLES).map((r) => `<option value="${r}" ${r === u.role ? 'selected' : ''} ${!meOwner && (r === 'owner' || r === 'admin') ? 'disabled' : ''}>${r}</option>`).join('')}</select></td><td>${new Date(u.created_at).toLocaleDateString()}</td></tr>`; }).join('')}</table>
+      return `<tr><td><b>${esc(u.name || u.email)}</b><br><small class="muted">${u.username ? '@' + esc(u.username) + ' · ' : ''}${esc(u.email)}${u.id === session.user.id ? ' · you' : ''}</small></td><td><select class="rolesel" data-id="${u.id}" ${locked ? 'disabled' : ''} aria-label="Role for ${esc(u.email)}">${Object.keys(ROLES).map((r) => `<option value="${r}" ${r === u.role ? 'selected' : ''} ${!meOwner && (r === 'owner' || r === 'admin') ? 'disabled' : ''}>${r}</option>`).join('')}</select></td><td>${new Date(u.created_at).toLocaleDateString()}</td></tr>`; }).join('')}</table>
     ${meOwner ? '' : '<p class="muted">Only an owner can create or change owners and admins.</p>'}`;
   }
   if (sub === 'activity') {
@@ -842,10 +917,12 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   if (sub === 'estimates' && id) {
     const [er, ir] = await Promise.all([sb.from('estimates').select('*').eq('id', id).single(), sb.from('estimate_items').select('*').eq('estimate_id', id).order('sort')]);
     const e = er.data, mng = can('invoices.manage'), link = `${location.origin}${location.pathname}#/estimate/${e.id}?k=${e.view_key}`;
-    return `<p><a href="#/admin/estimates">← All estimates</a></p>${mng ? `<div class="row noprint" style="margin-bottom:12px">${['draft', 'sent'].includes(e.status) ? `<a class="btn ghost" href="#/admin/estimates/${e.id}/edit">✎ Edit</a>` : ''}
-      ${e.status === 'draft' ? '<button class="btn" data-estact="sent">Mark as sent &amp; email</button>' : ''}${e.status === 'sent' ? '<button class="btn ghost" data-estact="sent">Re-send email</button><button class="btn ghost" data-estact="accepted">Mark accepted</button><button class="btn ghost" data-estact="declined">Mark declined</button>' : ''}
-      ${e.status !== 'converted' ? '<button class="btn" id="estconvert" style="background:var(--ok)">→ Convert to invoice</button>' : `<a class="btn ghost" href="#/admin/invoices/${e.invoice_id}">View invoice</a>`}${e.status !== 'converted' ? '<button class="btn ghost" id="estdel" style="color:var(--err)">Delete</button>' : ''}<button class="btn ghost" id="printbtn" type="button">🖨 Print</button></div>` : ''}
-      ${invDoc(e, ir.data || [], [])}${e.status !== 'draft' ? `<div class="noprint" style="margin-top:12px"><small class="muted">Customer link (they can accept or decline there)</small><input readonly value="${esc(link)}" onclick="this.select()" style="width:100%;font-size:.85rem"></div>` : ''}`;
+    const ready = mng ? (await sb.rpc('messaging_ready')).data === true : true, logs = (await sb.from('message_log').select('*').eq('kind', 'estimate').eq('ref_id', e.id).order('id', { ascending: false }).limit(8)).data || [];
+    return `<p><a href="#/admin/estimates">← All estimates</a></p>${mng ? `<div class="row noprint" style="margin-bottom:12px">${['draft', 'sent'].includes(e.status) ? `<a class="btn ghost" href="#/admin/estimates/${e.id}/edit">:ic-edit: Edit</a>` : ''}
+      ${e.status === 'draft' ? '<button class="btn" id="opensend" type="button">:ic-mail: Send…</button><button class="btn ghost" data-estact="sent">Mark as sent (without sending)</button>' : ''}${e.status === 'sent' ? '<button class="btn" id="opensend" type="button">:ic-mail: Send / re-send…</button><button class="btn ghost" data-estact="accepted">Mark accepted</button><button class="btn ghost" data-estact="declined">Mark declined</button>' : ''}
+      ${e.status !== 'converted' ? '<button class="btn" id="estconvert" style="background:var(--ok)">→ Convert to invoice</button>' : `<a class="btn ghost" href="#/admin/invoices/${e.invoice_id}">View invoice</a>`}${e.status !== 'converted' ? '<button class="btn ghost" id="estdel" style="color:var(--err)">Delete</button>' : ''}<button class="btn ghost" id="printbtn" type="button">:ic-print: Print</button></div>
+      ${['draft', 'sent'].includes(e.status) ? sendPanel(e, 'estimate', ready, q.get('send') === '1') : ''}` : ''}
+      ${invDoc(e, ir.data || [], [])}${mng ? `<section class="cs noprint" style="margin-top:14px"><h3>Delivery</h3>${logHtml(logs)}</section>` : ''}${e.status !== 'draft' ? `<div class="noprint" style="margin-top:12px"><small class="muted">Customer link (they can accept or decline there)</small><input readonly value="${esc(link)}" onclick="this.select()" style="width:100%;font-size:.85rem"></div>` : ''}`;
   }
   if (sub === 'estimates') {
     const es = (await sb.from('estimates').select('*').order('id', { ascending: false }).limit(500)).data || [], filter = q.get('status') || '', eff = (e) => (e.status === 'sent' && e.expires_on < todayStr() ? 'expired' : e.status);
@@ -858,13 +935,16 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   if (sub === 'invoices' && id) {
     const [ir, itr, pr] = await Promise.all([sb.from('invoices').select('*').eq('id', id).single(), sb.from('invoice_items').select('*').eq('invoice_id', id).order('sort'), sb.from('invoice_payments').select('*').eq('invoice_id', id).order('id')]);
     const inv = ir.data, items = itr.data || [], pays = pr.data || [], bal = invBal(inv), mng = can('invoices.manage'), link = `${location.origin}${location.pathname}#/invoice/${inv.id}?k=${inv.view_key}`;
+    const ready = mng ? (await sb.rpc('messaging_ready')).data === true : true, logs = (await sb.from('message_log').select('*').eq('kind', 'invoice').eq('ref_id', inv.id).order('id', { ascending: false }).limit(8)).data || [];
     return `<p><a href="#/admin/invoices">← All invoices</a></p>
-    ${mng ? `<div class="row noprint" style="margin-bottom:12px">${inv.status === 'draft' ? `<a class="btn ghost" href="#/admin/invoices/${inv.id}/edit">✎ Edit</a><button class="btn" data-invact="sent">Mark as sent &amp; email</button>` : ''}${inv.status === 'sent' ? `<a class="btn ghost" href="#/admin/invoices/${inv.id}/edit">✎ Edit</a><button class="btn ghost" data-invact="sent">Re-send email</button>` : ''}
-      ${inv.status === 'void' ? '<button class="btn ghost" data-invact="draft">Reopen as draft</button>' : inv.status !== 'paid' && !inv.paid_cents ? '<button class="btn ghost" data-invact="void" style="color:var(--err)">Void</button>' : ''}${['draft', 'void'].includes(inv.status) ? '<button class="btn ghost" id="invdel" style="color:var(--err)">Delete</button>' : ''}<button class="btn ghost" id="printbtn" type="button">🖨 Print</button></div>` : '<div class="row noprint"><button class="btn ghost" id="printbtn" type="button">🖨 Print</button></div>'}
+    ${mng ? `<div class="row noprint" style="margin-bottom:12px">${inv.status === 'draft' ? `<a class="btn ghost" href="#/admin/invoices/${inv.id}/edit">:ic-edit: Edit</a><button class="btn" id="opensend" type="button">:ic-mail: Send…</button><button class="btn ghost" data-invact="sent">Mark as sent (without sending)</button>` : ''}${inv.status === 'sent' ? `<a class="btn ghost" href="#/admin/invoices/${inv.id}/edit">:ic-edit: Edit</a><button class="btn" id="opensend" type="button">:ic-mail: Send / re-send…</button>` : ''}${inv.status === 'paid' ? '<button class="btn ghost" id="opensend" type="button">:ic-mail: Send a copy…</button>' : ''}
+      ${inv.status === 'void' ? '<button class="btn ghost" data-invact="draft">Reopen as draft</button>' : inv.status !== 'paid' && !inv.paid_cents ? '<button class="btn ghost" data-invact="void" style="color:var(--err)">Void</button>' : ''}${['draft', 'void'].includes(inv.status) ? '<button class="btn ghost" id="invdel" style="color:var(--err)">Delete</button>' : ''}<button class="btn ghost" id="printbtn" type="button">:ic-print: Print</button></div>
+    ${inv.status === 'void' ? '' : sendPanel(inv, 'invoice', ready, q.get('send') === '1')}` : '<div class="row noprint"><button class="btn ghost" id="printbtn" type="button">:ic-print: Print</button></div>'}
     <div class="cartwrap"><div>${invDoc(inv, items, pays.map((x) => ({ ...x })))}</div><aside class="summary noprint">
       <h3>Payments</h3>${pays.length ? pays.map((x) => `<div class="addr"><b>${money(x.amount_cents)}</b> · ${esc(x.method || 'payment')} · ${esc(x.paid_on)}${x.reference ? `<br><small class="muted">Ref ${esc(x.reference)}</small>` : ''}${mng ? `<br><button class="link delpay" data-id="${x.id}" style="color:var(--err)">Remove</button>` : ''}</div>`).join('') : '<p class="muted" style="margin:0">No payments yet.</p>'}
       ${mng && inv.status !== 'void' && bal > 0 ? `<form id="payform" class="stack"><label>Amount ($)<input name="amount" type="number" step="0.01" min="0.01" max="${(bal / 100).toFixed(2)}" value="${(bal / 100).toFixed(2)}" required></label><label>Method<select name="method"><option>E-transfer</option><option>Cheque</option><option>Cash</option><option>Card</option><option>Bank transfer</option><option>Other</option></select></label>
       <label>Reference<input name="ref" maxlength="80"></label><label>Date received<input name="paid" type="date" value="${todayStr()}"></label><button class="btn">Record payment</button></form>` : ''}
+      ${mng ? `<h3 style="margin-bottom:0">Delivery</h3>${logHtml(logs)}` : ''}
       ${inv.status !== 'draft' ? `<div><small class="muted">Customer link</small><input readonly value="${esc(link)}" onclick="this.select()" style="width:100%;font-size:.8rem"></div>` : ''}</aside></div>`;
   }
   if (sub === 'invoices') {
@@ -881,7 +961,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
       <div class="kpi"><span class="lbl">Paid in last 30 days</span><b>${money((pr.data || []).reduce((a, x) => a + x.amount_cents, 0))}</b></div><div class="kpi"><span class="lbl">Drafts</span><b>${all.filter((i) => i.status === 'draft').length}</b></div></div>
     <h2>Receivables aging</h2><table class="aging"><tr>${aging.map((a) => `<th>${a[0]}</th>`).join('')}</tr><tr>${aging.map((a) => `<td><b>${money(a[1])}</b></td>`).join('')}</tr></table>
     <div class="chips" style="margin-top:14px">${[['', 'All'], ['draft', 'Draft'], ['sent', 'Sent'], ['overdue', 'Overdue'], ['paid', 'Paid'], ['void', 'Void']].map(([v, l]) => `<a class="chip ${filter === v ? 'on' : ''}" href="${link(v)}">${l}</a>`).join('')}</div>
-    <div class="row" style="margin-bottom:10px"><form id="invsearch" class="row" style="flex:1;flex-wrap:nowrap"><input name="search" value="${esc(q.get('search') || '')}" placeholder="Search by number or customer…" style="flex:1;min-width:0"><button class="btn ghost">Search</button></form><button class="btn ghost" id="invcsv" type="button">⬇ CSV</button></div>
+    <div class="row" style="margin-bottom:10px"><form id="invsearch" class="row" style="flex:1;flex-wrap:nowrap"><input name="search" value="${esc(q.get('search') || '')}" placeholder="Search by number or customer…" style="flex:1;min-width:0"><button class="btn ghost">Search</button></form><button class="btn ghost" id="invcsv" type="button">:ic-download: CSV</button></div>
     ${rows.length ? `<table id="invtable"><tr><th>Number</th><th>Customer</th><th>Issued</th><th>Due</th><th>Total</th><th>Balance</th><th>Status</th></tr>${rows.map((i) => { const e = invEff(i); return `<tr data-csv='${esc(JSON.stringify([i.number, i.customer_name, i.issue_date, i.due_date, (i.total_cents / 100).toFixed(2), (invBal(i) / 100).toFixed(2), e]))}'><td><a href="#/admin/invoices/${i.id}"><b>${esc(i.number)}</b></a></td><td>${esc(i.customer_name)}</td><td>${esc(i.issue_date)}</td><td>${esc(i.due_date)}</td><td>${money(i.total_cents)}</td><td>${money(invBal(i))}</td><td><span class="status ${e === 'overdue' ? 'cancelled' : e}">${e}</span></td></tr>`; }).join('')}</table>` : '<p class="muted">No invoices match. Create your first invoice with “New invoice”.</p>'}`;
   }
   if (sub === 'suppliers') {
@@ -905,15 +985,89 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <section class="cs"><div class="two2"><label>Supplier<select id="po_sup"><option value="">— choose —</option>${(sups.data || []).map((x) => `<option value="${x.id}" ${x.id === PO.supplier_id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label><label>Deliver to (stock goes here)<select id="po_loc">${(locs.data || []).map((x) => `<option value="${x.id}" ${x.id === PO.location_id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label></div>
       <div class="two2"><label>Expected on<input id="po_exp" type="date" value="${esc(PO.expected_at)}"></label><label>Notes<input id="po_notes" value="${esc(PO.notes)}" maxlength="500"></label></div></section>
     <section class="cs"><h3>Items</h3><table class="invlines"><tr><th>Product</th><th>Qty</th><th>Unit cost ($)</th><th class="r">Line total</th><th></th></tr><tbody id="po_lines"></tbody></table><div class="row"><button type="button" class="btn ghost" id="po_add">+ Add line</button><span id="po_total" style="margin-left:auto;font-weight:700"></span></div></section>
-    <div class="row"><button class="btn" id="po_save" type="button">Save</button>${PO.id ? '<button class="btn ghost" id="po_order" type="button">Mark as ordered</button><button class="btn" id="po_receive" type="button" style="background:var(--ok)">✓ Receive stock</button><button class="btn ghost" id="po_cancel" type="button" style="color:var(--err)">Cancel PO</button>' : ''}</div></div>`}`;
+    <div class="row"><button class="btn" id="po_save" type="button">Save</button>${PO.id ? '<button class="btn ghost" id="po_order" type="button">Mark as ordered</button><button class="btn" id="po_receive" type="button" style="background:var(--ok)">:ic-check: Receive stock</button><button class="btn ghost" id="po_cancel" type="button" style="color:var(--err)">Cancel PO</button>' : ''}</div></div>`}`;
   }
   if (sub === 'purchasing') {
     const [pos, sups, locs, items, prods] = await Promise.all([sb.from('purchase_orders').select('*').order('id', { ascending: false }).limit(200), sb.from('suppliers').select('id,name'), sb.from('locations').select('id,name'), sb.from('purchase_order_items').select('po_id,qty,unit_cost_cents'), sb.from('products').select('id,name,stock,reorder_point,reorder_qty,cost_cents').eq('active', true).order('stock')]);
     const sn = Object.fromEntries((sups.data || []).map((x) => [x.id, x.name])), ln = Object.fromEntries((locs.data || []).map((x) => [x.id, x.name])), tot = {}, cnt = {}; (items.data || []).forEach((x) => { tot[x.po_id] = (tot[x.po_id] || 0) + x.qty * x.unit_cost_cents; cnt[x.po_id] = (cnt[x.po_id] || 0) + 1; });
     const low = (prods.data || []).filter((x) => x.stock <= x.reorder_point);
     return `<div class="dashhead"><h1 style="margin:0">Purchasing</h1><div class="row"><a class="btn ghost" href="#/admin/suppliers">Suppliers</a>${can('purchasing.manage') ? '<a class="btn" href="#/admin/purchasing/new">+ New purchase order</a>' : ''}</div></div>
-    <section class="cs"><h3>Reorder suggestions ${low.length ? `<span class="dot">${low.length}</span>` : ''}</h3>${low.length ? `<table><tr><th>Product</th><th>In stock</th><th>Reorder at</th><th>Suggested qty</th></tr>${low.map((x) => `<tr><td><a href="#/admin/products/${x.id}">${esc(x.name)}</a></td><td class="${x.stock === 0 ? 'down' : ''}">${x.stock}</td><td>${x.reorder_point}</td><td>${x.reorder_qty || Math.max(x.reorder_point * 2 - x.stock, 1)}</td></tr>`).join('')}</table>${can('purchasing.manage') ? '<a class="btn" href="#/admin/purchasing/new?from=low">Create a purchase order from these</a>' : ''}` : '<p class="muted" style="margin:0">Nothing is below its reorder point. ✅ Set each product’s reorder point in the product editor.</p>'}</section>
+    <section class="cs"><h3>Reorder suggestions ${low.length ? `<span class="dot">${low.length}</span>` : ''}</h3>${low.length ? `<table><tr><th>Product</th><th>In stock</th><th>Reorder at</th><th>Suggested qty</th></tr>${low.map((x) => `<tr><td><a href="#/admin/products/${x.id}">${esc(x.name)}</a></td><td class="${x.stock === 0 ? 'down' : ''}">${x.stock}</td><td>${x.reorder_point}</td><td>${x.reorder_qty || Math.max(x.reorder_point * 2 - x.stock, 1)}</td></tr>`).join('')}</table>${can('purchasing.manage') ? '<a class="btn" href="#/admin/purchasing/new?from=low">Create a purchase order from these</a>' : ''}` : '<p class="muted" style="margin:0">Nothing is below its reorder point. :ic-check-circle: Set each product’s reorder point in the product editor.</p>'}</section>
     <h2>Purchase orders</h2>${(pos.data || []).length ? `<table><tr><th>PO</th><th>Supplier</th><th>Deliver to</th><th>Items</th><th>Cost</th><th>Expected</th><th>Status</th></tr>${pos.data.map((x) => `<tr><td><a href="#/admin/purchasing/${x.id}"><b>PO-${x.id}</b></a></td><td>${esc(sn[x.supplier_id] || '—')}</td><td>${esc(ln[x.location_id] || '—')}</td><td>${cnt[x.id] || 0}</td><td>${money(Math.round(tot[x.id] || 0))}</td><td>${esc(x.expected_at || '')}</td><td><span class="status ${x.status === 'received' ? 'paid' : x.status === 'cancelled' ? 'cancelled' : 'pending'}">${x.status}</span></td></tr>`).join('')}</table>` : '<p class="muted">No purchase orders yet.</p>'}`;
+  }
+  if (sub === 'statements' && id) {
+    const key = decodeURIComponent(id), all = (await sb.from('invoices').select('*').in('status', ['sent', 'paid']).limit(2000)).data || [];
+    const mine = all.filter((i) => custKey(i) === key); if (!mine.length) return '<h1>Statement</h1><p class="muted">No sent invoices for this customer yet.</p><p><a class="btn ghost" href="#/admin/statements">← All customers</a></p>';
+    const pays = ((await sb.from('invoice_payments').select('*').in('invoice_id', mine.map((i) => i.id)).order('paid_on')).data || []), num = Object.fromEntries(mine.map((i) => [i.id, i.number]));
+    const fromQ = q.get('from') || addDays(todayStr(), -90), from = fromQ === 'all' ? '0000-00-00' : fromQ;
+    const ledger = [...mine.map((i) => ({ date: i.issue_date, ref: i.number, text: 'Invoice ' + i.number, debit: i.total_cents, credit: 0, ord: 0 })), ...pays.map((x) => ({ date: x.paid_on, ref: num[x.invoice_id], text: `Payment received${x.method ? ' — ' + x.method : ''} (${num[x.invoice_id]})`, debit: 0, credit: x.amount_cents, ord: 1 }))].sort((a, b) => a.date.localeCompare(b.date) || a.ord - b.ord);
+    const opening = ledger.filter((l) => l.date < from).reduce((a, l) => a + l.debit - l.credit, 0); let run = opening;
+    const rows = ledger.filter((l) => l.date >= from).map((l) => { run += l.debit - l.credit; return { ...l, bal: run }; });
+    const open = mine.filter((i) => i.status === 'sent' && invBal(i) > 0), totalDue = open.reduce((a, i) => a + invBal(i), 0), c = mine[0], b = STORE.biz || {};
+    STMT = { cid: c.customer_id || null, mail: c.customer_email || '', name: c.customer_name };
+    return `<p class="noprint"><a href="#/admin/statements">← All customers</a></p><div class="row noprint" style="margin-bottom:12px"><label class="muted" style="display:flex;gap:8px;align-items:center">From <input id="stmtfrom" type="date" value="${fromQ === 'all' ? '' : fromQ}"></label><a class="btn ghost" href="#/admin/statements/${encodeURIComponent(key)}?from=all">All time</a>
+      ${can('invoices.manage') && (c.customer_id || c.customer_email) ? '<button class="btn ghost" id="sendstmt" type="button">:ic-mail: Email statement (open invoices)</button>' : ''}<button class="btn ghost" id="printbtn" type="button">:ic-print: Print</button></div>
+    <div class="invdoc"><div class="invtop"><div><h2 style="margin:0">${esc(b.legal_name || theme.name || 'Gomi Insulation')}</h2><p class="muted" style="margin:4px 0 0">${[b.address, b.phone, b.email].filter(Boolean).map(esc).join('<br>')}</p></div><div class="invmeta"><h1 style="margin:0">STATEMENT</h1><table><tr><td>Date</td><td><b>${todayStr()}</b></td></tr><tr><td>Balance due</td><td><b>${money(totalDue)}</b></td></tr></table></div></div>
+      <div class="billto"><small class="muted">CUSTOMER</small><br><b>${esc(c.customer_name)}</b>${c.customer_email ? '<br>' + esc(c.customer_email) : ''}</div>
+      <table class="invitems"><tr><th>Date</th><th>Details</th><th class="r">Charges</th><th class="r">Payments</th><th class="r">Balance</th></tr>${fromQ !== 'all' ? `<tr><td></td><td><i>Balance brought forward</i></td><td></td><td></td><td class="r">${money(opening)}</td></tr>` : ''}
+      ${rows.map((l) => `<tr><td>${esc(l.date)}</td><td>${esc(l.text)}</td><td class="r">${l.debit ? money(l.debit) : ''}</td><td class="r">${l.credit ? money(l.credit) : ''}</td><td class="r">${money(l.bal)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No activity in this period.</td></tr>'}</table>
+      ${open.length ? `<h3 style="margin-bottom:6px">Open invoices</h3><table class="invitems"><tr><th>Invoice</th><th>Due</th><th class="r">Balance</th></tr>${open.map((i) => `<tr><td>${esc(i.number)}</td><td>${esc(i.due_date)}${i.due_date < todayStr() ? ' <b style="color:#b42318">overdue</b>' : ''}</td><td class="r">${money(invBal(i))}</td></tr>`).join('')}</table>
+      <table class="aging"><tr>${ageBuckets(open).map((a) => `<th>${a[0]}</th>`).join('')}</tr><tr>${ageBuckets(open).map((a) => `<td><b>${money(a[1])}</b></td>`).join('')}</tr></table>` : '<p><b>Nothing is owing — thank you!</b></p>'}
+      <dl class="totals" style="margin-left:auto"><dt><b>Total due</b></dt><dd><b style="font-size:1.2rem">${money(totalDue)}</b></dd></dl>${totalDue > 0 && STORE.invoice_pay_info ? `<div class="trackbox"><span style="white-space:pre-wrap"><b>How to pay</b><br>${esc(STORE.invoice_pay_info)}</span></div>` : ''}</div>`;
+  }
+  if (sub === 'statements') {
+    const all = (await sb.from('invoices').select('id,number,customer_id,customer_name,customer_email,status,total_cents,paid_cents,due_date').in('status', ['sent', 'paid']).limit(2000)).data || [], g = {};
+    all.forEach((i) => { const k = custKey(i), c = (g[k] = g[k] || { name: i.customer_name, email: i.customer_email, billed: 0, open: 0, overdue: 0, n: 0, oldest: '' });
+      c.billed += i.total_cents; if (i.status === 'sent' && invBal(i) > 0) { c.open += invBal(i); c.n++; if (i.due_date < todayStr()) c.overdue += invBal(i); if (!c.oldest || i.due_date < c.oldest) c.oldest = i.due_date; } });
+    const rows = Object.entries(g).sort((a, b) => b[1].open - a[1].open || a[1].name.localeCompare(b[1].name));
+    return `<div class="dashhead"><div><h1 style="margin:0">Customer statements</h1><p class="muted" style="margin:2px 0 0">A running account of invoices and payments per customer, ready to print or email.</p></div><a class="btn ghost" href="#/admin/invoices">← Invoices</a></div>
+    ${rows.length ? `<table><tr><th>Customer</th><th>Open invoices</th><th>Balance due</th><th>Overdue</th><th>Oldest due</th><th>Total billed</th></tr>${rows.map(([k, c]) => `<tr><td><a href="#/admin/statements/${encodeURIComponent(k)}"><b>${esc(c.name)}</b></a>${c.email ? `<br><small class="muted">${esc(c.email)}</small>` : ''}</td><td>${c.n}</td><td><b>${money(c.open)}</b></td><td class="${c.overdue ? 'down' : ''}">${c.overdue ? money(c.overdue) : '—'}</td><td>${esc(c.oldest || '—')}</td><td>${money(c.billed)}</td></tr>`).join('')}</table>` : '<p class="muted">No sent invoices yet.</p>'}`;
+  }
+  if (sub === 'expenses') {
+    const [from, to] = periodRange(q.get('p') || 'this_month'), mng = can('expenses.manage');
+    const rows = (await sb.from('expenses').select('*').gte('spent_on', from).lte('spent_on', to).order('spent_on', { ascending: false }).order('id', { ascending: false })).data || [];
+    const byCat = {}; rows.forEach((x) => (byCat[x.category] = (byCat[x.category] || 0) + x.amount_cents)); const total = rows.reduce((a, x) => a + x.amount_cents, 0), taxPaid = rows.reduce((a, x) => a + x.tax_cents, 0);
+    const used = [...new Set([...EXP_CATS, ...rows.map((x) => x.category)])];
+    return `<div class="dashhead"><div><h1 style="margin:0">Expenses</h1><p class="muted" style="margin:2px 0 0">Record what the business spends. Together with sales and product costs this drives your profit &amp; loss report.</p></div><div class="row"><a class="btn ghost" href="#/admin/profit">:ic-chart: Profit &amp; loss</a><button class="btn ghost" id="expcsv" type="button">:ic-download: CSV</button></div></div>
+    ${mng ? `<details class="cs" id="expadd" ${rows.length ? '' : 'open'}><summary><b>+ Add an expense</b></summary><form id="expform" class="stack" style="margin-top:12px"><div class="two2"><label>Date<input name="spent_on" type="date" value="${todayStr()}" required></label><label>Vendor<input name="vendor" maxlength="120" placeholder="Who you paid"></label></div>
+      <div class="two2"><label>Category<input name="category" list="expcats" required maxlength="60" placeholder="Choose or type your own"></label><datalist id="expcats">${used.map((c) => `<option value="${esc(c)}">`).join('')}</datalist><label>Paid with<select name="payment_method"><option value="">—</option><option>Card</option><option>Cash</option><option>Bank transfer</option><option>Cheque</option><option>Other</option></select></label></div>
+      <div class="two2"><label>Total amount ($) <small class="muted">including tax</small><input name="amount" type="number" step="0.01" min="0.01" required></label><label>Of which sales tax ($)<input name="tax" type="number" step="0.01" min="0" value="0"></label></div>
+      <label>Description<input name="description" maxlength="500"></label><label>Receipt (photo or PDF, optional)<input name="receipt" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"></label><button class="btn">Save expense</button></form></details>` : ''}
+    <div class="row" style="margin:14px 0 0;justify-content:space-between">${periodBar('#/admin/expenses', q)}</div>
+    <div class="kpis"><div class="kpi"><span class="lbl">Total spent</span><b>${money(total)}</b><small class="muted">${rows.length} expense${rows.length === 1 ? '' : 's'}</small></div><div class="kpi"><span class="lbl">Sales tax paid</span><b>${money(taxPaid)}</b></div><div class="kpi"><span class="lbl">Net of tax</span><b>${money(total - taxPaid)}</b></div></div>
+    ${Object.keys(byCat).length ? `<h2>By category</h2>${Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([c, v]) => `<div class="locbar"><span>${esc(c)}</span><div class="progress"><i style="width:${v / total * 100}%"></i></div><b>${money(v)}</b></div>`).join('')}` : ''}
+    <h2>Expenses</h2>${rows.length ? `<table id="exptable"><tr><th>Date</th><th>Vendor</th><th>Category</th><th>Description</th><th>Amount</th><th>Tax</th><th></th></tr>${rows.map((x) => `<tr data-csv='${esc(JSON.stringify([x.spent_on, x.vendor, x.category, x.description, (x.amount_cents / 100).toFixed(2), (x.tax_cents / 100).toFixed(2), x.payment_method]))}'><td>${esc(x.spent_on)}</td><td>${esc(x.vendor)}</td><td>${esc(x.category)}</td><td>${esc(x.description)}</td><td><b>${money(x.amount_cents)}</b></td><td>${x.tax_cents ? money(x.tax_cents) : ''}</td>
+      <td>${x.receipt_path ? `<button class="link viewrec" data-path="${esc(x.receipt_path)}" style="color:var(--brand)">Receipt</button>` : ''}${mng ? ` <button class="link delexp" data-id="${x.id}" data-path="${esc(x.receipt_path)}" style="color:var(--err)">Delete</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">No expenses in this period.</p>'}`;
+  }
+  if (sub === 'profit') {
+    const key = q.get('p') || 'this_month', [from, to] = key === 'custom' ? [q.get('from') || periodRange('this_month')[0], q.get('to') || periodRange('this_month')[1]] : periodRange(key), toEnd = addDays(to, 1);
+    const [oR, oiR, iR, iiR, eR, pR] = await Promise.all([
+      sb.from('orders').select('created_at,status,total_cents,tax_cents,refunded_cents').neq('status', 'cancelled').gte('created_at', from).lt('created_at', toEnd).limit(5000),
+      sb.from('order_items').select('qty,cost_cents,orders!inner(created_at,status)').neq('orders.status', 'cancelled').gte('orders.created_at', from).lt('orders.created_at', toEnd).limit(10000),
+      sb.from('invoices').select('issue_date,status,total_cents,tax_cents').in('status', ['sent', 'paid']).gte('issue_date', from).lte('issue_date', to).limit(5000),
+      sb.from('invoice_items').select('qty,product_id,invoices!inner(issue_date,status)').in('invoices.status', ['sent', 'paid']).gte('invoices.issue_date', from).lte('invoices.issue_date', to).limit(10000),
+      sb.from('expenses').select('spent_on,category,amount_cents,tax_cents').gte('spent_on', from).lte('spent_on', to).limit(5000), sb.from('products').select('id,cost_cents')]);
+    const cost = Object.fromEntries((pR.data || []).map((x) => [x.id, x.cost_cents])), mon = (d) => String(d).slice(0, 7), M = {}, bump = (d, k, v) => { const m = (M[mon(d)] = M[mon(d)] || { inc: 0, cogs: 0, exp: 0 }); m[k] += v; };
+    let incO = 0, incI = 0, cogsO = 0, cogsI = 0, taxColl = 0, taxPaid = 0; const exp = {};
+    (oR.data || []).forEach((o) => { const v = net(o); incO += v; taxColl += o.tax_cents || 0; bump(o.created_at, 'inc', v); });
+    (oiR.data || []).forEach((i) => { const v = i.qty * (i.cost_cents || 0); cogsO += v; bump(i.orders.created_at, 'cogs', v); });
+    (iR.data || []).forEach((i) => { const v = i.total_cents - (i.tax_cents || 0); incI += v; taxColl += i.tax_cents || 0; bump(i.issue_date, 'inc', v); });
+    (iiR.data || []).forEach((i) => { const v = i.product_id ? Math.round(Number(i.qty) * (cost[i.product_id] || 0)) : 0; cogsI += v; bump(i.invoices.issue_date, 'cogs', v); });
+    (eR.data || []).forEach((x) => { const v = x.amount_cents - x.tax_cents; exp[x.category] = (exp[x.category] || 0) + v; taxPaid += x.tax_cents; bump(x.spent_on, 'exp', v); });
+    const income = incO + incI, cogs = cogsO + cogsI, gross = income - cogs, expTotal = Object.values(exp).reduce((a, v) => a + v, 0), netP = gross - expTotal, pct = (v) => (income ? Math.round(v / income * 1000) / 10 : 0);
+    PNL = [['Income', ''], ['Online & in-store sales (excl. tax, after refunds)', incO], ['Invoiced sales & services (excl. tax)', incI], ['Total income', income], ['Cost of goods sold', cogs], ['Gross profit', gross], ...Object.entries(exp).sort((a, b) => b[1] - a[1]).map(([c, v]) => ['Expense: ' + c, v]), ['Total expenses', expTotal], ['Net profit', netP]].map(([a, b]) => [a, b === '' ? '' : (b / 100).toFixed(2)]);
+    const months = Object.keys(M).sort(), mtr = (label, v, strong) => `<tr class="${strong ? 'pl-strong' : ''}"><td>${label}</td><td class="r">${v === '' ? '' : money(v)}</td></tr>`;
+    return `<div class="dashhead"><div><h1 style="margin:0">Profit &amp; loss</h1><p class="muted" style="margin:2px 0 0">${esc(from)} to ${esc(to)}</p></div><div class="row noprint"><a class="btn ghost" href="#/admin/expenses">Expenses</a><button class="btn ghost" id="plcsv" type="button">:ic-download: CSV</button><button class="btn ghost" id="printbtn" type="button">:ic-print: Print</button></div></div>
+    <div class="chips noprint">${PERIODS.map(([v, l]) => `<a class="chip ${key === v ? 'on' : ''}" href="#/admin/profit?p=${v}">${l}</a>`).join('')}</div>
+    <form id="plrange" class="row noprint" style="margin-bottom:14px"><label class="muted" style="display:flex;gap:6px;align-items:center">From <input name="from" type="date" value="${from}"></label><label class="muted" style="display:flex;gap:6px;align-items:center">To <input name="to" type="date" value="${to}"></label><button class="btn ghost">Custom range</button></form>
+    <div class="kpis"><div class="kpi"><span class="lbl">Income</span><b>${money(income)}</b></div><div class="kpi"><span class="lbl">Gross profit</span><b>${money(gross)}</b><small class="muted">${pct(gross)}% margin</small></div><div class="kpi"><span class="lbl">Expenses</span><b>${money(expTotal)}</b></div><div class="kpi"><span class="lbl">Net profit</span><b class="${netP < 0 ? 'down' : 'up'}">${money(netP)}</b><small class="muted">${pct(netP)}% of income</small></div></div>
+    <div class="cartwrap" style="margin-top:16px"><section class="cs"><h3>Statement</h3><table class="pl"><tr><th colspan="2">Income</th></tr>${mtr('Online &amp; in-store sales <small class="muted">(excl. tax, after refunds)</small>', incO)}${mtr('Invoiced sales &amp; services <small class="muted">(excl. tax)</small>', incI)}${mtr('Total income', income, true)}
+      <tr><th colspan="2">Cost of goods sold</th></tr>${mtr('Product cost of items sold', cogs)}${mtr('Gross profit', gross, true)}<tr><th colspan="2">Expenses <small class="muted">(excl. recoverable sales tax)</small></th></tr>
+      ${Object.entries(exp).sort((a, b) => b[1] - a[1]).map(([c, v]) => mtr(esc(c), v)).join('') || '<tr><td colspan="2" class="muted">No expenses recorded for this period.</td></tr>'}${mtr('Total expenses', expTotal, true)}${mtr('Net profit', netP, true)}</table>
+      ${cogs === 0 && income > 0 ? '<p class="muted" style="margin:8px 0 0">Tip: add a unit cost to your products so cost of goods sold (and true profit) shows up here.</p>' : ''}</section>
+    <aside class="summary"><h3>Sales tax summary</h3><dl class="totals" style="margin:0"><dt>Collected from customers</dt><dd>${money(taxColl)}</dd><dt>Paid on expenses</dt><dd>${money(taxPaid)}</dd><dt><b>Net tax to remit</b></dt><dd><b>${money(taxColl - taxPaid)}</b></dd></dl><small class="muted">An estimate to help with filing — confirm with your accountant.</small></aside></div>
+    ${months.length > 1 ? `<h2>By month</h2><table><tr><th>Month</th><th class="r">Income</th><th class="r">Product cost</th><th class="r">Expenses</th><th class="r">Net profit</th></tr>${months.map((m) => { const x = M[m], np = x.inc - x.cogs - x.exp; return `<tr><td>${m}</td><td class="r">${money(x.inc)}</td><td class="r">${money(x.cogs)}</td><td class="r">${money(x.exp)}</td><td class="r ${np < 0 ? 'down' : ''}"><b>${money(np)}</b></td></tr>`; }).join('')}</table>` : ''}
+    <p class="muted" style="font-size:.85rem">Based on sales dated in the period (not when cash arrived), at each product's current unit cost for invoice lines linked to products.</p>`;
   }
   if (sub === 'codes') {
     const cs = (await sb.from('discount_codes').select('*').order('code')).data;
@@ -932,7 +1086,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const os = (await oq).data || [], lnames = Object.fromEntries(locs.map((l) => [l.id, l.name]));
     const link = (extra) => { const n = new URLSearchParams(q); Object.entries(extra).forEach(([k, v]) => (v ? n.set(k, v) : n.delete(k))); const t = n.toString(); return '#/admin/orders' + (t ? '?' + t : ''); };
     return `<h1>Orders</h1><div class="row" style="margin-bottom:10px"><form id="ordsearch" class="row" style="flex:1;min-width:220px;flex-wrap:nowrap"><input name="search" value="${esc(term)}" placeholder="Search order #, name or email…" aria-label="Search orders" style="flex:1;min-width:0"><button class="btn ghost">Search</button></form>
-      <select id="ordloc" aria-label="Filter by location"><option value="">All locations</option>${locs.map((l) => `<option value="${l.id}" ${String(l.id) === locF ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select><button class="btn ghost" id="csv">⬇ CSV</button><a class="btn" href="#/admin/pos">+ In-store sale</a></div>
+      <select id="ordloc" aria-label="Filter by location"><option value="">All locations</option>${locs.map((l) => `<option value="${l.id}" ${String(l.id) === locF ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select><button class="btn ghost" id="csv">:ic-download: CSV</button><a class="btn" href="#/admin/pos">+ In-store sale</a></div>
     <div class="chips"><a class="chip ${!statusF ? 'on' : ''}" href="${link({ status: '' })}">All</a>${STATUSES.map((st) => `<a class="chip ${statusF === st ? 'on' : ''}" href="${link({ status: st })}">${st}</a>`).join('')}</div>
     ${os.length ? `<div class="row bulk" style="margin-bottom:8px"><span class="muted"><span id="selcount">0</span> selected</span><select id="bulkstatus" aria-label="New status">${STATUSES.map((st) => `<option>${st}</option>`).join('')}</select><button class="btn ghost" id="bulkapply">Apply to selected</button></div>
     <table id="ordtable"><tr><th><input type="checkbox" id="selall" aria-label="Select all"></th><th>Order</th><th>Date</th><th>Location</th><th>Status</th><th>Total</th></tr>${os.map((o) => `<tr><td><input type="checkbox" class="osel" value="${o.id}" aria-label="Select order ${o.id}"></td><td><a href="#/admin/orders/${o.id}">#${o.id}</a> · ${esc(o.name)}</td><td>${dateOf(o.created_at)}</td><td>${esc(lnames[o.location_id] || '')}${o.source === 'in_store' ? ' · in store' : o.fulfillment === 'pickup' ? ' · pickup' : ''}</td><td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}${o.refunded_cents ? `<br><small class="down">−${money(o.refunded_cents)} refunded</small>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">No orders match.</p>'}`;
@@ -940,8 +1094,8 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   if (sub === 'customers' && id) {
     const [pr, ords, info] = await Promise.all([sb.from('profiles').select('*').eq('id', id).single(), sb.from('orders').select('*').eq('user_id', id).order('id', { ascending: false }), sb.from('customer_info').select('*').eq('user_id', id).maybeSingle()]);
     const u = pr.data, os = ords.data || [], live = os.filter((o) => o.status !== 'cancelled'), spent = live.reduce((a, o) => a + net(o), 0), ci = info.data || { notes: '', tags: [] };
-    return `<p><a href="#/admin/customers">← All customers</a></p><div class="acchead">${avatar(u.name || u.email)}<div><h1 style="margin:0">${esc(u.name || u.email)}${u.is_admin ? ' <span class="status paid">admin</span>' : ''}</h1><span class="muted">${esc(u.email)} · joined ${new Date(u.created_at).toLocaleDateString()}</span></div>
-      <a class="btn ghost" href="#/messages/new?to=${u.id}" style="margin-left:auto">💬 Message</a></div>
+    return `<p><a href="#/admin/customers">← All customers</a></p><div class="acchead">${avatar(u.name || u.email)}<div><h1 style="margin:0">${esc(u.name || u.email)}${u.is_admin ? ' <span class="status paid">admin</span>' : ''}</h1><span class="muted">${u.username ? '@' + esc(u.username) + ' · ' : ''}${esc(u.email)} · joined ${new Date(u.created_at).toLocaleDateString()}</span></div>
+      <a class="btn ghost" href="#/messages/new?to=${u.id}" style="margin-left:auto">:ic-chat: Message</a></div>
     <div class="kpis"><div class="kpi"><span class="lbl">Orders</span><b>${live.length}</b></div><div class="kpi"><span class="lbl">Lifetime spend</span><b>${money(spent)}</b></div><div class="kpi"><span class="lbl">Average order</span><b>${money(live.length ? Math.round(spent / live.length) : 0)}</b></div><div class="kpi"><span class="lbl">Last order</span><b style="font-size:1.1rem">${os[0] ? new Date(os[0].created_at).toLocaleDateString() : '—'}</b></div></div>
     <section class="cs" style="margin-top:16px"><h3>Notes &amp; tags <small class="muted" style="font-weight:400">(private)</small></h3><form id="custform" class="stack" data-id="${u.id}"><label>Tags (comma separated)<input name="tags" value="${esc((ci.tags || []).join(', '))}" placeholder="contractor, wholesale, VIP"></label><label>Notes<textarea name="notes" rows="4" maxlength="5000">${esc(ci.notes)}</textarea></label><button class="btn">Save</button></form></section>
     <section class="cs" style="margin-top:16px"><h3>Orders</h3>${ordersTable(os, '#/admin/orders')}</section>`;
@@ -950,7 +1104,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const us = (await sb.from('profiles').select('*').order('created_at', { ascending: false })).data;
     const cst = {}; ((await sb.from('orders').select('user_id,total_cents,tax_cents,refunded_cents,status')).data || []).forEach((o) => { if (!o.user_id || o.status === 'cancelled') return; const c = (cst[o.user_id] = cst[o.user_id] || { n: 0, spent: 0 }); c.n++; c.spent += net(o); });
     const tagsBy = {}; ((await sb.from('customer_info').select('user_id,tags')).data || []).forEach((r) => (tagsBy[r.user_id] = r.tags || []));
-    return `<h1>Customers</h1><table><tr><th>Name</th><th>Email</th><th>Orders</th><th>Spent</th><th>Joined</th><th></th></tr>${us.map((u) => `<tr><td><a href="#/admin/customers/${u.id}">${esc(u.name || u.email)}</a>${u.is_admin ? ' (admin)' : ''}${(tagsBy[u.id] || []).map((t) => ` <span class="status">${esc(t)}</span>`).join('')}</td><td>${esc(u.email)}</td><td>${cst[u.id]?.n || 0}</td><td>${money(cst[u.id]?.spent || 0)}</td><td>${dateOf(u.created_at)}</td><td>${u.is_admin ? '' : `<a href="#/messages/new?to=${u.id}">💬 Message</a>`}</td></tr>`).join('')}</table>`;
+    return `<h1>Customers</h1><table><tr><th>Name</th><th>Email</th><th>Orders</th><th>Spent</th><th>Joined</th><th></th></tr>${us.map((u) => `<tr><td><a href="#/admin/customers/${u.id}">${esc(u.name || u.email)}</a>${u.is_admin ? ' (admin)' : ''}${(tagsBy[u.id] || []).map((t) => ` <span class="status">${esc(t)}</span>`).join('')}</td><td>${esc(u.email)}</td><td>${cst[u.id]?.n || 0}</td><td>${money(cst[u.id]?.spent || 0)}</td><td>${dateOf(u.created_at)}</td><td>${u.is_admin ? '' : `<a href="#/messages/new?to=${u.id}">:ic-chat: Message</a>`}</td></tr>`).join('')}</table>`;
   }
   if (sub === 'products' && (id === 'new' || id)) {
     const p = id === 'new' ? {} : (await sb.from('products').select('*').eq('id', id).single()).data;
@@ -991,7 +1145,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   const sum = (a) => a.reduce((x, o) => x + net(o), 0), revCur = sum(cur), revPrev = sum(prev);
   const custCur = (custRes.data || []).filter((u) => new Date(u.created_at) >= cutCur).length, custPrev = (custRes.data || []).length - custCur;
   const todayRev = sum(all.filter((o) => sameDay(o.created_at, now)));
-  const delta = (c, p) => (p ? `<small class="${c >= p ? 'up' : 'down'}">${c >= p ? '▲' : '▼'} ${Math.abs(Math.round((c - p) / p * 100))}% vs previous ${days} days</small>` : `<small class="muted">${c ? 'New activity' : 'No data yet'}</small>`);
+  const delta = (c, p) => (p ? `<small class="${c >= p ? 'up' : 'down'}">${c >= p ? ':ic-trending-up:' : ':ic-trending-down:'} ${Math.abs(Math.round((c - p) / p * 100))}% vs previous ${days} days</small>` : `<small class="muted">${c ? 'New activity' : 'No data yet'}</small>`);
   const kpi = (label, value, d) => `<div class="kpi"><span class="lbl">${label}</span><b>${value}</b>${d}</div>`;
   const lname = Object.fromEntries((locRes.data || []).map((l) => [l.id, l.name]));
   const byLoc = {}; cur.forEach((o) => { const k = o.location_id || 0; byLoc[k] = (byLoc[k] || 0) + net(o); });
@@ -1000,25 +1154,31 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   const topRows = Object.entries(top).sort((a, b) => b[1].r - a[1].r).slice(0, 5);
   const hr = new Date().getHours(), first = (profile?.name || '').split(' ')[0];
   const today0 = new Date().toISOString().slice(0, 10), overdue = (invRes.data || []).filter((i) => i.due_date < today0 && i.total_cents > i.paid_cents), rep = can('reports.view');
-  const attn = [['🧾', pendRes.count || 0, 'pending orders', '#/admin/orders', 'orders.view'], ['💬', unread.msg, 'unread messages', '#/messages', 'messages'], ['📝', formRes.count || 0, 'new form responses', '#/admin/forms', 'content.manage'], ['📦', (lowRes.data || []).length, 'low-stock products', '#/admin/inventory', 'inventory.view'],
-    ['📋', quoteRes.count || 0, 'quote requests this week', '#/admin/quotes', 'customers.view'], ['💳', overdue.length, 'overdue invoices', '#/admin/invoices', 'invoices.view']].filter((a) => can(a[4]));
-  const links = [['🧾', 'Orders', '#/admin/orders'], ['🛍️', 'Products', '#/admin/products'], ['📦', 'Inventory', '#/admin/inventory'], ['📍', 'Locations', '#/admin/locations'], ['📈', 'Sales', '#/admin/sales'], ['🏪', 'Point of sale', '#/admin/pos'],
-    ['🧾', 'Invoices', '#/admin/invoices'], ['📝', 'Estimates', '#/admin/estimates'], ['🚚', 'Purchasing', '#/admin/purchasing'], ['🏭', 'Suppliers', '#/admin/suppliers'], ['🔐', 'Team & roles', '#/admin/team'], ['🕘', 'Activity log', '#/admin/activity'],
-    ['👥', 'Customers', '#/admin/customers'], ['💬', 'Messages', '#/messages'], ['📝', 'Forms', '#/admin/forms'], ['📄', 'Pages', '#/admin/pages'], ['💲', 'Price compare', '#/admin/compare'], ['🏷️', 'Discount codes', '#/admin/codes'], ['⚙️', 'Settings', '#/admin/settings'], ['📋', 'Quotes', '#/admin/quotes']];
-  return `<div class="dashhead"><div><h1 style="margin:0">Good ${hr < 12 ? 'morning' : hr < 18 ? 'afternoon' : 'evening'}${first ? ', ' + esc(first) : ''} 👋</h1><p class="muted" style="margin:2px 0 0">${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })} · ${money(todayRev)} sold today</p></div>
-    <div class="row"><a class="btn" href="#/admin/pos">+ In-store sale</a><a class="btn ghost" href="#/admin/products/new">+ Product</a></div></div>
-  <div class="attn">${attn.map(([i, n, l, h]) => `<a class="attnc ${n ? 'on' : ''}" href="${h}"><span>${i}</span><b>${n}</b><small>${l}</small></a>`).join('')}</div>
-  ${rep ? `  <div class="chips">${[7, 30, 90].map((d) => `<a class="chip ${d === days ? 'on' : ''}" href="#/admin?days=${d}">Last ${d} days</a>`).join('')}</div>
-  <div class="kpis">${kpi('Revenue', money(revCur), delta(revCur, revPrev))}${kpi('Orders', cur.length, delta(cur.length, prev.length))}${kpi('Average order', money(cur.length ? Math.round(revCur / cur.length) : 0), delta(cur.length ? revCur / cur.length : 0, prev.length ? revPrev / prev.length : 0))}${kpi('New customers', custCur, delta(custCur, custPrev))}</div>
-  <h2>Revenue</h2>${barChart(bucketize(cur, days))}
-` : ''}
-  <div class="two" style="margin-top:6px"><div>${rep ? `<h2>By location</h2>${locRows.length ? locRows.map(([k, v]) => `<div class="locbar"><span>${esc(lname[k] || 'Unassigned')}</span><div class="progress"><i style="width:${v / maxLoc * 100}%"></i></div><b>${money(v)}</b></div>`).join('') : '<p class="muted">No sales in this period.</p>'}
-    <h2>Top products</h2>${topRows.length ? `<table><tr><th>Product</th><th>Units</th><th>Revenue</th></tr>${topRows.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.u}</td><td>${money(v.r)}</td></tr>`).join('')}</table>` : '<p class="muted">No sales in this period.</p>'}` : ''}</div>
-  <div>${can('orders.view') ? `<h2>Recent orders</h2>${(recentRes.data || []).length ? `<table><tr><th>Order</th><th>Status</th><th>Total</th></tr>${recentRes.data.map((o) => `<tr><td><a href="#/admin/orders/${o.id}">#${o.id}</a> · ${esc(o.name)}${o.source === 'in_store' ? ' 🏪' : ''}<br><small class="muted">${ago(o.created_at)}</small></td><td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}</td></tr>`).join('')}</table>` : '<p class="muted">No orders yet.</p>'}
-` : ''}${can('inventory.view') ? `    <h2>Low stock</h2>${(lowRes.data || []).length ? `<ul class="plain">${lowRes.data.map((x) => `<li><a href="#/admin/products/${x.id}">${esc(x.name)}</a> <b class="${x.stock === 0 ? 'down' : ''}">${x.stock === 0 ? 'out of stock' : x.stock + ' left'}</b></li>`).join('')}</ul>` : '<p class="muted">Everything is well stocked. ✅</p>'}` : ''}</div></div>
-  <h2>Manage</h2><div class="qlinks">${links.filter(([, , h]) => { const sec = h.split('/')[2]; return h.startsWith('#/messages') ? can('messages') : !SECTION_PERM[sec] || can(SECTION_PERM[sec]); }).map(([i, l, h]) => `<a href="${h}"><span>${i}</span>${l}</a>`).join('')}</div>`;
+  const attn = [[':ic-receipt:', pendRes.count || 0, 'pending orders', '#/admin/orders', 'orders.view'], [':ic-chat:', unread.msg, 'unread messages', '#/messages', 'messages'], [':ic-edit:', formRes.count || 0, 'new form responses', '#/admin/forms', 'content.manage'], [':ic-package:', (lowRes.data || []).length, 'low-stock products', '#/admin/inventory', 'inventory.view'],
+    [':ic-clipboard:', quoteRes.count || 0, 'quote requests this week', '#/admin/quotes', 'customers.view'], [':ic-card:', overdue.length, 'overdue invoices', '#/admin/invoices', 'invoices.view']].filter((a) => can(a[4]));
+  const links = [[':ic-receipt:', 'Orders', '#/admin/orders'], [':ic-store:', 'Products', '#/admin/products'], [':ic-package:', 'Inventory', '#/admin/inventory'], [':ic-map-pin:', 'Locations', '#/admin/locations'], [':ic-trending-up:', 'Sales', '#/admin/sales'], [':ic-store:', 'Point of sale', '#/admin/pos'],
+    [':ic-receipt:', 'Invoices', '#/admin/invoices'], [':ic-edit:', 'Estimates', '#/admin/estimates'], [':ic-book:', 'Statements', '#/admin/statements'], [':ic-wallet:', 'Expenses', '#/admin/expenses'], [':ic-chart:', 'Profit & loss', '#/admin/profit'], [':ic-truck:', 'Purchasing', '#/admin/purchasing'], [':ic-briefcase:', 'Suppliers', '#/admin/suppliers'], [':ic-shield:', 'Team & roles', '#/admin/team'], [':ic-clock:', 'Activity log', '#/admin/activity'],
+    [':ic-users:', 'Customers', '#/admin/customers'], [':ic-chart:', 'SEO', '#/admin/seo'], [':ic-chat:', 'Messages', '#/messages'], [':ic-edit:', 'Forms', '#/admin/forms'], [':ic-file:', 'Pages', '#/admin/pages'], [':ic-dollar:', 'Price compare', '#/admin/compare'], [':ic-tag:', 'Discount codes', '#/admin/codes'], [':ic-settings:', 'Settings', '#/admin/settings'], [':ic-clipboard:', 'Quotes', '#/admin/quotes']];
+  const linkOk = ([, , h]) => { const sec = h.split('/')[2]; return h.startsWith('#/messages') ? can('messages') : !SECTION_PERM[sec] || can(SECTION_PERM[sec]); };
+  const groups = [['Sell', ['Orders', 'Point of sale', 'Products', 'Inventory', 'Locations', 'Discount codes', 'Price compare']], ['Money', ['Invoices', 'Estimates', 'Statements', 'Expenses', 'Profit & loss', 'Sales']], ['Customers & content', ['Customers', 'Messages', 'Forms', 'Pages', 'Quotes', 'SEO']], ['Business', ['Purchasing', 'Suppliers', 'Team & roles', 'Activity log', 'Settings']]];
+  const linkBy = Object.fromEntries(links.map((l) => [l[1], l])), manage = groups.map(([g, names]) => [g, names.map((n) => linkBy[n]).filter(Boolean).filter(linkOk)]).filter(([, ls]) => ls.length);
+  const card = (title, body, action = '') => `<section class="cs dcard"><div class="sechead"><h3 style="margin:0">${title}</h3>${action}</div>${body}</section>`;
+  const recent = (recentRes.data || []).slice(0, 8);
+  return `<div class="dashhead"><div><h1 style="margin:0">Good ${hr < 12 ? 'morning' : hr < 18 ? 'afternoon' : 'evening'}${first ? ', ' + esc(first) : ''}</h1><p class="muted" style="margin:2px 0 0">${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })} · ${money(todayRev)} sold today</p></div>
+    <div class="row">${can(SECTION_PERM.settings) ? `<button type="button" class="btn ghost shoptoggle" id="shoptoggle">${shopClosed() ? ':ic-store: Reopen shop' : ':ic-lock: Close shop'}</button>` : ''}<a class="btn" href="#/admin/pos">:ic-store: In-store sale</a><a class="btn ghost" href="#/admin/products/new">+ Product</a></div></div>
+  ${attn.length ? `<div class="attn">${attn.map(([i, n, l, h]) => `<a class="attnc ${n ? 'on' : ''}" href="${h}"><span>${i}</span><b>${n}</b><small>${l}</small></a>`).join('')}</div>` : ''}
+  ${rep ? `<div class="sechead dsec"><h2 style="margin:0">Performance</h2><div class="seg">${[7, 30, 90].map((d) => `<a class="${d === days ? 'on' : ''}" href="#/admin?days=${d}">${d} days</a>`).join('')}</div></div>
+  <div class="kpis">${kpi('Revenue', money(revCur), delta(revCur, revPrev))}${kpi('Orders', cur.length, delta(cur.length, prev.length))}${kpi('Average order', money(cur.length ? Math.round(revCur / cur.length) : 0), delta(cur.length ? revCur / cur.length : 0, prev.length ? revPrev / prev.length : 0))}${kpi('New customers', custCur, delta(custCur, custPrev))}</div>` : ''}
+  <div class="dgrid">
+    <div class="dmain">${rep ? `${card('Revenue', barChart(bucketize(cur, days)), `<small class="muted">last ${days} days</small>`)}
+      <div class="dpair">${card('By location', locRows.length ? locRows.map(([k, v]) => `<div class="locbar"><span>${esc(lname[k] || 'Unassigned')}</span><div class="progress"><i style="width:${v / maxLoc * 100}%"></i></div><b>${money(v)}</b></div>`).join('') : '<p class="muted" style="margin:0">No sales in this period.</p>')}
+        ${card('Top products', topRows.length ? `<ul class="plain">${topRows.map(([n, v], i) => `<li><span><span class="rank">${i + 1}</span>${esc(n)}</span><span><b>${money(v.r)}</b> <small class="muted">· ${v.u} sold</small></span></li>`).join('')}</ul>` : '<p class="muted" style="margin:0">No sales in this period.</p>')}</div>` : ''}</div>
+    <div class="dside">${can('orders.view') ? card('Recent orders', recent.length ? `<div class="olist2">${recent.map((o) => `<a class="orow" href="#/admin/orders/${o.id}"><span class="oid"><b>#${o.id}</b></span><span class="oname"><span class="nm">${esc(o.name)}${o.source === 'in_store' ? ' :ic-store:' : ''}</span><small class="muted">${ago(o.created_at)}</small></span><span class="status ${esc(o.status)}">${esc(o.status)}</span><b class="ototal">${money(o.total_cents)}</b></a>`).join('')}</div>` : '<p class="muted" style="margin:0">No orders yet.</p>', '<a href="#/admin/orders" style="font-size:.9rem">View all →</a>') : ''}
+      ${can('inventory.view') ? card('Low stock', (lowRes.data || []).length ? `<ul class="plain">${lowRes.data.map((x) => `<li><a href="#/admin/products/${x.id}">${esc(x.name)}</a><b class="${x.stock === 0 ? 'down' : ''}">${x.stock === 0 ? 'Out of stock' : x.stock + ' left'}</b></li>`).join('')}</ul>` : '<p class="muted" style="margin:0">Everything is well stocked.</p>', '<a href="#/admin/inventory" style="font-size:.9rem">Inventory →</a>') : ''}</div></div>
+  <h2 class="dsec">Manage</h2><div class="mgroups">${manage.map(([g, ls]) => `<div class="mgroup"><h4>${g}</h4><div class="qlinks">${ls.map(([i, l, h]) => `<a href="${h}"><span>${i}</span>${l}</a>`).join('')}</div></div>`).join('')}</div>`;
 };
 pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
+  document.getElementById('shoptoggle')?.addEventListener('click', () => { if (shopClosed()) setShopClosed(false); else { const m = prompt('Message for customers (optional):', STORE.closed_message || ''); if (m !== null) setShopClosed(true, m.trim().slice(0, 300)); } });
   // team
   document.getElementById('teamsearch')?.addEventListener('submit', (e) => { e.preventDefault(); const v = new FormData(e.target).get('search').trim(); location.hash = '#/admin/team' + (v ? '?search=' + encodeURIComponent(v) : ''); });
   document.querySelectorAll('.rolesel').forEach((el) => el.addEventListener('change', async () => {
@@ -1037,6 +1197,50 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     const { error } = await sb.rpc('record_invoice_payment', { iid: Number(id), amount: Math.round(parseFloat(f.amount) * 100), pay_method: f.method, ref: f.ref || '', paid: f.paid || todayStr(), memo: '' }); error ? fail(error) : (flash('Payment recorded.'), route());
   });
   document.querySelectorAll('.delpay').forEach((b) => b.addEventListener('click', async () => { if (!confirm('Remove this payment?')) return; const { error } = await sb.rpc('delete_invoice_payment', { pid: Number(b.dataset.id) }); error ? fail(error) : route(); }));
+  // statements / expenses / P&L
+  document.getElementById('stmtfrom')?.addEventListener('change', (e) => { location.hash = `#/admin/statements/${id}?from=${e.target.value || 'all'}`; });
+  document.getElementById('sendstmt')?.addEventListener('click', async () => { const { data, error } = await sb.rpc('send_statement', { cid: STMT.cid, mail: STMT.mail, nm: STMT.name, base: location.origin + location.pathname }); if (error) return fail(error); flash(data.ready ? 'Statement is on its way — see the delivery log under Settings → Messaging.' : 'Sending isn’t connected yet — connect it in Settings → Messaging.', data.ready ? 'ok' : 'error'); });
+  document.getElementById('plrange')?.addEventListener('submit', (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); if (!f.from || !f.to || f.from > f.to) return fail(new Error('Choose a valid date range.')); location.hash = `#/admin/profit?p=custom&from=${f.from}&to=${f.to}`; });
+  document.getElementById('plcsv')?.addEventListener('click', () => download('profit-and-loss.csv', [['Line', 'Amount'], ...PNL]));
+  document.getElementById('expcsv')?.addEventListener('click', () => download('expenses.csv', [['Date', 'Vendor', 'Category', 'Description', 'Amount', 'Tax', 'Paid with'], ...[...document.querySelectorAll('#exptable tr[data-csv]')].map((r) => JSON.parse(r.dataset.csv))]));
+  document.getElementById('expform')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = new FormData(e.target), btn = e.target.querySelector('button'); btn.disabled = true; const file = f.get('receipt'); let path = '';
+    if (file && file.size) { if (file.size > 10 * 1024 * 1024) { btn.disabled = false; return fail(new Error('Receipt must be under 10 MB.')); }
+      path = `${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-60)}`; const up = await sb.storage.from('expense-receipts').upload(path, file, { contentType: file.type }); if (up.error) { btn.disabled = false; return fail(up.error); } }
+    const cents = (v) => Math.round((parseFloat(v) || 0) * 100), amount = cents(f.get('amount')), tax = cents(f.get('tax'));
+    if (tax > amount) { btn.disabled = false; return fail(new Error('Sales tax cannot be more than the total.')); }
+    const { error } = await sb.from('expenses').insert({ spent_on: f.get('spent_on'), vendor: f.get('vendor').trim(), category: f.get('category').trim(), description: f.get('description').trim(), amount_cents: amount, tax_cents: tax, payment_method: f.get('payment_method'), receipt_path: path });
+    btn.disabled = false; error ? fail(error) : (flash('Expense saved.'), route());
+  });
+  document.querySelectorAll('.viewrec').forEach((b) => b.addEventListener('click', async () => { const w = window.open('', '_blank'); const { data, error } = await sb.storage.from('expense-receipts').createSignedUrl(b.dataset.path, 60); if (error) { w?.close(); return fail(error); } if (w) w.location = data.signedUrl; else location.href = data.signedUrl; }));
+  document.querySelectorAll('.delexp').forEach((b) => b.addEventListener('click', async () => { if (!confirm('Delete this expense?')) return; const { error } = await sb.from('expenses').delete().eq('id', b.dataset.id); if (error) return fail(error); if (b.dataset.path) await sb.storage.from('expense-receipts').remove([b.dataset.path]); route(); }));
+  // sending invoices / estimates
+  const box = document.getElementById('sendbox');
+  if (box) {
+    const kind = box.dataset.kind, docId = Number(box.dataset.id), enc = encodeURIComponent, $ = (i) => document.getElementById(i);
+    const refresh = () => { $('sd_mailto').href = `mailto:${$('sd_to').value.trim()}?subject=${enc(box.dataset.subject)}&body=${enc(box.dataset.text)}`; $('sd_smslink').href = `sms:${$('sd_phone').value.replace(/[^0-9+]/g, '')}?&body=${enc(box.dataset.text)}`; };
+    $('sd_to').addEventListener('input', () => { $('sd_email').checked = !!$('sd_to').value.trim(); refresh(); }); $('sd_phone').addEventListener('input', () => { if ($('sd_phone').value.trim()) $('sd_sms').checked = true; refresh(); });
+    document.getElementById('opensend')?.addEventListener('click', () => { box.hidden = !box.hidden; if (!box.hidden) box.scrollIntoView({ behavior: 'smooth', block: 'center' }); });
+    $('sd_copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(box.dataset.link); flash('Link copied — paste it into any message.'); } catch { prompt('Copy this link:', box.dataset.link); } });
+    $('sd_share').addEventListener('click', () => navigator.share?.({ title: box.dataset.subject, text: box.dataset.text, url: box.dataset.link }).catch(() => {}));
+    const sendNow = async () => {
+      const em = $('sd_email').checked, sm = $('sd_sms').checked; if (!em && !sm) return fail(new Error('Tick email, text, or both — or use the buttons below to send it yourself.'));
+      const btn = $('sd_go'); btn.disabled = true;
+      const args = { via_email: em, via_sms: sm, base: location.origin + location.pathname, to_email: $('sd_to').value.trim() || null, to_phone: $('sd_phone').value.trim() || null };
+      const { data, error } = await sb.rpc(kind === 'invoice' ? 'send_invoice' : 'send_estimate', kind === 'invoice' ? { iid: docId, ...args } : { eid: docId, ...args }); btn.disabled = false;
+      if (error) return fail(error);
+      flash(data.ready ? 'Sending… the delivery log below will show the result.' : 'Marked as sent, but sending isn’t connected yet — use the buttons below to send it yourself, or connect it in Settings.', data.ready ? 'ok' : 'error'); route();
+      if (data.ready) setTimeout(() => { if (location.hash.includes(`/${kind === 'invoice' ? 'invoices' : 'estimates'}/${docId}`)) route(); }, 4000);
+    };
+    $('sd_go').addEventListener('click', sendNow);
+    for (const aid of ['sd_mailto', 'sd_smslink']) $(aid).addEventListener('click', () => { flash('Opened — once you’ve sent it, click “Mark as sent” so your records match.'); });
+  }
+  // messaging settings
+  document.getElementById('msgtest')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+    const { data, error } = await sb.rpc('send_test_message', { channel: f.channel, to_addr: f.to, base: location.origin + location.pathname }); if (error) return fail(error);
+    flash(data.ready ? 'Test sent — checking the result…' : 'The sending service isn’t connected yet.', data.ready ? 'ok' : 'error'); setTimeout(route, 3500);
+  });
   // estimates + recurring
   document.querySelectorAll('[data-estact]').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.rpc('set_estimate_status', { eid: Number(id), new_status: b.dataset.estact }); error ? fail(error) : (flash('Estimate updated.'), route()); }));
   document.getElementById('estconvert')?.addEventListener('click', async () => { if (!confirm('Convert this estimate into an invoice?')) return; const { data, error } = await sb.rpc('convert_estimate', { eid: Number(id) }); error ? fail(error) : (flash('Invoice created from the estimate.'), (location.hash = `#/admin/invoices/${data}`)); });
@@ -1067,16 +1271,16 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       if (INV.kind === 'recurring') {
         if (!v('rc_name').trim()) return fail(new Error('Give this recurring invoice a name.'));
         const rec = { ...base, name: v('rc_name').trim(), frequency: v('rc_freq'), every: parseInt(v('rc_every'), 10) || 1, next_run: v('rc_next'), end_date: v('rc_end') || null, due_days: parseInt(v('rc_due'), 10) || 0, auto_send: document.getElementById('rc_auto').checked };
-        const { error } = await sb.rpc('save_recurring', { rec, items }); if (error) return fail(error); flash('Recurring invoice saved.'); location.hash = '#/admin/invoices/recurring'; return;
+        const { data, error } = await sb.rpc('save_recurring', { rec, items }); if (error) return fail(error); await sb.rpc('set_doc_phone', { doc: 'recurring', did: data, phone: v('iv_phone') }); flash('Recurring invoice saved.'); location.hash = '#/admin/invoices/recurring'; return;
       }
       if (INV.kind === 'estimate') {
         const { data, error } = await sb.rpc('save_estimate', { est: { ...base, issue_date: v('iv_issue'), expires_on: v('iv_due') }, items }); if (error) return fail(error);
-        if (send) { const r = await sb.rpc('set_estimate_status', { eid: data, new_status: 'sent' }); if (r.error) return fail(r.error); }
-        flash(send ? 'Estimate saved and marked as sent.' : 'Estimate saved.'); location.hash = `#/admin/estimates/${data}`; return;
+        await sb.rpc('set_doc_phone', { doc: 'estimate', did: data, phone: v('iv_phone') });
+        flash(send ? 'Estimate saved — choose how to send it.' : 'Estimate saved.'); location.hash = `#/admin/estimates/${data}${send ? '?send=1' : ''}`; return;
       }
       const { data, error } = await sb.rpc('save_invoice', { inv: { ...base, issue_date: v('iv_issue'), due_date: v('iv_due') }, items }); if (error) return fail(error);
-      if (send) { const r = await sb.rpc('set_invoice_status', { iid: data, new_status: 'sent' }); if (r.error) return fail(r.error); }
-      flash(send ? 'Invoice saved and marked as sent.' : 'Invoice saved.'); location.hash = `#/admin/invoices/${data}`;
+      await sb.rpc('set_doc_phone', { doc: 'invoice', did: data, phone: v('iv_phone') });
+      flash(send ? 'Invoice saved — choose how to send it.' : 'Invoice saved.'); location.hash = `#/admin/invoices/${data}${send ? '?send=1' : ''}`;
     };
     document.getElementById('iv_save').addEventListener('click', () => save(false)); document.getElementById('iv_send')?.addEventListener('click', () => save(true));
   }
@@ -1090,7 +1294,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   const pol = document.getElementById('po_lines');
   if (pol && PO) {
     const tot = () => (document.getElementById('po_total').textContent = 'Total ' + money(Math.round(PO.lines.reduce((a, l) => a + (Number(l.qty) || 0) * (Number(l.unit_cost) || 0) * 100, 0))));
-    const draw = () => { pol.innerHTML = PO.lines.map((l, i) => `<tr data-i="${i}"><td><select data-k="product"><option value="">— choose a product —</option>${PO.prods.map((x) => `<option value="${x.id}" ${x.id === l.product_id ? 'selected' : ''}>${esc(x.name)} (${x.stock} in stock)</option>`).join('')}</select></td><td><input data-k="qty" type="number" min="1" value="${l.qty}" style="width:90px"></td><td><input data-k="cost" type="number" step="0.01" min="0" value="${Number(l.unit_cost).toFixed(2)}" style="width:104px"></td><td class="r amt">${money(Math.round((Number(l.qty) || 0) * (Number(l.unit_cost) || 0) * 100))}</td><td><button type="button" class="crm" data-del="${i}" aria-label="Remove line">✕</button></td></tr>`).join(''); tot(); };
+    const draw = () => { pol.innerHTML = PO.lines.map((l, i) => `<tr data-i="${i}"><td><select data-k="product"><option value="">— choose a product —</option>${PO.prods.map((x) => `<option value="${x.id}" ${x.id === l.product_id ? 'selected' : ''}>${esc(x.name)} (${x.stock} in stock)</option>`).join('')}</select></td><td><input data-k="qty" type="number" min="1" value="${l.qty}" style="width:90px"></td><td><input data-k="cost" type="number" step="0.01" min="0" value="${Number(l.unit_cost).toFixed(2)}" style="width:104px"></td><td class="r amt">${money(Math.round((Number(l.qty) || 0) * (Number(l.unit_cost) || 0) * 100))}</td><td><button type="button" class="crm" data-del="${i}" aria-label="Remove line">:ic-x:</button></td></tr>`).join(''); tot(); };
     draw();
     pol.addEventListener('input', (e) => { const tr = e.target.closest('tr'), k = e.target.dataset.k; if (!tr || !k) return; const l = PO.lines[Number(tr.dataset.i)];
       if (k === 'product') { l.product_id = Number(e.target.value) || ''; const pr = PO.prods.find((x) => x.id === l.product_id); if (pr && !Number(l.unit_cost)) l.unit_cost = pr.cost_cents / 100; draw(); return; }
@@ -1138,9 +1342,9 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   });
   document.getElementById('setf')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), cents = (v) => Math.max(0, Math.round((parseFloat(v) || 0) * 100));
-    const value = { ship_flat_cents: cents(f.ship), free_over_cents: cents(f.free), tax_rate: Math.min(50, Math.max(0, parseFloat(f.tax_rate) || 0)), tax_label: (f.tax_label || 'Tax').trim().slice(0, 30),
+    const value = { closed: f.closed === 'on', closed_message: (f.closed_message || '').trim().slice(0, 300), ship_flat_cents: cents(f.ship), free_over_cents: cents(f.free), tax_rate: Math.min(50, Math.max(0, parseFloat(f.tax_rate) || 0)), tax_label: (f.tax_label || 'Tax').trim().slice(0, 30),
       biz: { legal_name: f.legal_name.trim(), address: f.address.trim(), phone: f.phone.trim(), email: f.email.trim(), tax_number: f.tax_number.trim() },
-      invoice_prefix: (f.invoice_prefix || 'INV').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10) || 'INV', invoice_due_days: Math.min(365, Math.max(0, parseInt(f.invoice_due_days, 10) || 14)), invoice_terms: f.invoice_terms.trim(), invoice_pay_info: f.invoice_pay_info.trim() };
+      invoice_prefix: (f.invoice_prefix || 'INV').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10) || 'INV', invoice_due_days: Math.min(365, Math.max(0, parseInt(f.invoice_due_days, 10) || 14)), invoice_terms: f.invoice_terms.trim(), invoice_pay_info: f.invoice_pay_info.trim(), invoice_allow_partial: !!f.invoice_allow_partial };
     const { error } = await sb.from('site_settings').upsert({ key: 'store', value, updated_at: new Date().toISOString() }); if (error) return fail(error);
     applyStoreCfg(value); flash('Settings saved.'); route();
   });
@@ -1295,7 +1499,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   }));
   document.querySelectorAll('.delresp').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm('Delete this response (and any uploaded files)?')) return;
-    const paths = [...b.closest('tr').querySelectorAll('.dlfile')].map((x) => x.dataset.path);
+    const paths = [...b.closest('tr, .rcard').querySelectorAll('.dlfile')].map((x) => x.dataset.path);
     const { error } = await sb.from('form_submissions').delete().eq('id', b.dataset.id); if (error) return fail(error);
     if (paths.length) await sb.storage.from('form-uploads').remove(paths);
     route();
@@ -1309,7 +1513,17 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   });
   const fields = document.getElementById('fields');
   if (fields && FB) {
-    const redraw = () => (fields.innerHTML = fieldRows());
+    const redraw = () => { fields.innerHTML = fieldRows(); preview(); };
+    const val = (i) => document.getElementById(i)?.value ?? '';
+    const preview = () => {
+      const qc = document.getElementById('qcount'), pv = document.getElementById('fb_preview'); if (!qc || !pv) return; /* left the builder */ const t = val('fb_title') || 'Untitled form', fl = FB.fields; qc.textContent = fl.filter((x) => !DISPLAY_TYPES.includes(x.type)).length ? `(${fl.filter((x) => !DISPLAY_TYPES.includes(x.type)).length})` : '';
+      pv.innerHTML = `<div class="fhdr"><h1>${esc(t)}</h1>${val('fb_desc') ? `<p class="muted" style="white-space:pre-wrap;margin:6px 0 0">${esc(val('fb_desc'))}</p>` : ''}</div><div class="stack">${fl.length ? fl.map((x) => fieldHtml({ ...x, label: x.label || 'Untitled question' })).join('') : '<p class="muted">Add a question to see it here.</p>'}<button class="btn block" type="button">${esc(val('fb_submit') || 'Submit')}</button></div>`;
+    };
+    preview();
+    document.querySelectorAll('#fbuilder .tab').forEach((tb) => tb.addEventListener('click', () => {
+      document.querySelectorAll('#fbuilder .tab').forEach((x) => x.classList.toggle('on', x === tb)); document.getElementById('tab_settings').hidden = tb.dataset.tab !== 'settings'; document.getElementById('tab_preview').hidden = tb.dataset.tab !== 'preview'; if (tb.dataset.tab === 'preview') preview();
+    }));
+    let pt = null; document.getElementById('fbuilder').addEventListener('input', () => { clearTimeout(pt); pt = setTimeout(preview, 200); });
     fields.addEventListener('input', (e) => {
       const row = e.target.closest('.fld'); const f = FB.fields[Number(row?.dataset.i)]; const k = e.target.dataset.f; if (!f || !k) return;
       if (k === 'required') f.required = e.target.checked; else if (k === 'options') f.options = e.target.value.split('\n').map((x) => x.trim()).filter(Boolean); else f[k] = e.target.value;
@@ -1318,14 +1532,16 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     fields.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act; if (!act) return; const i = Number(e.target.closest('.fld').dataset.i);
       if (act === 'del') FB.fields.splice(i, 1);
+      else if (act === 'dup') { if (FB.fields.length >= 40) return fail(new Error('A form can have up to 40 questions.')); FB.fields.splice(i + 1, 0, { ...FB.fields[i], id: 'q' + Math.random().toString(36).slice(2, 9), options: FB.fields[i].options ? [...FB.fields[i].options] : undefined }); }
       else { const j = act === 'up' ? i - 1 : i + 1; if (j < 0 || j >= FB.fields.length) return; [FB.fields[i], FB.fields[j]] = [FB.fields[j], FB.fields[i]]; }
       redraw();
     });
-    document.getElementById('fb_add').addEventListener('click', () => {
+    document.querySelectorAll('[data-addtype]').forEach((bt) => bt.addEventListener('click', () => {
       if (FB.fields.length >= 40) return fail(new Error('A form can have up to 40 questions.'));
-      const type = document.getElementById('fb_newtype').value;
+      const type = bt.dataset.addtype;
       FB.fields.push({ id: 'q' + Math.random().toString(36).slice(2, 9), type, label: '', required: false, ...(CHOICE_TYPES.includes(type) ? { options: [] } : {}) }); redraw();
-    });
+      const last = fields.querySelector('.fld:last-child .flabel'); last?.focus(); last?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }));
     document.getElementById('fb_save').addEventListener('click', async () => {
       const title = document.getElementById('fb_title').value.trim(); if (!title) return fail(new Error('Give the form a title.'));
       if (!FB.fields.length) return fail(new Error('Add at least one question.'));
@@ -1340,6 +1556,11 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       flash('Form saved.'); location.hash = '#/admin/forms';
     });
   }
+  document.querySelectorAll('.copyform').forEach((bt) => bt.addEventListener('click', async () => { try { await navigator.clipboard.writeText(bt.dataset.url); flash('Form link copied.'); } catch { prompt('Copy this link:', bt.dataset.url); } }));
+  document.querySelectorAll('.dupform').forEach((bt) => bt.addEventListener('click', async () => {
+    const f = (await sb.from('forms').select('*').eq('id', bt.dataset.id).single()).data; if (!f) return; const { id: _i, created_at: _c, ...rest } = f;
+    const { error } = await sb.from('forms').insert({ ...rest, title: f.title + ' (copy)', slug: (f.slug + '-copy-' + Math.floor(Math.random() * 900 + 100)).slice(0, 60), active: false }); error ? fail(error) : (flash('Form duplicated as a draft.'), route());
+  }));
   document.getElementById('cf')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
     const { error } = await sb.from('discount_codes').insert({ code: f.code.trim().toUpperCase(), percent: Number(f.percent), min_cents: Math.round(Number(f.min || 0) * 100) });
@@ -1403,7 +1624,7 @@ function startRealtime() {
   if (!session) return;
   notifChan = sb.channel('notif-' + session.user.id).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${session.user.id}` }, (payload) => {
     const n = payload.new; unread.all++; if (n.kind === 'message') unread.msg++; renderNav();
-    flash(`🔔 ${n.title}`);
+    flash(n.title);
     if (document.hidden && 'Notification' in window && Notification.permission === 'granted') new Notification(n.title, { body: n.body });
     if (!document.getElementById('notifpanel').hidden) buildNotifPanel();
     if (location.hash.startsWith('#/notifications')) route();
@@ -1429,7 +1650,7 @@ pages.notifications = async () => {
   const { data } = await sb.from('notifications').select('*').order('id', { ascending: false }).limit(100);
   const perm = 'Notification' in window ? Notification.permission : 'unsupported';
   return `<h1>Notifications</h1><div class="row" style="margin-bottom:12px"><button class="btn ghost" id="markall">Mark all read</button><button class="btn ghost" id="clearall">Clear all</button>
-  ${perm === 'default' ? '<button class="btn ghost" id="desktopn">🔔 Enable desktop alerts</button>' : perm === 'granted' ? '<span class="muted">Desktop alerts on</span>' : ''}</div>
+  ${perm === 'default' ? '<button class="btn ghost" id="desktopn">:ic-bell: Enable desktop alerts</button>' : perm === 'granted' ? '<span class="muted">Desktop alerts on</span>' : ''}</div>
   <div class="notifs">${data.length ? data.map(notifRow).join('') : '<p class="muted">No notifications yet.</p>'}</div>`;
 };
 pages.notifications.after = () => {
@@ -1444,29 +1665,54 @@ const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateStrin
 const dayLabel = (d) => (sameDay(d, Date.now()) ? 'Today' : sameDay(d, Date.now() - 864e5) ? 'Yesterday' : new Date(d).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }));
 const timeOf = (d) => new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 let DM = null; // current chat state
-const isMine = (m) => (DM.isAdmin ? m.sender_id !== DM.conv.customer_id : m.sender_id === DM.conv.customer_id);
+const isMine = (m) => (DM.isStaff ? m.sender_id !== DM.conv.customer_id : m.sender_id === DM.conv.customer_id);
+const fmtSize = (n) => (n > 1e6 ? (n / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1e3)) + ' KB');
+const linkify = (t) => esc(t).replace(/(https?:\/\/[^\s<]+)/g, (m) => { const tail = (m.match(/[.,;:!?)]+$/) || [''])[0], url = tail ? m.slice(0, -tail.length) : m; return `<a href="${url}" target="_blank" rel="noopener nofollow">${url}</a>${tail}`; });
+const CHAT_FILES = 'image/jpeg,image/png,image/webp,image/gif,application/pdf,.txt,.csv,.doc,.docx,.xls,.xlsx';
+function msgBody(m) {
+  if (m.deleted_at) return '<div class="mt muted"><i>This message was unsent</i></div>';
+  const o = m.order_id && DM.orders[m.order_id], atts = Array.isArray(m.attachments) ? m.attachments : [];
+  return `${o ? `<a class="ocard" href="${DM.isStaff ? '#/admin/orders/' : '#/order/'}${o.id}"><span class="ico">:ic-package:</span><span><b>Order #${o.id}</b><small>${esc(o.status)} · ${money(o.total_cents)}</small></span>:ic-chevron-down:</a>` : m.order_id ? '<div class="ocard"><span class="ico">:ic-package:</span><span><b>Order #' + m.order_id + '</b></span></div>' : ''}
+    ${atts.length ? `<div class="atts">${atts.map((a) => (String(a.type).startsWith('image/') ? `<a class="att img" data-path="${esc(a.path)}" data-name="${esc(a.name)}" href="#"><img data-path="${esc(a.path)}" alt="${esc(a.name)}" ${DM.urls[a.path] ? `src="${esc(DM.urls[a.path])}"` : ''}></a>` : `<a class="att file" data-path="${esc(a.path)}" data-name="${esc(a.name)}" href="#">:ic-download:<span><b>${esc(a.name)}</b><small>${fmtSize(a.size || 0)}</small></span></a>`)).join('')}</div>` : ''}
+    ${m.body ? `<div class="mt">${linkify(m.body)}</div>` : ''}`;
+}
 function threadHtml() {
-  if (!DM.msgs.length) return `<div class="empty-chat"><div style="font-size:2.4rem">👋</div><p><b>${DM.isAdmin ? 'No messages yet' : 'Say hi!'}</b></p><p class="muted">${DM.isAdmin ? 'Write the first message below.' : 'Ask us anything about products, orders or delivery. Replies show up here.'}</p></div>`;
-  let out = '', i = 0;
+  if (!DM.msgs.length) return `<div class="empty-chat">:ic-chat:<p><b>${DM.isStaff ? 'No messages yet' : 'Say hi!'}</b></p><p class="muted">${DM.isStaff ? 'Write the first message below.' : 'Ask us anything about products, orders or delivery. Replies show up here.'}</p>${DM.isStaff ? '' : `<div class="topics">${['Where is my order?', 'I have a delivery question', 'Which product is right for my project?', 'I would like a quote'].map((t) => `<button type="button" class="topic">${esc(t)}</button>`).join('')}</div>`}</div>`;
+  let out = '', i = 0; const grp = (m) => (m.internal ? 'n' : isMine(m) ? 'm' : 't');
   while (i < DM.msgs.length) {
-    const first = DM.msgs[i]; const mine = isMine(first);
+    const first = DM.msgs[i], g = grp(first);
     if (i === 0 || !sameDay(DM.msgs[i - 1].created_at, first.created_at)) out += `<div class="day"><span>${dayLabel(first.created_at)}</span></div>`;
+    if (DM.firstUnread && first.id === DM.firstUnread) out += '<div class="newdiv"><span>New messages</span></div>';
     let j = i, bubbles = '';
-    while (j < DM.msgs.length && isMine(DM.msgs[j]) === mine && sameDay(DM.msgs[j].created_at, first.created_at) && (j === i || new Date(DM.msgs[j].created_at) - new Date(DM.msgs[j - 1].created_at) < 10 * 60000)) {
-      bubbles += `<div class="msg" data-id="${DM.msgs[j].id}" title="${esc(new Date(DM.msgs[j].created_at).toLocaleString())}">${esc(DM.msgs[j].body)}</div>`; j++;
+    while (j < DM.msgs.length && grp(DM.msgs[j]) === g && sameDay(DM.msgs[j].created_at, first.created_at) && (j === i || (DM.msgs[j].id !== DM.firstUnread && new Date(DM.msgs[j].created_at) - new Date(DM.msgs[j - 1].created_at) < 10 * 60000))) {
+      const m = DM.msgs[j], un = m.sender_id === session.user.id && !m.deleted_at && Date.now() - new Date(m.created_at) < 10 * 60000;
+      bubbles += `<div class="msg ${m.internal ? 'internal' : ''} ${m.deleted_at ? 'gone' : ''}" data-id="${m.id}" title="${esc(new Date(m.created_at).toLocaleString())}">${m.internal ? '<div class="inlabel">:ic-lock: Internal note — only your team can see this</div>' : ''}${msgBody(m)}${un ? `<button class="un" data-id="${m.id}" aria-label="Unsend message" title="Unsend">:ic-x:</button>` : ''}</div>`; j++;
     }
     const lastM = DM.msgs[j - 1];
-    out += `<div class="grp ${mine ? 'mine' : 'theirs'}">${mine ? '' : avatar(DM.peerName, DM.isAdmin ? '' : 'store')}<div class="bstack">${bubbles}<small class="meta">${timeOf(lastM.created_at)}</small></div></div>`;
+    out += `<div class="grp ${g === 'm' ? 'mine' : g === 'n' ? 'mine note' : 'theirs'}">${g === 't' ? avatar(DM.peerName, DM.isStaff ? '' : 'store') : ''}<div class="bstack">${bubbles}<small class="meta">${g === 'n' ? 'Note · ' : ''}${timeOf(lastM.created_at)}</small></div></div>`;
     i = j;
   }
-  const lastMine = [...DM.msgs].reverse().find(isMine);
+  const lastMine = [...DM.msgs].reverse().find((m) => isMine(m) && !m.internal && !m.deleted_at);
   if (lastMine?.read_at) out += `<div class="seen">Seen ${ago(lastMine.read_at)}</div>`;
   return out;
 }
-function renderThread(forceBottom) {
+async function hydrateThread() {
+  const orderIds = [...new Set(DM.msgs.map((m) => m.order_id).filter((x) => x && !DM.orders[x]))];
+  const paths = [...new Set(DM.msgs.flatMap((m) => (m.deleted_at ? [] : (m.attachments || []).map((a) => a.path))).filter((p) => p && !DM.urls[p]))];
+  if (!orderIds.length && !paths.length) return;
+  const [o, u] = await Promise.all([orderIds.length ? sb.from('orders').select('id,status,total_cents').in('id', orderIds) : { data: [] }, paths.length ? sb.storage.from('message-files').createSignedUrls(paths, 3600) : { data: [] }]);
+  (o.data || []).forEach((x) => (DM.orders[x.id] = x)); (u.data || []).forEach((x) => { if (x.signedUrl) DM.urls[x.path] = x.signedUrl; });
+  renderThread(false, true);
+}
+function renderThread(forceBottom, noHydrate) {
   const t = document.getElementById('thread'); if (!t) return;
-  const nearBottom = forceBottom || t.scrollHeight - t.scrollTop - t.clientHeight < 120;
-  t.innerHTML = threadHtml(); if (nearBottom) t.scrollTop = t.scrollHeight;
+  const nearBottom = forceBottom || t.scrollHeight - t.scrollTop - t.clientHeight < 140;
+  t.innerHTML = threadHtml(); if (nearBottom) t.scrollTop = t.scrollHeight; if (!noHydrate) hydrateThread();
+}
+function renderPending() {
+  const el = document.getElementById('pend'); if (!el) return;
+  el.innerHTML = DM.pending.map((f, i) => `<span class="pchip">:ic-image: ${esc(f.name)} <small class="muted">${fmtSize(f.size)}</small><button type="button" data-rm="${i}" aria-label="Remove ${esc(f.name)}">:ic-x:</button></span>`).join('') + (DM.pendingOrder ? `<span class="pchip">:ic-package: Order #${DM.pendingOrder}<button type="button" data-rmorder aria-label="Remove order">:ic-x:</button></span>` : '');
+  el.hidden = !el.innerHTML;
 }
 async function markRead() {
   if (!DM?.conv) return;
@@ -1476,88 +1722,143 @@ async function markRead() {
 async function loadInbox() {
   const convs = (await sb.from('conversations').select('*').order('last_message_at', { ascending: false }).limit(200)).data || [];
   const ids = convs.map((c) => c.id), last = {}, unreadBy = {};
-  if (ids.length) ((await sb.from('messages').select('conversation_id,body,sender_id,created_at,read_at').in('conversation_id', ids).order('id', { ascending: false }).limit(600)).data || []).forEach((m) => {
+  if (ids.length) ((await sb.from('messages').select('conversation_id,body,sender_id,created_at,read_at,internal,attachments,deleted_at').in('conversation_id', ids).order('id', { ascending: false }).limit(800)).data || []).forEach((m) => {
     if (!last[m.conversation_id]) last[m.conversation_id] = m;
-    const c = convs.find((x) => x.id === m.conversation_id); if (c && m.sender_id === c.customer_id && !m.read_at) unreadBy[c.id] = (unreadBy[c.id] || 0) + 1;
+    const c = convs.find((x) => x.id === m.conversation_id); if (c && !m.internal && m.sender_id === c.customer_id && !m.read_at && !m.deleted_at) unreadBy[c.id] = (unreadBy[c.id] || 0) + 1;
   });
   const names = {}; if (convs.length) ((await sb.from('profiles').select('id,name,email').in('id', [...new Set(convs.map((c) => c.customer_id))])).data || []).forEach((u) => (names[u.id] = u.name || u.email));
   return { convs, last, unreadBy, names };
 }
-const listHtml = (inbox, selected, filter = '') => {
-  const rows = inbox.convs.filter((c) => !filter || (inbox.names[c.customer_id] || '').toLowerCase().includes(filter.toLowerCase()));
+const previewOf = (m, c) => (!m ? 'No messages yet' : m.deleted_at ? 'Message unsent' : (m.internal ? 'Note: ' : m.sender_id !== c.customer_id ? 'You: ' : '') + (m.body ? m.body.slice(0, 70) : (m.attachments || []).length ? 'Sent an attachment' : 'Shared an order'));
+const listHtml = (inbox, selected, filter = '', mode = '') => {
+  const f = filter.toLowerCase(), rows = inbox.convs.filter((c) => (!f || (inbox.names[c.customer_id] || '').toLowerCase().includes(f) || (inbox.last[c.id]?.body || '').toLowerCase().includes(f)) && (mode === 'unread' ? inbox.unreadBy[c.id] : mode === 'closed' ? c.closed : true));
   return rows.length ? rows.map((c) => { const nm = inbox.names[c.customer_id] || 'Customer', lm = inbox.last[c.id], un = inbox.unreadBy[c.id] || 0;
     return `<a class="dmrow ${String(selected) === String(c.id) ? 'on' : ''} ${un ? 'unread' : ''}" href="#/messages/${c.id}">${avatar(nm)}<div class="dmtxt"><div class="row" style="justify-content:space-between;flex-wrap:nowrap"><b>${esc(nm)}</b><small class="muted">${lm ? ago(lm.created_at) : ''}</small></div>
-    <span class="muted prev">${lm ? (lm.sender_id !== c.customer_id ? 'You: ' : '') + esc(lm.body.slice(0, 70)) : 'No messages yet'}</span></div>${un ? `<span class="dot">${un}</span>` : ''}</a>`; }).join('')
-    : '<p class="muted" style="padding:14px">No conversations found.</p>';
+    <span class="muted prev">${esc(previewOf(lm, c))}</span></div>${un ? `<span class="dot">${un}</span>` : c.closed ? '<small class="muted">closed</small>' : ''}</a>`; }).join('')
+    : '<p class="muted" style="padding:16px">No conversations found.</p>';
 };
 pages.messages = async ([id], q) => {
   if (!session) { location.hash = '#/login'; return ''; }
-  const isAdmin = can('messages');
+  const isStaff = can('messages');
   if (id === 'new') { // find or create the DM with a customer, then open it
-    const to = isAdmin ? q.get('to') : session.user.id; if (!to) { location.hash = '#/messages'; return ''; }
+    const to = isStaff ? q.get('to') : session.user.id; if (!to) { location.hash = '#/messages'; return ''; }
     let c = (await sb.from('conversations').select('id').eq('customer_id', to).order('id', { ascending: false }).limit(1).maybeSingle()).data;
     if (!c) { const r = await sb.from('conversations').insert({ customer_id: to, subject: 'Direct message' }).select('id').single(); if (r.error) throw r.error; c = r.data; }
     location.hash = `#/messages/${c.id}`; return '';
   }
   let inbox = null, conv = null, selected = id && /^\d+$/.test(id) ? id : null;
-  if (isAdmin) inbox = await loadInbox();
+  if (isStaff) inbox = await loadInbox();
   else { const r = await sb.from('conversations').select('*').eq('customer_id', session.user.id).order('id', { ascending: false }).limit(1).maybeSingle(); conv = r.data; selected = conv?.id ?? 'solo'; }
-  if (isAdmin && selected) conv = (await sb.from('conversations').select('*').eq('id', selected).maybeSingle()).data;
+  if (isStaff && selected) conv = (await sb.from('conversations').select('*').eq('id', selected).maybeSingle()).data;
   const msgs = conv ? (await sb.from('messages').select('*').eq('conversation_id', conv.id).order('id')).data || [] : [];
-  const peerName = isAdmin ? (inbox.names[conv?.customer_id] || (conv ? ((await sb.from('profiles').select('name,email').eq('id', conv.customer_id).maybeSingle()).data?.name || 'Customer') : 'Customer')) : 'Store team';
-  DM = { conv, msgs, isAdmin, peerName, inbox, online: false };
-  const chat = (isAdmin && !conv) ? '<div class="empty-chat"><div style="font-size:2.4rem">💬</div><p><b>Select a conversation</b></p><p class="muted">Pick a customer on the left, or start one from Admin → Customers.</p></div>'
-    : `<header class="dmhead">${isAdmin ? '<a class="backbtn" href="#/messages" aria-label="Back">←</a>' : ''}${avatar(peerName, isAdmin ? '' : 'store')}<div><b>${esc(peerName)}</b><div class="dmstatus muted" id="dmstatus">${isAdmin ? esc((await sb.from('profiles').select('email').eq('id', conv.customer_id).maybeSingle()).data?.email || '') : 'Replies usually within a day'}</div></div></header>
+  const custId = isStaff ? conv?.customer_id : session.user.id;
+  const myOrders = custId ? (await sb.from('orders').select('id,status,total_cents,created_at').eq('user_id', custId).order('id', { ascending: false }).limit(15)).data || [] : [];
+  const replies = isStaff ? (await sb.from('canned_replies').select('*').order('title')).data || [] : [];
+  const peerName = isStaff ? (inbox.names[conv?.customer_id] || 'Customer') : 'Store team';
+  const firstUnread = msgs.find((m) => !m.internal && !m.deleted_at && !m.read_at && (isStaff ? m.sender_id === conv?.customer_id : m.sender_id !== conv?.customer_id))?.id || null;
+  DM = { conv, msgs, isStaff, peerName, inbox, online: false, orders: {}, urls: {}, pending: [], pendingOrder: null, internal: false, firstUnread, myOrders, replies, filter: '' };
+  myOrders.forEach((o) => (DM.orders[o.id] = o));
+  const closedCust = !isStaff && conv?.closed;
+  const chat = (isStaff && !conv) ? '<div class="empty-chat">:ic-chat:<p><b>Select a conversation</b></p><p class="muted">Pick a customer on the left, or start one from Admin → Customers.</p></div>'
+    : `<header class="dmhead">${isStaff ? '<a class="backbtn" href="#/messages" aria-label="Back to conversations">←</a>' : ''}${avatar(peerName, isStaff ? '' : 'store')}<div style="min-width:0"><b>${esc(peerName)}</b><div class="dmstatus muted" id="dmstatus">${isStaff ? 'Customer' : 'Replies usually within a day'}</div></div>
+      <span class="grow"></span>${isStaff ? `<button type="button" class="ibtn" id="ctxtoggle" aria-label="Customer details" title="Customer details">:ic-users:</button>${conv ? `<button type="button" class="btn ghost" id="closeconv" style="padding:6px 12px;min-height:0">${conv.closed ? 'Reopen' : 'Close'} conversation</button>` : ''}` : ''}</header>
     <div class="thread" id="thread"></div><div class="typing" id="typing" hidden>${esc(peerName)} is typing<span>.</span><span>.</span><span>.</span></div>
-    <form id="dmform" class="composer"><textarea name="body" rows="1" maxlength="5000" placeholder="Message ${esc(isAdmin ? peerName : 'the store team')}…" aria-label="Message" required></textarea><button class="send" aria-label="Send">➤</button></form>`;
-  return `<div class="dm ${isAdmin ? '' : 'solo'} ${conv && isAdmin ? 'has-chat' : ''}">${isAdmin ? `<aside class="dmlist"><div class="dmlist-head"><b>Messages</b><input id="dmsearch" placeholder="Search customers…" aria-label="Search customers"></div><div id="dmrows">${listHtml(inbox, selected)}</div></aside>` : ''}<section class="dmchat">${chat}</section></div>`;
+    ${closedCust ? '<p class="closednote">:ic-lock: This conversation was closed by the store team. Start a new one by contacting us from the <a href="#/quote">quote form</a>.</p>' : `<div class="composer2" id="composer2"><div class="pend" id="pend" hidden></div>
+      <div class="ctools"><button type="button" class="ibtn" id="attachbtn" aria-label="Attach a file" title="Attach photos or files">:ic-paperclip:</button><input type="file" id="dmfile" accept="${CHAT_FILES}" multiple hidden>
+        ${myOrders.length ? `<select id="orderpick" aria-label="Attach an order"><option value="">Attach an order…</option>${myOrders.map((o) => `<option value="${o.id}">Order #${o.id} · ${esc(o.status)} · ${money(o.total_cents)}</option>`).join('')}</select>` : ''}
+        ${isStaff ? `<span class="grow"></span><div class="qrwrap"><button type="button" class="btn ghost qrbtn" id="qrbtn">:ic-chat: Quick replies</button><div class="qr" id="qr" hidden><div id="qrlist"></div><form id="qradd" class="stack"><b style="font-size:.85rem">Save a new quick reply</b><input name="title" placeholder="Title (e.g. Delivery times)" maxlength="60" required><textarea name="body" rows="2" placeholder="Message text" maxlength="2000" required></textarea><button class="btn ghost">Save quick reply</button></form></div></div>
+        <label class="switch" title="Only your team can see internal notes"><input type="checkbox" id="dminternal"><span class="track"></span><span>Internal note</span></label>` : ''}</div>
+      <form id="dmform" class="composer"><textarea name="body" rows="1" maxlength="5000" placeholder="Message ${esc(isStaff ? peerName : 'the store team')}…" aria-label="Message"></textarea><button class="send" aria-label="Send message">:ic-send:</button></form></div>`}`;
+  return `<div class="dm ${isStaff ? '' : 'solo'} ${conv && isStaff ? 'has-chat' : ''} ${isStaff ? 'withctx' : ''}">${isStaff ? `<aside class="dmlist"><div class="dmlist-head"><b>Messages</b><input id="dmsearch" placeholder="Search customers or messages…" aria-label="Search"><div class="chips" style="margin:0"><button type="button" class="chip on" data-mode="">All</button><button type="button" class="chip" data-mode="unread">Unread</button><button type="button" class="chip" data-mode="closed">Closed</button></div></div><div id="dmrows">${listHtml(inbox, selected)}</div></aside>` : ''}<section class="dmchat">${chat}</section>${isStaff && conv ? '<aside class="dmctx" id="dmctx"><p class="muted" style="padding:16px">Loading customer…</p></aside>' : ''}</div>`;
 };
+async function loadContext() {
+  const el = document.getElementById('dmctx'); if (!el || !DM?.conv) return; const cid = DM.conv.customer_id;
+  const [pr, ords, info, inv] = await Promise.all([sb.from('profiles').select('name,email,username,created_at').eq('id', cid).maybeSingle(), sb.from('orders').select('id,status,total_cents,tax_cents,refunded_cents,created_at').eq('user_id', cid).order('id', { ascending: false }).limit(100), sb.from('customer_info').select('*').eq('user_id', cid).maybeSingle(), sb.from('invoices').select('id,total_cents,paid_cents,status').eq('customer_id', cid)]);
+  const u = pr.data || {}, os = (ords.data || []).filter((o) => o.status !== 'cancelled'), spent = os.reduce((a, o) => a + net(o), 0), ci = info.data || { tags: [], notes: '' }, owing = (inv.data || []).filter((i) => i.status === 'sent').reduce((a, i) => a + i.total_cents - i.paid_cents, 0);
+  el.innerHTML = `<div class="ctxhead">${avatar(u.name || u.email || '?')}<div style="min-width:0"><b>${esc(u.name || 'Customer')}</b><small class="muted" style="display:block;overflow-wrap:anywhere">${u.username ? '@' + esc(u.username) + ' · ' : ''}${esc(u.email || '')}</small></div></div>
+    ${(ci.tags || []).length ? `<div class="chips" style="margin:0">${ci.tags.map((t) => `<span class="status">${esc(t)}</span>`).join('')}</div>` : ''}
+    <div class="ctxstats"><div><b>${os.length}</b><small>orders</small></div><div><b>${money(spent)}</b><small>spent</small></div><div><b class="${owing ? 'down' : ''}">${money(owing)}</b><small>owing</small></div></div>
+    <h4>Recent orders</h4>${(ords.data || []).slice(0, 5).map((o) => `<a class="orow" href="#/admin/orders/${o.id}"><span class="oid"><b>#${o.id}</b></span><span class="oname"><small class="muted">${ago(o.created_at)}</small></span><span class="status ${esc(o.status)}">${esc(o.status)}</span><b class="ototal">${money(o.total_cents)}</b></a>`).join('') || '<p class="muted" style="margin:0">No orders yet.</p>'}
+    ${ci.notes ? `<h4>Private notes</h4><p style="white-space:pre-wrap;margin:0;font-size:.92rem">${esc(ci.notes)}</p>` : ''}
+    <div class="stack" style="gap:8px;margin-top:6px"><a class="btn ghost" href="#/admin/customers/${cid}">View customer</a>${can('invoices.manage') ? `<a class="btn ghost" href="#/admin/invoices/new">New invoice</a><a class="btn ghost" href="#/admin/estimates/new">New estimate</a>` : ''}</div>`;
+}
 pages.messages.after = () => {
   if (!DM) return;
-  const listEl = document.getElementById('dmrows');
-  document.getElementById('dmsearch')?.addEventListener('input', (e) => { if (listEl) listEl.innerHTML = listHtml(DM.inbox, DM.conv?.id, e.target.value); });
-  if (DM.isAdmin) {
-    threadChan.push(sb.channel('inbox').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async () => {
-      DM.inbox = await loadInbox(); const el = document.getElementById('dmrows'); if (el) el.innerHTML = listHtml(DM.inbox, DM.conv?.id, document.getElementById('dmsearch')?.value || '');
-    }).subscribe());
-  }
-  const form = document.getElementById('dmform'); if (!form) return;
+  const $ = (i) => document.getElementById(i), listEl = $('dmrows'); let mode = '';
+  const redrawList = () => { if (listEl) listEl.innerHTML = listHtml(DM.inbox, DM.conv?.id, $('dmsearch')?.value || '', mode); };
+  $('dmsearch')?.addEventListener('input', redrawList);
+  document.querySelectorAll('.dmlist-head [data-mode]').forEach((b) => b.addEventListener('click', () => { mode = b.dataset.mode; document.querySelectorAll('.dmlist-head [data-mode]').forEach((x) => x.classList.toggle('on', x === b)); redrawList(); }));
+  if (DM.isStaff) threadChan.push(sb.channel('inbox').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async () => { DM.inbox = await loadInbox(); redrawList(); }).subscribe());
+  $('ctxtoggle')?.addEventListener('click', () => document.querySelector('.dm').classList.toggle('showctx'));
+  $('closeconv')?.addEventListener('click', async () => { const { error } = await sb.from('conversations').update({ closed: !DM.conv.closed }).eq('id', DM.conv.id); error ? fail(error) : route(); });
+  loadContext();
+  const form = $('dmform');
+  if (!form && !$('thread')) return;
   renderThread(true); markRead();
-  const ta = form.elements.body, mine = DM.isAdmin ? 'admin' : 'customer';
+  const thread = $('thread');
+  thread?.addEventListener('click', async (e) => {
+    const un = e.target.closest('.un'); if (un) { const { error } = await sb.rpc('delete_message', { mid: Number(un.dataset.id) }); if (error) fail(error); else { const m = DM.msgs.find((x) => x.id === Number(un.dataset.id)); if (m) { m.deleted_at = new Date().toISOString(); m.body = ''; m.attachments = []; m.order_id = null; renderThread(); } } return; }
+    const t = e.target.closest('.topic'); if (t && form) { form.elements.body.value = t.textContent; form.elements.body.focus(); return; }
+    const att = e.target.closest('a.att'); if (att) { e.preventDefault(); let url = DM.urls[att.dataset.path]; if (!url) { const r = await sb.storage.from('message-files').createSignedUrl(att.dataset.path, 3600); url = r.data?.signedUrl; if (url) DM.urls[att.dataset.path] = url; } if (!url) return fail(new Error('Could not open that file.')); if (att.classList.contains('img')) window.open(url, '_blank', 'noopener'); else { const a = document.createElement('a'); a.href = url; a.download = att.dataset.name; a.click(); } }
+  });
+  if (!form) return;
+  const ta = form.elements.body, mine = DM.isStaff ? 'admin' : 'customer';
   const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; };
   let typingChan = null, lastTyping = 0, hideTyping = null;
   const joinChannel = () => {
-    if (!DM.conv || typingChan) return;
-    const cid = DM.conv.id;
+    if (!DM.conv || typingChan) return; const cid = DM.conv.id;
     typingChan = sb.channel('dm-' + cid, { config: { broadcast: { self: false }, presence: { key: session.user.id } } })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${cid}` }, (pl) => {
         if (!DM.msgs.some((m) => m.id === pl.new.id)) DM.msgs.push(pl.new);
-        renderThread(isMine(pl.new)); if (!isMine(pl.new)) { document.getElementById('typing').hidden = true; markRead(); }
+        renderThread(isMine(pl.new)); if (!isMine(pl.new) && !pl.new.internal) { $('typing').hidden = true; markRead(); }
       })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${cid}` }, (pl) => {
-        const m = DM.msgs.find((x) => x.id === pl.new.id); if (m) { m.read_at = pl.new.read_at; renderThread(); }
-      })
-      .on('broadcast', { event: 'typing' }, () => { const t = document.getElementById('typing'); if (!t) return; t.hidden = false; const th = document.getElementById('thread'); th.scrollTop = th.scrollHeight; clearTimeout(hideTyping); hideTyping = setTimeout(() => (t.hidden = true), 3000); })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `conversation_id=eq.${cid}` }, (pl) => { const m = DM.msgs.find((x) => x.id === pl.new.id); if (m) { Object.assign(m, pl.new); renderThread(); } })
+      .on('broadcast', { event: 'typing' }, () => { const t = $('typing'); if (!t) return; t.hidden = false; thread.scrollTop = thread.scrollHeight; clearTimeout(hideTyping); hideTyping = setTimeout(() => (t.hidden = true), 3000); })
       .on('presence', { event: 'sync' }, () => {
-        const st = typingChan.presenceState(); DM.online = Object.values(st).flat().some((x) => x.role !== mine);
-        const el = document.getElementById('dmstatus'); if (el) { el.dataset.online = DM.online ? '1' : '0'; if (DM.online) el.innerHTML = '<span class="onl"></span> Online'; else if (!DM.isAdmin) el.textContent = 'Replies usually within a day'; }
+        const st = typingChan.presenceState(); DM.online = Object.values(st).flat().some((x) => x.role !== mine); const el = $('dmstatus');
+        if (el) { if (DM.online) el.innerHTML = '<span class="onl"></span> Online'; else el.textContent = DM.isStaff ? 'Customer' : 'Replies usually within a day'; }
       })
       .subscribe((status) => { if (status === 'SUBSCRIBED') typingChan.track({ role: mine }); });
     threadChan.push(typingChan);
   };
   joinChannel();
-  ta.addEventListener('input', () => { grow(); if (typingChan && Date.now() - lastTyping > 2000) { lastTyping = Date.now(); typingChan.send({ type: 'broadcast', event: 'typing', payload: {} }); } });
+  ta.addEventListener('input', () => { grow(); if (typingChan && !DM.internal && Date.now() - lastTyping > 2000) { lastTyping = Date.now(); typingChan.send({ type: 'broadcast', event: 'typing', payload: {} }); } });
   const coarse = window.matchMedia?.('(pointer: coarse)').matches;
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !coarse) { e.preventDefault(); form.requestSubmit(); } });
+  // attachments, order reference, internal note, quick replies
+  $('attachbtn')?.addEventListener('click', () => $('dmfile').click());
+  $('dmfile')?.addEventListener('change', (e) => {
+    for (const f of e.target.files) { if (DM.pending.length >= 6) { fail(new Error('You can attach up to 6 files per message.')); break; } if (f.size > 10 * 1024 * 1024) { fail(new Error(`"${f.name}" is over 10 MB.`)); continue; } DM.pending.push(f); }
+    e.target.value = ''; renderPending();
+  });
+  $('orderpick')?.addEventListener('change', (e) => { DM.pendingOrder = e.target.value ? Number(e.target.value) : null; e.target.value = ''; renderPending(); });
+  $('pend')?.addEventListener('click', (e) => { const rm = e.target.closest('[data-rm]'); if (rm) DM.pending.splice(Number(rm.dataset.rm), 1); else if (e.target.closest('[data-rmorder]')) DM.pendingOrder = null; else return; renderPending(); });
+  $('dminternal')?.addEventListener('change', (e) => { DM.internal = e.target.checked; $('composer2').classList.toggle('isnote', DM.internal); ta.placeholder = DM.internal ? 'Internal note — only your team will see this' : `Message ${DM.peerName}…`; });
+  const drawReplies = () => { $('qrlist').innerHTML = DM.replies.length ? DM.replies.map((r) => `<div class="qritem"><button type="button" class="qruse" data-id="${r.id}"><b>${esc(r.title)}</b><small class="muted">${esc(r.body.slice(0, 90))}</small></button><button type="button" class="ibtn danger qrdel" data-id="${r.id}" aria-label="Delete quick reply">:ic-x:</button></div>`).join('') : '<p class="muted" style="margin:6px 4px">No quick replies yet — add one below.</p>'; };
+  if ($('qr')) {
+    drawReplies();
+    $('qrbtn').addEventListener('click', () => { $('qr').hidden = !$('qr').hidden; });
+    $('qr').addEventListener('click', async (e) => {
+      const use = e.target.closest('.qruse'), del = e.target.closest('.qrdel');
+      if (use) { const r = DM.replies.find((x) => x.id === Number(use.dataset.id)); ta.value = (ta.value ? ta.value + '\n' : '') + r.body; grow(); ta.focus(); $('qr').hidden = true; }
+      if (del && confirm('Delete this quick reply?')) { const { error } = await sb.from('canned_replies').delete().eq('id', Number(del.dataset.id)); if (error) return fail(error); DM.replies = DM.replies.filter((x) => x.id !== Number(del.dataset.id)); drawReplies(); }
+    });
+    $('qradd').addEventListener('submit', async (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); const { data, error } = await sb.from('canned_replies').insert({ title: f.title.trim(), body: f.body.trim() }).select('*').single(); if (error) return fail(error); DM.replies.push(data); drawReplies(); e.target.reset(); });
+  }
   form.addEventListener('submit', async (e) => {
-    e.preventDefault(); const body = ta.value.trim(); if (!body) return; const btn = form.querySelector('.send'); btn.disabled = true;
-    if (!DM.conv) {
-      const r = await sb.from('conversations').insert({ customer_id: session.user.id, subject: 'Direct message' }).select('*').single();
-      if (r.error) { btn.disabled = false; return fail(r.error); } DM.conv = r.data; joinChannel();
-    }
-    const { data, error } = await sb.from('messages').insert({ conversation_id: DM.conv.id, body }).select('*').single();
-    btn.disabled = false; if (error) return fail(error);
-    ta.value = ''; grow(); if (!DM.msgs.some((m) => m.id === data.id)) DM.msgs.push(data); renderThread(true); ta.focus();
+    e.preventDefault(); const body = ta.value.trim(); if (!body && !DM.pending.length && !DM.pendingOrder) return; const btn = form.querySelector('.send'); btn.disabled = true;
+    try {
+      if (!DM.conv) { const r = await sb.from('conversations').insert({ customer_id: session.user.id, subject: 'Direct message' }).select('*').single(); if (r.error) throw r.error; DM.conv = r.data; joinChannel(); }
+      const attachments = [];
+      for (const f of DM.pending) {
+        const path = `conv_${DM.conv.id}/${crypto.randomUUID()}-${f.name.replace(/[^a-zA-Z0-9.]+/g, '-').slice(-70)}`;
+        const up = await sb.storage.from('message-files').upload(path, f, { contentType: f.type || 'application/octet-stream' }); if (up.error) throw up.error;
+        attachments.push({ path, name: f.name, type: f.type || 'application/octet-stream', size: f.size });
+      }
+      const { data, error } = await sb.from('messages').insert({ conversation_id: DM.conv.id, body, attachments, order_id: DM.pendingOrder, internal: DM.internal }).select('*').single(); if (error) throw error;
+      ta.value = ''; grow(); DM.pending = []; DM.pendingOrder = null; renderPending();
+      if (!DM.msgs.some((m) => m.id === data.id)) DM.msgs.push(data); renderThread(true); ta.focus();
+    } catch (err) { fail(err); } finally { btn.disabled = false; }
   });
   if (!coarse) ta.focus();
 };
@@ -1596,7 +1897,7 @@ pages.page = async ([slug]) => {
   const { data: pg } = await sb.from('pages').select('*').eq('slug', slug).maybeSingle();
   if (!pg) return '<h1>Page not found</h1><p><a href="#/">Back home</a></p>';
   document.title = `${pg.title} · ${(theme.name || 'Gomi Insulation')}`;
-  return `<article class="prose">${!pg.published ? '<p class="flash error" style="margin-top:0">Draft — only admins can see this page.</p>' : ''}${profile?.is_admin ? `<p style="text-align:right"><a class="btn ghost" href="#/admin/pages/${pg.id}">✎ Edit page</a></p>` : ''}${md(pg.body)}</article>`;
+  return `<article class="prose">${!pg.published ? '<p class="flash error" style="margin-top:0">Draft — only admins can see this page.</p>' : ''}${profile?.is_admin ? `<p style="text-align:right"><a class="btn ghost" href="#/admin/pages/${pg.id}">:ic-edit: Edit page</a></p>` : ''}${md(pg.body)}</article>`;
 };
 
 // ---- locations, inventory, sales, point of sale (admin) ----
@@ -1617,14 +1918,16 @@ function bucketize(orders, days) {
   return bs;
 }
 function barChart(bs) {
-  const max = Math.max(...bs.map((b) => b.v), 1), w = 940 / bs.length, step = Math.ceil(bs.length / 14);
-  return `<svg viewBox="0 0 1000 220" role="img" aria-label="Sales chart" style="width:100%;height:auto;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:8px">${bs.map((b, i) => { const h = b.v / max * 150; const x = 30 + i * w;
-    return `<g><title>${b.label}: ${money(b.v)}</title><rect x="${x + 2}" y="${175 - h}" width="${Math.max(w - 4, 2)}" height="${Math.max(h, 2)}" rx="3" fill="var(--brand)" opacity="${b.v ? 1 : .25}"/>${i % step === 0 ? `<text x="${x + w / 2}" y="200" font-size="12" text-anchor="middle" fill="var(--muted)">${b.label}</text>` : ''}</g>`; }).join('')}</svg>`;
+  const max = Math.max(...bs.map((b) => b.v), 1), L = 74, R = 10, W = 1000, top = 14, base = 176, ph = base - top, w = (W - L - R) / bs.length, step = Math.ceil(bs.length / 14);
+  const nice = (v) => (v >= 1e5 ? money(Math.round(v / 1e4) * 1e4).replace('.00', '') : money(Math.round(v)).replace('.00', ''));
+  return `<svg viewBox="0 0 ${W} 216" role="img" aria-label="Sales chart" style="width:100%;height:auto"><g stroke="var(--line)" stroke-width="1">${[0, .5, 1].map((f) => `<line x1="${L}" x2="${W - R}" y1="${base - ph * f}" y2="${base - ph * f}"/>`).join('')}</g>
+    <g font-size="15" fill="var(--muted)" text-anchor="end">${[0, .5, 1].map((f) => `<text x="${L - 8}" y="${base - ph * f + 4}">${nice(max * f)}</text>`).join('')}</g>
+    ${bs.map((b, i) => { const h = b.v / max * ph, x = L + i * w; return `<g><title>${b.label}: ${money(b.v)}</title><rect x="${x + 3}" y="${base - h}" width="${Math.max(w - 6, 2)}" height="${Math.max(h, 2)}" rx="3" fill="var(--brand)" opacity="${b.v ? 1 : .25}"/>${i % step === 0 ? `<text x="${x + w / 2}" y="203" font-size="15" text-anchor="middle" fill="var(--muted)">${b.label}</text>` : ''}</g>`; }).join('')}</svg>`;
 }
 const rangeChips = (base, q) => `<div class="chips">${[['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['365', '12 months'], ['all', 'All time']].map(([v, l]) => { const n = new URLSearchParams(q); n.set('days', v); return `<a class="chip ${(q.get('days') || '30') === v ? 'on' : ''}" href="${base}?${n}">${l}</a>`; }).join('')}</div>`;
 
 // ---- invoicing, purchasing, team, activity ----
-let INV = null, PO = null;
+let INV = null, PO = null, STMT = null, PNL = [];
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const addDays = (d, n) => { const t = new Date(d + 'T12:00:00'); t.setDate(t.getDate() + n); return t.toISOString().slice(0, 10); };
 const invBal = (i) => i.total_cents - i.paid_cents;
@@ -1649,17 +1952,19 @@ pages.invoice = async ([id], q) => {
   if (q.get('k')) { const { data } = await sb.rpc('get_invoice_public', { iid: Number(id), k: q.get('k') }); if (data) { inv = data; items = data.items; pays = data.payments; } }
   else if (session) { inv = (await sb.from('invoices').select('*').eq('id', id).maybeSingle()).data; if (inv) { items = (await sb.from('invoice_items').select('*').eq('invoice_id', id).order('sort')).data || []; pays = (await sb.from('invoice_payments').select('*').eq('invoice_id', id).order('id')).data || []; } }
   if (!inv) return '<h1>Invoice not found</h1><p class="muted">The link may be wrong, or you may need to <a href="#/login">log in</a>.</p>';
-  document.title = `Invoice ${inv.number}`; INVPUB = { id: inv.id, key: q.get('k') || '' };
+  document.title = `Invoice ${inv.number}`; INVPUB = { id: inv.id, key: q.get('k') || inv.view_key || '' };
   if (q.get('paid')) flash('Thank you — your payment is being processed. This page updates once it is confirmed.');
-  const canPay = C.PAYMENTS && INVPUB.key && inv.status === 'sent' && invBal(inv) >= 50;
-  return `<div class="row noprint" style="justify-content:flex-end;margin-bottom:10px">${canPay ? `<button class="btn" id="payonline" type="button">💳 Pay ${money(invBal(inv))} by card</button>` : ''}<button class="btn ghost" id="printbtn" type="button">🖨 Print / save as PDF</button></div>${invDoc(inv, items, pays)}`;
+  const canPay = C.PAYMENTS && INVPUB.key && inv.status === 'sent' && invBal(inv) >= 50, partial = STORE.invoice_allow_partial !== false;
+  return `<div class="row noprint" style="justify-content:flex-end;margin-bottom:10px">${canPay ? `<form id="payform2" class="row" style="margin-right:auto">${partial ? `<label class="muted" style="display:flex;gap:8px;align-items:center">Amount to pay <input id="payamt" type="number" step="0.01" min="0.5" max="${(invBal(inv) / 100).toFixed(2)}" value="${(invBal(inv) / 100).toFixed(2)}" style="width:130px"></label>` : ''}<button class="btn" id="payonline">:ic-card: Pay by card</button></form>` : ''}<button class="btn ghost" id="printbtn" type="button">:ic-print: Print / save as PDF</button></div>${invDoc(inv, items, pays)}`;
 };
 let INVPUB = null, ESTPUB = null;
 pages.invoice.after = () => {
   document.getElementById('printbtn')?.addEventListener('click', () => window.print());
-  document.getElementById('payonline')?.addEventListener('click', async (e) => {
-    e.target.disabled = true; const { data, error } = await sb.functions.invoke('invoice-checkout', { body: { invoice_id: INVPUB.id, key: INVPUB.key } }); e.target.disabled = false;
-    if (data?.url) location.href = data.url; else fail(new Error(data?.error || error?.message || 'Could not start the payment.'));
+  document.getElementById('payform2')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const btn = document.getElementById('payonline'), amt = document.getElementById('payamt'); btn.disabled = true;
+    const body = { invoice_id: INVPUB.id, key: INVPUB.key }; if (amt) body.amount_cents = Math.round(parseFloat(amt.value) * 100);
+    const { data, error } = await sb.functions.invoke('invoice-checkout', { body }); btn.disabled = false;
+    if (data?.url) location.href = data.url; else { let m = data?.error; if (!m && error?.context?.json) { try { m = (await error.context.json()).error; } catch {} } fail(new Error(m || error?.message || 'Could not start the payment.')); }
   });
 };
 pages.estimate = async ([id], q) => {
@@ -1669,8 +1974,8 @@ pages.estimate = async ([id], q) => {
   if (!est) return '<h1>Estimate not found</h1><p class="muted">The link may be wrong, or you may need to <a href="#/login">log in</a>.</p>';
   document.title = `Estimate ${est.number}`; ESTPUB = { id: est.id, key: q.get('k') || '' };
   const open = est.status === 'sent' && est.expires_on >= todayStr() && ESTPUB.key;
-  const msg = est.status === 'accepted' ? '<p class="flash ok" style="margin-top:0">✅ You accepted this estimate. We will be in touch to schedule the work.</p>' : est.status === 'declined' ? '<p class="flash error" style="margin-top:0">You declined this estimate.</p>' : est.status === 'sent' && est.expires_on < todayStr() ? '<p class="flash error" style="margin-top:0">This estimate has expired — contact us for an updated one.</p>' : '';
-  return `${msg}<div class="row noprint" style="justify-content:flex-end;margin-bottom:10px">${open ? '<button class="btn" id="est_accept" type="button">✓ Accept estimate</button><button class="btn ghost" id="est_decline" type="button">Decline</button>' : ''}<button class="btn ghost" id="printbtn" type="button">🖨 Print</button></div>${invDoc(est, items, [])}`;
+  const msg = est.status === 'accepted' ? '<p class="flash ok" style="margin-top:0">:ic-check-circle: You accepted this estimate. We will be in touch to schedule the work.</p>' : est.status === 'declined' ? '<p class="flash error" style="margin-top:0">You declined this estimate.</p>' : est.status === 'sent' && est.expires_on < todayStr() ? '<p class="flash error" style="margin-top:0">This estimate has expired — contact us for an updated one.</p>' : '';
+  return `${msg}<div class="row noprint" style="justify-content:flex-end;margin-bottom:10px">${open ? '<button class="btn" id="est_accept" type="button">:ic-check: Accept estimate</button><button class="btn ghost" id="est_decline" type="button">Decline</button>' : ''}<button class="btn ghost" id="printbtn" type="button">:ic-print: Print</button></div>${invDoc(est, items, [])}`;
 };
 pages.estimate.after = () => {
   document.getElementById('printbtn')?.addEventListener('click', () => window.print());
@@ -1680,7 +1985,7 @@ pages.estimate.after = () => {
 };
 
 const invLineRow = (l, i) => `<tr data-i="${i}"><td><input data-k="description" value="${esc(l.description)}" placeholder="Description" maxlength="500" required></td><td><input data-k="qty" type="number" step="0.001" min="0.001" value="${l.qty}" style="width:84px"></td>
-  <td><input data-k="price" type="number" step="0.01" min="0" value="${(l.unit_price_cents / 100).toFixed(2)}" style="width:104px"></td><td class="c"><input data-k="taxable" type="checkbox" ${l.taxable ? 'checked' : ''} aria-label="Taxable"></td><td class="r amt">${money(Math.round(l.qty * l.unit_price_cents))}</td><td><button type="button" class="crm" data-del="${i}" aria-label="Remove line">✕</button></td></tr>`;
+  <td><input data-k="price" type="number" step="0.01" min="0" value="${(l.unit_price_cents / 100).toFixed(2)}" style="width:104px"></td><td class="c"><input data-k="taxable" type="checkbox" ${l.taxable ? 'checked' : ''} aria-label="Taxable"></td><td class="r amt">${money(Math.round(l.qty * l.unit_price_cents))}</td><td><button type="button" class="crm" data-del="${i}" aria-label="Remove line">:ic-x:</button></td></tr>`;
 const invTotalsHtml = () => { const t = calcInv(INV.items, INV.discount_cents, INV.tax_rate); return `<dl class="totals" style="margin-left:auto"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>${esc(INV.tax_label || 'Tax')} (${Number(INV.tax_rate) || 0}%)</dt><dd>${money(t.tax)}</dd><dt><b>Total</b></dt><dd><b>${money(t.total)}</b></dd></dl>`; };
 
 const editorPage = async (kind, id) => {
@@ -1691,7 +1996,7 @@ const editorPage = async (kind, id) => {
   const back = kind === 'invoice' ? '#/admin/invoices' : kind === 'estimate' ? '#/admin/estimates' : '#/admin/invoices/recurring', word = { invoice: 'invoice', estimate: 'estimate', recurring: 'recurring invoice' }[kind];
   if (ex && ((kind === 'invoice' && ['paid', 'void'].includes(ex.status)) || (kind === 'estimate' && !['draft', 'sent'].includes(ex.status)))) return `<h1>${esc(ex.number)}</h1><p class="flash error" style="margin-top:0">A ${ex.status} ${word} can't be edited.</p><p><a class="btn ghost" href="${back}/${ex.id}">← Back</a></p>`;
   const [custs, prods] = await Promise.all([sb.from('profiles').select('id,name,email').eq('role', 'customer').order('name').limit(300), sb.from('products').select('id,name,price_cents').eq('active', true).order('name')]);
-  INV = { kind, id: ex?.id || null, customer_id: ex?.customer_id || '', customer_name: ex?.customer_name || '', customer_email: ex?.customer_email || '', customer_address: ex?.customer_address || '',
+  INV = { kind, id: ex?.id || null, customer_id: ex?.customer_id || '', customer_name: ex?.customer_name || '', customer_email: ex?.customer_email || '', customer_phone: ex?.customer_phone || '', customer_address: ex?.customer_address || '',
     issue_date: ex?.issue_date || todayStr(), due_date: kind === 'estimate' ? (ex?.expires_on || addDays(todayStr(), 30)) : (ex?.due_date || addDays(todayStr(), Number(STORE.invoice_due_days) || 14)), notes: ex?.notes || '', terms: ex ? ex.terms : (STORE.invoice_terms || ''),
     discount_cents: ex?.discount_cents || 0, tax_rate: ex ? Number(ex.tax_rate) : (Number(STORE.tax_rate) || 0), tax_label: ex?.tax_label || STORE.tax_label || 'Tax',
     items: ex ? exItems : [{ description: '', qty: 1, unit_price_cents: 0, taxable: true, product_id: null }], custs: custs.data || [], prods: prods.data || [] };
@@ -1703,12 +2008,28 @@ const editorPage = async (kind, id) => {
   return `<h1>${ex ? 'Edit ' + (ex.number ? esc(ex.number) : word) : 'New ' + word}</h1><p><a href="${back}${ex && kind !== 'recurring' ? '/' + ex.id : ''}">← Cancel</a></p><div class="invedit">${meta}
     <section class="cs"><h3>Customer</h3><label>Name <small class="muted">(type to pick an existing customer, or enter anyone)</small><input id="iv_name" list="custlist" value="${esc(INV.customer_name)}" required autocomplete="off"></label>
     <datalist id="custlist">${INV.custs.map((c) => `<option value="${esc(c.name || c.email)}">${esc(c.email)}</option>`).join('')}</datalist>
-    <div class="two2"><label>Email<input id="iv_email" type="email" value="${esc(INV.customer_email)}"></label>${kind === 'recurring' ? `<label>Billing address<textarea id="iv_addr" rows="2">${esc(INV.customer_address)}</textarea></label>` : `<label>Issue date<input id="iv_issue" type="date" value="${INV.issue_date}"></label>`}</div>${dates}</section>
+    <div class="two2"><label>Email<input id="iv_email" type="email" value="${esc(INV.customer_email)}"></label><label>Mobile phone <small class="muted">(to text it)</small><input id="iv_phone" type="tel" value="${esc(INV.customer_phone)}" autocomplete="off"></label></div>
+    <div class="two2">${kind === 'recurring' ? `<label>Billing address<textarea id="iv_addr" rows="2">${esc(INV.customer_address)}</textarea></label>` : `<label>Issue date<input id="iv_issue" type="date" value="${INV.issue_date}"></label>`}</div>${dates}</section>
     <section class="cs"><h3>Line items</h3><table class="invlines"><tr><th>Description</th><th>Qty</th><th>Rate ($)</th><th>Tax</th><th class="r">Amount</th><th></th></tr><tbody id="ivlines">${INV.items.map(invLineRow).join('')}</tbody></table>
     <div class="row"><button type="button" class="btn ghost" id="iv_add">+ Add line</button><select id="iv_prod" aria-label="Add a product"><option value="">+ Add a product…</option>${INV.prods.map((x) => `<option value="${x.id}">${esc(x.name)} — ${money(x.price_cents)}</option>`).join('')}</select></div>
     <div class="two2"><div class="stack"><label>Discount ($)<input id="iv_disc" type="number" step="0.01" min="0" value="${(INV.discount_cents / 100).toFixed(2)}"></label><div class="two2"><label>Tax name<input id="iv_tlabel" value="${esc(INV.tax_label)}" maxlength="30"></label><label>Rate (%)<input id="iv_trate" type="number" step="0.001" min="0" max="50" value="${INV.tax_rate}"></label></div></div><div id="iv_totals">${invTotalsHtml()}</div></div></section>
     <section class="cs"><h3>Notes &amp; terms</h3><label>Notes (shown to the customer)<textarea id="iv_notes" rows="3" maxlength="3000">${esc(INV.notes)}</textarea></label><label>Terms<textarea id="iv_terms" rows="3" maxlength="3000">${esc(INV.terms)}</textarea></label></section>
-    <div class="row"><button class="btn" id="iv_save" type="button">${kind === 'recurring' ? 'Save recurring invoice' : 'Save draft'}</button>${kind === 'recurring' ? '' : '<button class="btn ghost" id="iv_send" type="button">Save &amp; mark as sent</button>'}</div></div>`;
+    <div class="row"><button class="btn" id="iv_save" type="button">${kind === 'recurring' ? 'Save recurring invoice' : 'Save draft'}</button>${kind === 'recurring' ? '' : '<button class="btn ghost" id="iv_send" type="button">Save &amp; send…</button>'}</div></div>`;
+};
+const logChip = (st) => `<span class="status ${st === 'sent' ? 'paid' : st === 'failed' ? 'cancelled' : st === 'skipped' ? 'cancelled' : 'pending'}">${st === 'sent' ? 'delivered :ic-check:' : st}</span>`;
+const logHtml = (logs) => (logs || []).length ? `<div class="msglog">${logs.map((l) => `<div class="addr"><div class="row" style="justify-content:space-between;flex-wrap:nowrap"><span>${l.channel === 'sms' ? ':ic-chat: Text' : ':ic-mail: Email'} to <b>${esc(l.to_address || '—')}</b></span>${logChip(l.status)}</div>${l.detail ? `<small class="${l.status === 'sent' ? 'muted' : 'down'}">${esc(l.detail)}</small><br>` : ''}<small class="muted">${ago(l.created_at)}</small></div>`).join('')}</div>` : '<p class="muted" style="margin:0">Nothing has been sent yet.</p>';
+const sendPanel = (doc, kind, ready, open) => {
+  const isInv = kind === 'invoice', bal = isInv ? invBal(doc) : doc.total_cents, store = STORE.biz?.legal_name || theme.name || 'Gomi Insulation';
+  const link = `${location.origin}${location.pathname}#/${kind}/${doc.id}?k=${doc.view_key}`, enc = encodeURIComponent;
+  const subject = `${isInv ? 'Invoice' : 'Estimate'} ${doc.number} from ${store}`;
+  const text = isInv ? `Hi ${doc.customer_name}, here is invoice ${doc.number} for ${money(bal)}${bal > 0 ? ` (due ${doc.due_date})` : ''}. View${bal > 0 ? ' & pay' : ''} it here: ${link}` : `Hi ${doc.customer_name}, here is estimate ${doc.number} for ${money(doc.total_cents)} (valid until ${doc.expires_on}). Review and accept it here: ${link}`;
+  return `<section class="cs noprint" id="sendbox" data-kind="${kind}" data-id="${doc.id}" data-subject="${esc(subject)}" data-text="${esc(text)}" data-link="${esc(link)}" ${open ? '' : 'hidden'}><h3>Send this ${kind}</h3>
+    ${ready ? '' : '<p class="flash error" style="margin:0">:ic-alert: Email and text sending aren’t connected yet, so “Send now” will only mark it as sent. Use the buttons below to send it yourself right now, or connect sending in <a href="#/admin/settings">Settings → Messaging</a>.</p>'}
+    <div class="two2"><label class="check" style="align-self:end"><input type="checkbox" id="sd_email" ${doc.customer_email ? 'checked' : ''}> Email it to</label><label>&nbsp;<input id="sd_to" type="email" value="${esc(doc.customer_email)}" placeholder="customer@example.com"></label></div>
+    <div class="two2"><label class="check" style="align-self:end"><input type="checkbox" id="sd_sms" ${doc.customer_phone && !doc.customer_email ? 'checked' : ''}> Text it to</label><label>&nbsp;<input id="sd_phone" type="tel" value="${esc(doc.customer_phone || '')}" placeholder="Mobile number"></label></div>
+    <button class="btn" id="sd_go" type="button">Send now</button>
+    <p class="muted" style="margin:6px 0 0">Or send it yourself from your own email or phone:</p>
+    <div class="row"><a class="btn ghost" id="sd_mailto" href="mailto:${esc(doc.customer_email)}?subject=${enc(subject)}&body=${enc(text)}">:ic-mail: Open in my email app</a><a class="btn ghost" id="sd_smslink" href="sms:${esc((doc.customer_phone || '').replace(/[^0-9+]/g, ''))}?&body=${enc(text)}">:ic-chat: Text from my phone</a><button class="btn ghost" id="sd_copy" type="button">:ic-link: Copy link</button><button class="btn ghost" id="sd_share" type="button" ${navigator.share ? '' : 'hidden'}>Share…</button></div></section>`;
 };
 const fmtAudit = (a) => {
   const d = a.detail || {}, mv = (x) => (Array.isArray(x) ? `${typeof x[0] === 'number' ? money(x[0]) : esc(x[0])} → ${typeof x[1] === 'number' ? money(x[1]) : esc(x[1])}` : esc(x));
@@ -1724,6 +2045,22 @@ const fmtAudit = (a) => {
   }
 };
 
+// ---- statements, expenses, profit & loss ----
+const EXP_CATS = ['Rent', 'Utilities', 'Wages', 'Vehicle & fuel', 'Shipping & freight', 'Marketing', 'Insurance', 'Software & subscriptions', 'Office supplies', 'Equipment', 'Professional fees', 'Bank & card fees', 'Taxes & licences', 'Other'];
+const ymd = (d) => new Date(d - new Date(d).getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+function periodRange(key, from, to) {
+  const n = new Date(), y = n.getFullYear(), m = n.getMonth();
+  const P = { this_month: [new Date(y, m, 1), new Date(y, m + 1, 0)], last_month: [new Date(y, m - 1, 1), new Date(y, m, 0)], this_quarter: [new Date(y, Math.floor(m / 3) * 3, 1), new Date(y, Math.floor(m / 3) * 3 + 3, 0)],
+    ytd: [new Date(y, 0, 1), n], last_year: [new Date(y - 1, 0, 1), new Date(y - 1, 11, 31)], last_12: [new Date(y, m - 11, 1), n] };
+  if (key === 'custom' && from && to) return [from, to];
+  const r = P[key] || P.this_month; return [ymd(r[0]), ymd(r[1])];
+}
+const PERIODS = [['this_month', 'This month'], ['last_month', 'Last month'], ['this_quarter', 'This quarter'], ['ytd', 'Year to date'], ['last_year', 'Last year'], ['last_12', 'Last 12 months']];
+const periodBar = (base, q) => { const k = q.get('p') || 'this_month'; return `<div class="chips">${PERIODS.map(([v, l]) => `<a class="chip ${k === v ? 'on' : ''}" href="${base}?p=${v}">${l}</a>`).join('')}</div>`; };
+const custKey = (i) => (i.customer_id ? 'id:' + i.customer_id : i.customer_email ? 'email:' + i.customer_email.toLowerCase() : 'name:' + i.customer_name.toLowerCase());
+const ageBuckets = (open) => { const t0 = todayStr(), past = (i) => Math.floor((new Date(t0) - new Date(i.due_date)) / 864e5), b = (lo, hi) => open.filter((i) => past(i) >= lo && past(i) <= hi).reduce((a, i) => a + invBal(i), 0);
+  return [['Current', open.filter((i) => past(i) <= 0).reduce((a, i) => a + invBal(i), 0)], ['1–30 days', b(1, 30)], ['31–60', b(31, 60)], ['61–90', b(61, 90)], ['90+', b(91, 99999)]]; };
+
 // ---- router ----
 async function route() {
   threadChan.forEach((c) => sb.removeChannel(c)); threadChan = [];
@@ -1734,7 +2071,8 @@ async function route() {
   document.title = TITLES[name] ? `${TITLES[name]} · ${theme.name || 'Gomi Insulation'}` : (theme.name || 'Gomi Insulation');
   if (!page) { $app.innerHTML = '<h1>Not found</h1>'; return; }
   try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); setMenu(false);
-    $app.querySelectorAll('table').forEach((t) => { // label cells so tables can stack into cards on phones
+    $app.querySelectorAll('table').forEach((t) => { if (!t.parentElement.classList.contains('tablewrap') && !t.closest('.invdoc, .tablewrap')) { const w = document.createElement('div'); w.className = 'tablewrap'; t.replaceWith(w); w.appendChild(t); }
+      // label cells so tables can stack into cards on phones
       const heads = [...t.querySelectorAll('th')].map((x) => x.textContent);
       t.querySelectorAll('tr').forEach((tr) => [...tr.children].forEach((td, i) => { if (td.tagName === 'TD') td.dataset.label = heads[i] || ''; }));
     });
@@ -1747,4 +2085,5 @@ sb.auth.onAuthStateChange((ev) => {
   if (ev === 'SIGNED_OUT') { session = null; profile = null; unread = { all: 0, msg: 0 }; if (notifChan) { sb.removeChannel(notifChan); notifChan = null; } renderNav(); }
 });
 applyBranding();
+document.getElementById('menubtn').innerHTML = ':ic-menu:';
 Promise.allSettled([loadSiteTheme(), loadPages(), loadSession()]).then(route);

@@ -128,3 +128,11 @@ Permissions are enforced by the database (row-level security and permission chec
 - **Recurring invoices** (Admin → Invoices → Recurring): pick a customer, line items and a schedule (weekly, monthly, quarterly, yearly, every N periods, optional end date). A daily job (06:15 UTC) creates each invoice as a draft, or sends it automatically if you choose; missed periods are caught up. "Run due now" is there if you want it immediately.
 - **Pay online:** with Stripe set up, the customer's invoice page shows **Pay by card** for the balance due; the Stripe webhook records the payment on the invoice automatically (duplicate-safe).
   Setup, in addition to the order-payment steps above: `supabase functions deploy invoice-checkout`, redeploy `stripe-webhook`, and make sure `SITE_URL` and `STRIPE_SECRET_KEY` are set. The webhook already listens for `checkout.session.completed`.
+
+## Messages upgrade
+
+Chat now supports photo/file attachments (private `message-files` bucket, signed links), order reference cards, internal staff-only notes, saved quick replies, unsend (10 min), link detection, a "New messages" divider, an Unread/Closed filter + search for staff, a customer context panel (orders, spend, amount owing) and topic starters for new customers.
+
+## Shop open / closed
+
+**Admin → Settings → Shop status** (or the *Close shop* button on the dashboard) turns online ordering off. A banner shows on every page, customers can still browse and fill a cart, but checkout is blocked — enforced in the database too (a trigger on `orders` rejects online orders while closed). In-store POS sales and invoices keep working. Add an optional message customers will see.

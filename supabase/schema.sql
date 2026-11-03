@@ -1563,3 +1563,302 @@ do $$ begin
   create extension if not exists pg_cron;
   perform cron.schedule('recurring-invoices', '15 6 * * *', 'select public.run_recurring_internal()');
 exception when others then raise notice 'pg_cron not available: %', sqlerrm; end $$;
+
+-- ===== Expenses (for profit & loss), statements, receipts =====
+create table if not exists public.expenses (
+  id bigint generated always as identity primary key, spent_on date not null default current_date, vendor text not null default '' check (length(vendor) <= 120),
+  category text not null check (length(btrim(category)) between 1 and 60), description text not null default '' check (length(description) <= 500),
+  amount_cents int not null check (amount_cents > 0), tax_cents int not null default 0 check (tax_cents >= 0), payment_method text not null default '' check (length(payment_method) <= 40),
+  receipt_path text not null default '', created_by uuid default auth.uid(), created_at timestamptz not null default now());
+create index if not exists expenses_date_idx on public.expenses (spent_on desc);
+alter table public.expenses enable row level security;
+drop policy if exists "view expenses" on public.expenses; create policy "view expenses" on public.expenses for select using (public.has_perm('expenses.view'));
+drop policy if exists "manage expenses" on public.expenses; create policy "manage expenses" on public.expenses for all using (public.has_perm('expenses.manage')) with check (public.has_perm('expenses.manage'));
+insert into public.role_permissions (role, perm) values ('accountant','expenses.view'), ('accountant','expenses.manage') on conflict do nothing;
+create or replace function public.trg_audit_expense() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if tg_op = 'DELETE' then perform audit('expense.deleted', 'expense', old.id::text, jsonb_build_object('amount_cents', old.amount_cents, 'category', old.category)); return old; end if;
+  if tg_op = 'INSERT' then perform audit('expense.created', 'expense', new.id::text, jsonb_build_object('amount_cents', new.amount_cents, 'category', new.category, 'vendor', new.vendor)); end if;
+  return new;
+end $$;
+drop trigger if exists audit_expense on public.expenses;
+create trigger audit_expense after insert or delete on public.expenses for each row execute function public.trg_audit_expense();
+
+-- private bucket for receipts
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types) values ('expense-receipts', 'expense-receipts', false, 10485760, array['image/jpeg','image/png','image/webp','application/pdf'])
+on conflict (id) do update set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+drop policy if exists "receipts insert" on storage.objects; create policy "receipts insert" on storage.objects for insert with check (bucket_id = 'expense-receipts' and public.has_perm('expenses.manage'));
+drop policy if exists "receipts read" on storage.objects; create policy "receipts read" on storage.objects for select using (bucket_id = 'expense-receipts' and public.has_perm('expenses.view'));
+drop policy if exists "receipts delete" on storage.objects; create policy "receipts delete" on storage.objects for delete using (bucket_id = 'expense-receipts' and public.has_perm('expenses.manage'));
+
+-- email a statement of open invoices to a customer
+create or replace function public.send_statement(cid uuid, mail text, nm text) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  perform public.send_notification('statement', jsonb_build_object('customer_id', cid, 'email', coalesce(mail, ''), 'name', coalesce(nm, '')));
+  perform audit('statement.sent', 'invoice', '', jsonb_build_object('customer', coalesce(nm, mail)));
+end $$;
+revoke all on function public.send_statement(uuid, text, text) from public, anon; grant execute on function public.send_statement(uuid, text, text) to authenticated;
+
+-- ===== Usernames =====
+alter table public.profiles add column if not exists username text;
+alter table public.profiles drop constraint if exists username_format;
+alter table public.profiles add constraint username_format check (username is null or username ~ '^[A-Za-z0-9][A-Za-z0-9_.-]{2,29}$');
+create unique index if not exists profiles_username_uq on public.profiles (lower(username)) where username is not null;
+
+create or replace function public.username_ok(u text) returns text language sql immutable as $$
+  select case when u is null or u !~ '^[A-Za-z0-9][A-Za-z0-9_.-]{2,29}$' then 'Use 3–30 letters, numbers, dots, dashes or underscores, starting with a letter or number.'
+              when lower(u) = any (array['admin','administrator','owner','root','support','staff','store','shop','system','moderator','mod','help','billing','sales','info','contact','team','official','null','undefined','me','you']) then 'That username is reserved.'
+              else null end $$;
+create or replace function public.username_available(u text) returns boolean language sql stable security definer set search_path = public as $$
+  select public.username_ok(btrim(u)) is null and not exists (select 1 from profiles where lower(username) = lower(btrim(u))) $$;
+grant execute on function public.username_ok(text), public.username_available(text) to anon, authenticated;
+
+create or replace function public.set_username(u text) returns void language plpgsql security definer set search_path = public as $$
+declare v text := btrim(u); msg text;
+begin
+  if auth.uid() is null then raise exception 'Please log in'; end if;
+  msg := public.username_ok(v); if msg is not null then raise exception '%', msg; end if;
+  if exists (select 1 from profiles where lower(username) = lower(v) and id <> auth.uid()) then raise exception 'That username is taken'; end if;
+  update profiles set username = v where id = auth.uid();
+end $$;
+revoke all on function public.set_username(text) from public, anon; grant execute on function public.set_username(text) to authenticated;
+
+-- new accounts: take the username chosen at sign-up if it is valid and free (the account is still created either way)
+create or replace function public.handle_new_user() returns trigger language plpgsql security definer set search_path = public as $$
+declare un text := nullif(btrim(new.raw_user_meta_data->>'username'), '');
+begin
+  if un is not null and (public.username_ok(un) is not null or exists (select 1 from profiles where lower(username) = lower(un))) then un := null; end if;
+  begin
+    insert into public.profiles (id, name, email, username) values (new.id, coalesce(new.raw_user_meta_data->>'name',''), new.email, un);
+  exception when unique_violation or check_violation then
+    insert into public.profiles (id, name, email) values (new.id, coalesce(new.raw_user_meta_data->>'name',''), new.email);
+  end;
+  return new;
+end $$;
+
+-- ===== Sending invoices & estimates by email / text, with a delivery log =====
+create table if not exists public.message_log (
+  id bigint generated always as identity primary key, kind text not null, ref_id bigint, channel text not null check (channel in ('email','sms')),
+  to_address text not null default '', status text not null default 'queued' check (status in ('queued','sent','failed','skipped')), detail text not null default '',
+  created_by uuid default auth.uid(), created_at timestamptz not null default now());
+create index if not exists message_log_idx on public.message_log (kind, ref_id, id desc);
+alter table public.message_log enable row level security;
+drop policy if exists "view message log" on public.message_log;
+create policy "view message log" on public.message_log for select using (public.has_perm('invoices.view'));
+alter table public.invoices add column if not exists customer_phone text not null default '' check (length(customer_phone) <= 40);
+alter table public.estimates add column if not exists customer_phone text not null default '' check (length(customer_phone) <= 40);
+alter table public.recurring_invoices add column if not exists customer_phone text not null default '' check (length(customer_phone) <= 40);
+
+create or replace function public.messaging_ready() returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from app_config where key = 'notify_url') and exists (select 1 from app_config where key = 'notify_secret') $$;
+grant execute on function public.messaging_ready() to authenticated;
+
+create or replace function public.set_doc_phone(doc text, did bigint, phone text) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  if doc = 'invoice' then update invoices set customer_phone = left(btrim(coalesce(phone, '')), 40) where id = did;
+  elsif doc = 'estimate' then update estimates set customer_phone = left(btrim(coalesce(phone, '')), 40) where id = did;
+  elsif doc = 'recurring' then update recurring_invoices set customer_phone = left(btrim(coalesce(phone, '')), 40) where id = did;
+  else raise exception 'Unknown document'; end if;
+end $$;
+revoke all on function public.set_doc_phone(text, bigint, text) from public, anon; grant execute on function public.set_doc_phone(text, bigint, text) to authenticated;
+
+-- "mark as sent" no longer emails by itself; real sending goes through send_invoice / send_estimate below
+create or replace function public.set_invoice_status(iid bigint, new_status text) returns void language plpgsql security definer set search_path = public as $$
+declare inv public.invoices;
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  select * into inv from invoices where id = iid for update; if not found then raise exception 'No such invoice'; end if;
+  if new_status = 'sent' then
+    if inv.status = 'void' then raise exception 'Reopen the invoice first'; end if;
+    update invoices set status = case when paid_cents >= total_cents and total_cents > 0 then 'paid' else 'sent' end, sent_at = coalesce(sent_at, now()), updated_at = now() where id = iid;
+    perform notify_user(inv.customer_id, 'invoice', 'Invoice ' || inv.number || ' from the store', 'Total $' || to_char(inv.total_cents / 100.0, 'FM999990.00') || ', due ' || inv.due_date, '#/invoice/' || iid);
+  elsif new_status = 'void' then
+    if inv.paid_cents > 0 then raise exception 'Remove the recorded payments before voiding'; end if;
+    update invoices set status = 'void', updated_at = now() where id = iid;
+  elsif new_status = 'draft' then
+    if inv.paid_cents > 0 then raise exception 'This invoice has payments and cannot go back to draft'; end if;
+    update invoices set status = 'draft', updated_at = now() where id = iid;
+  else raise exception 'Unknown status'; end if;
+  perform audit('invoice.' || new_status, 'invoice', iid::text, '{}');
+end $$;
+
+create or replace function public.send_invoice(iid bigint, via_email boolean, via_sms boolean, base text, to_email text default null, to_phone text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare inv public.invoices; ready boolean := public.messaging_ready(); el bigint; sl bigint; b text := left(coalesce(base, ''), 300);
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  select * into inv from invoices where id = iid for update; if not found then raise exception 'No such invoice'; end if;
+  if inv.status = 'void' then raise exception 'This invoice is void'; end if;
+  if b <> '' and b !~ '^https?://[^[:space:]]+$' then raise exception 'Invalid site address'; end if;
+  if nullif(btrim(to_email), '') is not null then update invoices set customer_email = btrim(to_email) where id = iid; inv.customer_email := btrim(to_email); end if;
+  if nullif(btrim(to_phone), '') is not null then update invoices set customer_phone = btrim(to_phone) where id = iid; inv.customer_phone := btrim(to_phone); end if;
+  if via_email and inv.customer_email !~ '^\S+@\S+\.\S+$' then raise exception 'Enter a valid email address to email this invoice'; end if;
+  if via_sms and length(regexp_replace(inv.customer_phone, '[^0-9]', '', 'g')) < 7 then raise exception 'Enter a mobile number to text this invoice'; end if;
+  update invoices set status = case when paid_cents >= total_cents and total_cents > 0 then 'paid' else 'sent' end, sent_at = coalesce(sent_at, now()), updated_at = now() where id = iid;
+  perform notify_user(inv.customer_id, 'invoice', 'Invoice ' || inv.number || ' from the store', 'Total $' || to_char(inv.total_cents / 100.0, 'FM999990.00') || ', due ' || inv.due_date, '#/invoice/' || iid);
+  if via_email then insert into message_log (kind, ref_id, channel, to_address, status, detail) values ('invoice', iid, 'email', inv.customer_email, case when ready then 'queued' else 'skipped' end, case when ready then '' else 'Sending is not set up yet (see Settings → Messaging)' end) returning id into el; end if;
+  if via_sms then insert into message_log (kind, ref_id, channel, to_address, status, detail) values ('invoice', iid, 'sms', inv.customer_phone, case when ready then 'queued' else 'skipped' end, case when ready then '' else 'Sending is not set up yet (see Settings → Messaging)' end) returning id into sl; end if;
+  if ready and (via_email or via_sms) then
+    perform public.send_notification('invoice_sent', jsonb_build_object('invoice_id', iid, 'base', b, 'channels', jsonb_build_object('email', via_email, 'sms', via_sms), 'log_ids', jsonb_build_object('email', el, 'sms', sl)));
+  end if;
+  perform audit('invoice.sent', 'invoice', iid::text, jsonb_build_object('email', via_email, 'sms', via_sms));
+  return jsonb_build_object('ready', ready, 'email_log', el, 'sms_log', sl);
+end $$;
+
+create or replace function public.send_estimate(eid bigint, via_email boolean, via_sms boolean, base text, to_email text default null, to_phone text default null) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare e public.estimates; ready boolean := public.messaging_ready(); el bigint; sl bigint; b text := left(coalesce(base, ''), 300);
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  select * into e from estimates where id = eid for update; if not found then raise exception 'No such estimate'; end if;
+  if e.status in ('converted', 'accepted', 'declined') then raise exception 'This estimate is already %', e.status; end if;
+  if b <> '' and b !~ '^https?://[^[:space:]]+$' then raise exception 'Invalid site address'; end if;
+  if nullif(btrim(to_email), '') is not null then update estimates set customer_email = btrim(to_email) where id = eid; e.customer_email := btrim(to_email); end if;
+  if nullif(btrim(to_phone), '') is not null then update estimates set customer_phone = btrim(to_phone) where id = eid; e.customer_phone := btrim(to_phone); end if;
+  if via_email and e.customer_email !~ '^\S+@\S+\.\S+$' then raise exception 'Enter a valid email address to email this estimate'; end if;
+  if via_sms and length(regexp_replace(e.customer_phone, '[^0-9]', '', 'g')) < 7 then raise exception 'Enter a mobile number to text this estimate'; end if;
+  update estimates set status = 'sent', sent_at = coalesce(sent_at, now()), updated_at = now() where id = eid;
+  perform notify_user(e.customer_id, 'invoice', 'Estimate ' || e.number || ' from the store', 'Total $' || to_char(e.total_cents / 100.0, 'FM999990.00') || ', valid until ' || e.expires_on, '#/estimate/' || eid);
+  if via_email then insert into message_log (kind, ref_id, channel, to_address, status, detail) values ('estimate', eid, 'email', e.customer_email, case when ready then 'queued' else 'skipped' end, case when ready then '' else 'Sending is not set up yet (see Settings → Messaging)' end) returning id into el; end if;
+  if via_sms then insert into message_log (kind, ref_id, channel, to_address, status, detail) values ('estimate', eid, 'sms', e.customer_phone, case when ready then 'queued' else 'skipped' end, case when ready then '' else 'Sending is not set up yet (see Settings → Messaging)' end) returning id into sl; end if;
+  if ready and (via_email or via_sms) then
+    perform public.send_notification('estimate_sent', jsonb_build_object('estimate_id', eid, 'base', b, 'channels', jsonb_build_object('email', via_email, 'sms', via_sms), 'log_ids', jsonb_build_object('email', el, 'sms', sl)));
+  end if;
+  perform audit('estimate.sent', 'estimate', eid::text, jsonb_build_object('email', via_email, 'sms', via_sms));
+  return jsonb_build_object('ready', ready, 'email_log', el, 'sms_log', sl);
+end $$;
+
+drop function if exists public.send_statement(uuid, text, text);
+create or replace function public.send_statement(cid uuid, mail text, nm text, base text default '') returns jsonb language plpgsql security definer set search_path = public as $$
+declare ready boolean := public.messaging_ready(); lid bigint; b text := left(coalesce(base, ''), 300);
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  if b <> '' and b !~ '^https?://[^[:space:]]+$' then raise exception 'Invalid site address'; end if;
+  insert into message_log (kind, ref_id, channel, to_address, status, detail) values ('statement', null, 'email', coalesce(mail, nm, ''), case when ready then 'queued' else 'skipped' end, case when ready then '' else 'Sending is not set up yet (see Settings → Messaging)' end) returning id into lid;
+  if ready then perform public.send_notification('statement', jsonb_build_object('customer_id', cid, 'email', coalesce(mail, ''), 'name', coalesce(nm, ''), 'base', b, 'log_ids', jsonb_build_object('email', lid))); end if;
+  perform audit('statement.sent', 'invoice', '', jsonb_build_object('customer', coalesce(nm, mail)));
+  return jsonb_build_object('ready', ready, 'email_log', lid);
+end $$;
+
+create or replace function public.send_test_message(channel text, to_addr text, base text default '') returns jsonb language plpgsql security definer set search_path = public as $$
+declare ready boolean := public.messaging_ready(); lid bigint;
+begin
+  if not public.has_perm('team.manage') then raise exception 'Not allowed'; end if;
+  if channel not in ('email', 'sms') then raise exception 'Unknown channel'; end if;
+  insert into message_log (kind, channel, to_address, status, detail) values ('test', channel, left(btrim(coalesce(to_addr, '')), 120), case when ready then 'queued' else 'skipped' end, case when ready then '' else 'The sending service is not connected yet' end) returning id into lid;
+  if ready then perform public.send_notification('test', jsonb_build_object('channel', channel, 'to', left(btrim(to_addr), 120), 'log_id', lid)); end if;
+  return jsonb_build_object('ready', ready, 'log', lid);
+end $$;
+revoke all on function public.send_invoice(bigint, boolean, boolean, text, text, text), public.send_estimate(bigint, boolean, boolean, text, text, text), public.send_statement(uuid, text, text, text), public.send_test_message(text, text, text) from public, anon;
+grant execute on function public.send_invoice(bigint, boolean, boolean, text, text, text), public.send_estimate(bigint, boolean, boolean, text, text, text), public.send_statement(uuid, text, text, text), public.send_test_message(text, text, text) to authenticated;
+
+-- convert/recurring keep the customer's phone
+create or replace function public.convert_estimate(eid bigint) returns bigint language plpgsql security definer set search_path = public as $$
+declare e public.estimates; iid bigint; its jsonb;
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  select * into e from estimates where id = eid for update; if not found then raise exception 'No such estimate'; end if;
+  if e.status = 'converted' then raise exception 'Already converted'; end if;
+  select coalesce(jsonb_agg(jsonb_build_object('description', description, 'qty', qty, 'unit_price_cents', unit_price_cents, 'taxable', taxable, 'product_id', product_id) order by sort), '[]') into its from estimate_items where estimate_id = eid;
+  iid := public.make_invoice(jsonb_build_object('customer_id', e.customer_id, 'customer_name', e.customer_name, 'customer_email', e.customer_email, 'customer_address', e.customer_address,
+    'due_date', current_date + coalesce(public.store_cfg('invoice_due_days', 14), 14)::int, 'notes', e.notes, 'terms', e.terms, 'discount_cents', e.discount_cents, 'tax_rate', e.tax_rate, 'tax_label', e.tax_label), its);
+  update invoices set customer_phone = e.customer_phone where id = iid;
+  update estimates set status = 'converted', invoice_id = iid, updated_at = now() where id = eid;
+  perform audit('estimate.converted', 'estimate', eid::text, jsonb_build_object('invoice_id', iid));
+  return iid;
+end $$;
+do $$ declare def text; begin
+  select pg_get_functiondef(p.oid) into def from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'run_recurring_internal';
+  def := replace(def, 'made := made + 1;', 'update invoices set customer_phone = r.customer_phone where id = iid; made := made + 1;');
+  execute def;
+end $$;
+
+-- estimates: "mark as sent" records the status only; sending goes through send_estimate
+do $$ declare def text; begin
+  select pg_get_functiondef(p.oid) into def from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'set_estimate_status';
+  def := replace(def, 'perform public.send_notification(''estimate_sent'', jsonb_build_object(''estimate_id'', eid));', '');
+  execute def;
+end $$;
+
+-- ===== Messaging upgrade: attachments, order references, internal notes, unsend, quick replies =====
+alter table public.messages add column if not exists attachments jsonb not null default '[]' check (jsonb_typeof(attachments) = 'array' and jsonb_array_length(attachments) <= 6);
+alter table public.messages add column if not exists order_id bigint references public.orders(id) on delete set null;
+alter table public.messages add column if not exists internal boolean not null default false;
+alter table public.messages add column if not exists deleted_at timestamptz;
+alter table public.messages drop constraint if exists messages_body_check;
+alter table public.messages add constraint messages_body_check check (length(body) <= 5000 and (length(btrim(body)) > 0 or jsonb_array_length(attachments) > 0 or order_id is not null));
+
+drop policy if exists "view messages" on public.messages;
+create policy "view messages" on public.messages for select using (
+  exists (select 1 from public.conversations c where c.id = conversation_id and (c.customer_id = auth.uid() or public.is_admin())) and (not internal or public.has_perm('messages')));
+drop policy if exists "staff view messages" on public.messages;
+create policy "staff view messages" on public.messages for select using (public.has_perm('messages'));
+drop policy if exists "send message" on public.messages;
+create policy "send message" on public.messages for insert with check (sender_id = auth.uid() and (not internal or public.has_perm('messages')) and exists (
+  select 1 from public.conversations c where c.id = conversation_id and (public.is_admin() or (c.customer_id = auth.uid() and not c.closed))));
+
+-- internal notes never notify or email the customer
+create or replace function public.trg_msg_after() returns trigger language plpgsql security definer set search_path = public as $$
+declare c public.conversations; who text; prev text;
+begin
+  select * into c from conversations where id = new.conversation_id;
+  update conversations set last_message_at = new.created_at where id = c.id;
+  if new.internal then return new; end if;
+  prev := coalesce(nullif(btrim(new.body), ''), case when jsonb_array_length(new.attachments) > 0 then '[attachment]' else '[order]' end);
+  if new.sender_id = c.customer_id then
+    select coalesce(nullif(name, ''), email) into who from profiles where id = c.customer_id;
+    perform notify_admins('message', 'New message from ' || coalesce(who, 'a customer'), c.subject || ': ' || left(prev, 120), '#/messages/' || c.id);
+  else
+    perform notify_user(c.customer_id, 'message', 'New reply from the store team', c.subject || ': ' || left(prev, 120), '#/messages/' || c.id);
+  end if;
+  perform public.send_notification('new_message', jsonb_build_object('message_id', new.id));
+  return new;
+end $$;
+
+-- unsend: the sender can retract a message within 10 minutes
+create or replace function public.delete_message(mid bigint) returns void language plpgsql security definer set search_path = public as $$
+declare m public.messages;
+begin
+  select * into m from messages where id = mid for update; if not found then raise exception 'No such message'; end if;
+  if m.sender_id <> auth.uid() then raise exception 'You can only unsend your own messages'; end if;
+  if m.created_at < now() - interval '10 minutes' then raise exception 'Messages can only be unsent within 10 minutes'; end if;
+  update messages set body = '', attachments = '[]', order_id = null, deleted_at = now() where id = mid;
+end $$;
+revoke all on function public.delete_message(bigint) from public, anon; grant execute on function public.delete_message(bigint) to authenticated;
+alter table public.messages drop constraint messages_body_check;
+alter table public.messages add constraint messages_body_check check (length(body) <= 5000 and (deleted_at is not null or length(btrim(body)) > 0 or jsonb_array_length(attachments) > 0 or order_id is not null));
+
+create table if not exists public.canned_replies (
+  id bigint generated always as identity primary key, title text not null check (length(btrim(title)) between 1 and 60), body text not null check (length(btrim(body)) between 1 and 2000),
+  created_by uuid default auth.uid(), created_at timestamptz not null default now());
+alter table public.canned_replies enable row level security;
+drop policy if exists "staff canned replies" on public.canned_replies;
+create policy "staff canned replies" on public.canned_replies for all using (public.has_perm('messages')) with check (public.has_perm('messages'));
+insert into public.canned_replies (title, body) select * from (values
+  ('Thanks / received', 'Thanks for your message — we have it and will get back to you shortly.'),
+  ('Order shipped', 'Good news — your order has shipped. You can follow it from the Orders section of your account.'),
+  ('Need more info', 'Could you tell us a bit more (room size, location and what you are insulating)? That will help us recommend the right product.')) v(t, b)
+where not exists (select 1 from public.canned_replies);
+
+-- private bucket for message attachments; files live under conv_<conversation id>/ and only that conversation's people can read them
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types) values ('message-files', 'message-files', false, 10485760,
+  array['image/jpeg','image/png','image/webp','image/gif','application/pdf','text/plain','text/csv','application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'])
+on conflict (id) do update set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+create or replace function public.can_access_conversation(cid_text text) returns boolean language sql stable security definer set search_path = public as $$
+  select cid_text ~ '^conv_[0-9]+$' and exists (select 1 from conversations c where c.id = substr(cid_text, 6)::bigint and (c.customer_id = auth.uid() or public.has_perm('messages'))) $$;
+grant execute on function public.can_access_conversation(text) to authenticated;
+drop policy if exists "message files read" on storage.objects; create policy "message files read" on storage.objects for select using (bucket_id = 'message-files' and public.can_access_conversation((storage.foldername(name))[1]));
+drop policy if exists "message files upload" on storage.objects; create policy "message files upload" on storage.objects for insert with check (bucket_id = 'message-files' and public.can_access_conversation((storage.foldername(name))[1]));
+
+-- ===== Shop open / closed =====
+create or replace function public.trg_orders_shop_closed() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.source = 'online' and coalesce((select (value->>'closed')::boolean from site_settings where key = 'store'), false) then
+    raise exception 'The shop is closed and not taking online orders right now.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists orders_shop_closed on public.orders;
+create trigger orders_shop_closed before insert on public.orders for each row execute function public.trg_orders_shop_closed();

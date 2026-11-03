@@ -724,9 +724,25 @@ function openPalette() {
   document.addEventListener('keydown', onKey, true); let tm; q.addEventListener('input', () => { clearTimeout(tm); tm = setTimeout(run, 160); });
   el.addEventListener('click', (e) => { if (e.target === el) close(); else if (e.target.closest('.cmditem')) close(); }); run(); q.focus();
 }
+// back-to-top button
+{ const up = document.createElement('button'); up.className = 'totop noprint'; up.type = 'button'; up.hidden = true; up.setAttribute('aria-label', 'Back to top'); up.innerHTML = ':ic-arrow-up:'; document.body.appendChild(up);
+  up.addEventListener('click', () => window.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }));
+  let tk = false; window.addEventListener('scroll', () => { if (tk) return; tk = true; requestAnimationFrame(() => { up.hidden = window.scrollY < 700; tk = false; }); }, { passive: true }); }
 document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && isStaff()) { e.preventDefault(); openPalette(); } });
 document.addEventListener('click', (e) => { if (e.target.closest('.openpalette')) openPalette(); });
 
+// ---- admin section bar (shown on every admin sub-page) ----
+function adminNavHtml(sub) {
+  const items = CMD_LINKS.filter(([l, , perm]) => can(perm) && !/^New /.test(l)); if (!sub || !items.length) return '';
+  const cur = '#/admin/' + sub;
+  return `<nav class="adminbar noprint" aria-label="Admin sections"><a href="#/admin" class="ab-home">:ic-home: Dashboard</a>${items.filter(([l]) => l !== 'Dashboard').map(([l, h]) => `<a href="${h}" ${h === cur || h.startsWith(cur + '/') ? 'class="on" aria-current="page"' : ''}>${esc(l)}</a>`).join('')}</nav>`;
+}
+// ---- CSV helpers ----
+function parseCsv(text) { const rows = []; let row = [], cell = '', q = false; text = String(text).replace(/^\uFEFF/, '');
+  for (let i = 0; i < text.length; i++) { const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
+    else if (c === '"') q = true; else if (c === ',') { row.push(cell); cell = ''; } else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cell); cell = ''; if (row.some((x) => x.trim() !== '')) rows.push(row); row = []; } else cell += c; }
+  row.push(cell); if (row.some((x) => x.trim() !== '')) rows.push(row); return rows; }
 // ---- admin ----
 const needAdmin = () => { if (!profile?.is_admin) { $app.innerHTML = '<h1>Forbidden</h1>'; return false; } return true; };
 const salesChart = (orders) => {
@@ -1315,11 +1331,16 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const [psR, alR] = await Promise.all([sb.from('products').select('*').order('name'), sb.from('stock_alerts').select('product_id')]);
     const ps = psR.data || [], waiting = {}; (alR.data || []).forEach((a) => (waiting[a.product_id] = (waiting[a.product_id] || 0) + 1));
     const cats = [...new Set(ps.map((x) => x.category))].sort();
-    return `<div class="sechead"><h1 style="margin:0">Products</h1><div class="row"><button class="btn ghost" id="optimg" type="button" title="Shrinks photos that are too big, so pages load faster">:ic-image: Optimize photos</button><button class="btn ghost" id="prodcsv" type="button">:ic-download: Export CSV</button><a class="btn" href="#/admin/products/new">+ New product</a></div></div>
+    return `<div class="sechead"><h1 style="margin:0">Products</h1><div class="row"><label class="btn ghost" style="cursor:pointer" title="Add or update many products from a spreadsheet (CSV)">:ic-clipboard: Import CSV<input type="file" id="prodimport" accept=".csv,text/csv" hidden></label><button class="btn ghost" id="prodtemplate" type="button">Template</button><button class="btn ghost" id="optimg" type="button" title="Shrinks photos that are too big, so pages load faster">:ic-image: Optimize photos</button><button class="btn ghost" id="prodcsv" type="button">:ic-download: Export CSV</button><a class="btn" href="#/admin/products/new">+ New product</a></div></div>
     <div class="toolbar"><input id="prodq" type="search" placeholder="Search products…" aria-label="Search products" style="max-width:280px"><select id="prodcat" aria-label="Category"><option value="">All categories</option>${cats.map((c) => `<option>${esc(c)}</option>`).join('')}</select><select id="prodbrand" aria-label="Brand"><option value="">All brands</option>${[...new Set(ps.map((x) => x.brand).filter(Boolean))].sort().map((b) => `<option>${esc(b)}</option>`).join('')}</select>
-    <select id="prodview" aria-label="Show"><option value="">All</option><option value="low">Low or out of stock</option><option value="sale">On sale</option><option value="hidden">Hidden</option></select><span class="muted grow" id="prodcount"></span></div>
-    <table id="prodtable"><tr><th>Name</th><th>Brand</th><th>Category</th><th>Price</th><th>Stock</th><th>Waiting</th><th>Status</th></tr>
-    ${ps.map((p) => `<tr data-name="${esc((p.name + ' ' + (p.brand || '') + ' ' + (p.sku || '')).toLowerCase())}" data-cat="${esc(p.category)}" data-brand="${esc(p.brand || '')}" data-low="${p.stock <= (p.reorder_point ?? 10) ? 1 : ''}" data-sale="${onSale(p) ? 1 : ''}" data-hidden="${p.active ? '' : 1}" data-csv='${esc(JSON.stringify([p.name, p.brand || '', p.category, (p.price_cents / 100).toFixed(2), ((p.cost_cents || 0) / 100).toFixed(2), p.stock, p.unit, p.active ? 'live' : 'hidden']))}'><td><a href="#/admin/products/${p.id}">${esc(p.name)}</a></td><td>${esc(p.brand || '—')}</td><td>${esc(p.category)}</td><td>${priceHtml(p)}</td><td class="${p.stock === 0 ? 'down' : ''}">${p.stock}</td><td>${waiting[p.id] ? `<span class="status pending">${waiting[p.id]}</span>` : ''}</td><td>${p.active ? 'Live' : 'Hidden'}</td></tr>`).join('')}</table>`;
+    <select id="prodview" aria-label="Show"><option value="">All</option><option value="low">Low or out of stock</option><option value="sale">On sale</option><option value="hidden">Hidden</option></select><label class="check"><input type="checkbox" id="prodall2"> Select all shown</label><span class="muted grow" id="prodcount"></span></div>
+    <div class="bulkbar" id="prodbulk" hidden><b><span id="prodsel">0</span> selected</b>
+      <label>Change price <select id="bk_op"><option value="">—</option><option value="pct">by %</option><option value="amt">by $</option></select></label><input id="bk_val" type="number" step="0.01" placeholder="e.g. 5 or -10" style="width:110px">
+      <select id="bk_vis" aria-label="Visibility"><option value="">Visibility…</option><option value="1">Show in store</option><option value="0">Hide from store</option></select><input id="bk_brand" list="bk_brands" placeholder="Set brand…" style="width:150px"><datalist id="bk_brands">${[...new Set(ps.map((x) => x.brand).filter(Boolean))].map((b) => `<option value="${esc(b)}">`).join('')}</datalist><input id="bk_cat" list="bk_cats" placeholder="Set category…" style="width:150px"><datalist id="bk_cats">${cats.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+      <button class="btn" id="bk_apply" type="button">Apply to selected</button></div>
+    <p class="muted" id="prodimpmsg" hidden></p>
+    <table id="prodtable"><tr><th style="width:32px"><input type="checkbox" id="prodall" aria-label="Select all shown"></th><th>Name</th><th>Brand</th><th>Category</th><th>Price</th><th>Stock</th><th>Waiting</th><th>Status</th></tr>
+    ${ps.map((p) => `<tr data-name="${esc((p.name + ' ' + (p.brand || '') + ' ' + (p.sku || '')).toLowerCase())}" data-cat="${esc(p.category)}" data-brand="${esc(p.brand || '')}" data-low="${p.stock <= (p.reorder_point ?? 10) ? 1 : ''}" data-sale="${onSale(p) ? 1 : ''}" data-id="${p.id}" data-price="${p.price_cents}" data-hidden="${p.active ? '' : 1}" data-csv='${esc(JSON.stringify([p.name, p.brand || '', p.category, (p.price_cents / 100).toFixed(2), ((p.cost_cents || 0) / 100).toFixed(2), p.stock, p.unit, p.active ? 'live' : 'hidden']))}'><td><input type="checkbox" class="psel" value="${p.id}" aria-label="Select ${esc(p.name)}"></td><td><a href="#/admin/products/${p.id}">${esc(p.name)}</a></td><td>${esc(p.brand || '—')}</td><td>${esc(p.category)}</td><td>${priceHtml(p)}</td><td class="${p.stock === 0 ? 'down' : ''}">${p.stock}</td><td>${waiting[p.id] ? `<span class="status pending">${waiting[p.id]}</span>` : ''}</td><td>${p.active ? 'Live' : 'Hidden'}</td></tr>`).join('')}</table>`;
   }
   // ---- dashboard ----
   const days = [7, 30, 90].includes(Number(q.get('days'))) ? Number(q.get('days')) : 30, now = Date.now(), cutCur = now - days * 864e5;
@@ -1387,6 +1408,43 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       flash(`Photos checked: ${jobs.length - skipped - failed} shrunk (saved ${(saved / 1048576).toFixed(1)} MB), ${skipped} already fine${failed ? `, ${failed} could not be changed (for example photos hosted on other websites)` : ''}.`, failed ? 'error' : 'ok');
     } catch (err) { fail(err); } finally { btn.disabled = false; btn.innerHTML = ':ic-image: Optimize photos'; }
   });
+  if (document.getElementById('prodtable')) {
+    const sel = () => [...document.querySelectorAll('.psel:checked')], bar = document.getElementById('prodbulk');
+    const upd = () => { const n = sel().length; document.getElementById('prodsel').textContent = n; bar.hidden = !n; };
+    ['prodall', 'prodall2'].forEach((id) => document.getElementById(id).addEventListener('change', (e) => { document.querySelectorAll('#prodtable tr:not([hidden]) .psel').forEach((c) => (c.checked = e.target.checked)); document.getElementById('prodall').checked = document.getElementById('prodall2').checked = e.target.checked; upd(); }));
+    document.getElementById('prodtable').addEventListener('change', (e) => { if (e.target.classList.contains('psel')) upd(); });
+    document.getElementById('bk_apply').addEventListener('click', async (e) => {
+      const ids = sel().map((c) => Number(c.value)); if (!ids.length) return;
+      const op = document.getElementById('bk_op').value, val = parseFloat(document.getElementById('bk_val').value), vis = document.getElementById('bk_vis').value, brand = document.getElementById('bk_brand').value.trim(), cat = document.getElementById('bk_cat').value.trim();
+      if (!op && !vis && !brand && !cat) return fail(new Error('Choose what to change first.')); if (op && !isFinite(val)) return fail(new Error('Enter the amount for the price change.'));
+      if (!confirm(`Apply these changes to ${ids.length} product${ids.length === 1 ? '' : 's'}?`)) return; e.target.disabled = true; let bad = 0;
+      try { const common = {}; if (vis) common.active = vis === '1'; if (brand) common.brand = brand; if (cat) common.category = cat;
+        if (brand) await sb.rpc('add_brand', { nm: brand });
+        for (const id of ids) { const tr = document.querySelector(`#prodtable tr[data-id="${id}"]`), upd2 = { ...common };
+          if (op) { const cur = Number(tr.dataset.price), next = op === 'pct' ? Math.round(cur * (1 + val / 100)) : cur + Math.round(val * 100); upd2.price_cents = Math.max(0, next); }
+          const { error } = await sb.from('products').update(upd2).eq('id', id); if (error) bad++; } } finally { e.target.disabled = false; }
+      flash(bad ? `${ids.length - bad} updated, ${bad} failed.` : `${ids.length} product${ids.length === 1 ? '' : 's'} updated.`, bad ? 'error' : 'ok'); route();
+    });
+    document.getElementById('prodimport').addEventListener('change', async (e) => {
+      const f = e.target.files[0]; e.target.value = ''; if (!f) return; const rows = parseCsv(await f.text()); if (rows.length < 2) return fail(new Error('That file has no product rows.'));
+      const heads = rows[0].map((h) => h.trim().toLowerCase().replace(/[^a-z]+/g, '_')), col = (...names) => heads.findIndex((h) => names.includes(h)), ix = { name: col('name', 'product'), category: col('category'), brand: col('brand'), price: col('price'), unit: col('unit'), sku: col('sku'), description: col('description'), stock: col('stock', 'quantity', 'qty'), cost: col('cost') };
+      if (ix.name < 0 || ix.price < 0) return fail(new Error('The file needs at least "name" and "price" columns. Use "Download template" for an example.'));
+      const existing = (await sb.from('products').select('id,name,sku')).data || [], byName = new Map(existing.map((x) => [x.name.toLowerCase(), x])), bySku = new Map(existing.filter((x) => x.sku).map((x) => [x.sku.toLowerCase(), x]));
+      const g = (r, k) => (ix[k] >= 0 ? (r[ix[k]] || '').trim() : ''); let add = 0, upd = 0, bad = 0; const lines = rows.slice(1);
+      if (!confirm(`Import ${lines.length} row${lines.length === 1 ? '' : 's'}? Products that already exist (same SKU or name) are updated; new ones are added.`)) return;
+      const lid = (await sb.from('locations').select('id').eq('is_default', true).maybeSingle()).data?.id;
+      for (const r of lines) { const name = g(r, 'name'), price = Math.round((parseFloat(g(r, 'price').replace(/[$,]/g, '')) || 0) * 100); if (!name) continue;
+        const fields = { name, price_cents: price, ...(g(r, 'category') ? { category: g(r, 'category') } : {}), ...(g(r, 'brand') ? { brand: g(r, 'brand') } : {}), ...(g(r, 'unit') ? { unit: g(r, 'unit') } : {}), ...(g(r, 'sku') ? { sku: g(r, 'sku') } : {}), ...(g(r, 'description') ? { description: g(r, 'description') } : {}), ...(g(r, 'cost') ? { cost_cents: Math.round((parseFloat(g(r, 'cost')) || 0) * 100) } : {}) };
+        if (fields.brand) await sb.rpc('add_brand', { nm: fields.brand });
+        const hit = (fields.sku && bySku.get(fields.sku.toLowerCase())) || byName.get(name.toLowerCase());
+        if (hit) { const { error } = await sb.from('products').update(fields).eq('id', hit.id); error ? bad++ : upd++; }
+        else { const slug = (name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'product') + '-' + Math.floor(Math.random() * 1000);
+          const { data, error } = await sb.from('products').insert({ category: 'General', unit: 'each', ...fields, slug }).select('id').single(); if (error) { bad++; continue; } add++;
+          const st = parseInt(g(r, 'stock'), 10); if (st > 0 && lid) await sb.rpc('set_inventory', { pid: data.id, lid, new_qty: st, note: 'CSV import' }); } }
+      flash(`Import finished: ${add} added, ${upd} updated${bad ? `, ${bad} failed` : ''}.`, bad ? 'error' : 'ok'); route();
+    });
+  }
+  document.getElementById('prodtemplate')?.addEventListener('click', () => download('product-import-template.csv', [['name', 'category', 'brand', 'price', 'unit', 'sku', 'cost', 'stock', 'description'], ['Example batt R-13', 'Batts & Rolls', 'Owens Corning', '49.99', 'bundle', 'OC-R13', '30.00', '20', 'Unfaced fiberglass batts']]));
   if (document.getElementById('custtable')) {
     const tb = document.getElementById('custtable'), rows = () => [...tb.querySelectorAll('tr[data-q]')]; let seg = '';
     const run = () => { const t = document.getElementById('custq').value.toLowerCase().trim(), so = document.getElementById('custsort').value, rs = rows(); let n = 0;
@@ -2513,7 +2571,7 @@ async function route() {
   const PRIVATE = ['cart', 'checkout', 'account', 'messages', 'notifications', 'login', 'register', 'admin', 'invoice', 'estimate', 'reset', 'track', 'wishlist'];
   setSeo({ title: name === 'home' || name === '' ? (SEO.home_title || '') : TITLES[name] || '', description: '', noindex: PRIVATE.includes(name), path: name === 'shop' ? '/#/shop' : '' });
   if (!page) { $app.innerHTML = '<h1>Not found</h1>'; return; }
-  try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); setMenu(false);
+  try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); if (name === 'admin' && args[0]) $app.insertAdjacentHTML('afterbegin', adminNavHtml(args[0])); setMenu(false);
     $app.querySelectorAll('table').forEach((t) => { if (!t.parentElement.classList.contains('tablewrap') && !t.closest('.invdoc, .tablewrap')) { const w = document.createElement('div'); w.className = 'tablewrap'; t.replaceWith(w); w.appendChild(t); }
       // label cells so tables can stack into cards on phones
       const heads = [...t.querySelectorAll('th')].map((x) => x.textContent);

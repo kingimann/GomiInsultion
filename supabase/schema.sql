@@ -1862,3 +1862,30 @@ begin
 end $$;
 drop trigger if exists orders_shop_closed on public.orders;
 create trigger orders_shop_closed before insert on public.orders for each row execute function public.trg_orders_shop_closed();
+
+-- ===== SEO tools =====
+alter table public.products add column if not exists seo_title text not null default '' check (length(seo_title) <= 120);
+alter table public.products add column if not exists seo_description text not null default '' check (length(seo_description) <= 320);
+alter table public.products add column if not exists image_alt text not null default '' check (length(image_alt) <= 200);
+alter table public.pages add column if not exists seo_title text not null default '' check (length(seo_title) <= 120);
+alter table public.pages add column if not exists seo_description text not null default '' check (length(seo_description) <= 320);
+-- site-wide SEO settings live in site_settings key 'seo' (site_title, description, og_image, site_url, noindex)
+
+-- ===== Page version history =====
+create table if not exists public.page_versions (
+  id bigint generated always as identity primary key, page_id bigint not null references public.pages(id) on delete cascade,
+  title text not null, body text not null, author text not null default '', created_at timestamptz not null default now());
+create index if not exists page_versions_page_idx on public.page_versions (page_id, id desc);
+alter table public.page_versions enable row level security;
+drop policy if exists "admin page versions" on public.page_versions;
+create policy "admin page versions" on public.page_versions for all using (public.is_admin()) with check (public.is_admin());
+create or replace function public.trg_page_version() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if (old.body is distinct from new.body or old.title is distinct from new.title) then
+    insert into page_versions (page_id, title, body, author) values (old.id, old.title, old.body, coalesce((select name from profiles where id = auth.uid()), ''));
+    delete from page_versions where page_id = old.id and id not in (select id from page_versions where page_id = old.id order by id desc limit 25);
+  end if;
+  return new;
+end $$;
+drop trigger if exists pages_version on public.pages;
+create trigger pages_version before update on public.pages for each row execute function public.trg_page_version();

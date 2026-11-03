@@ -3,6 +3,7 @@ const sb = supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY);
 const $app = document.getElementById('app');
 const STATUSES = ['pending', 'paid', 'shipped', 'delivered', 'cancelled', 'refunded'];
 let FREE_SHIP = 50000, SHIP = 1500;
+let SEO = {};
 let STORE = { ship_flat_cents: 1500, free_over_cents: 50000, tax_rate: 0, tax_label: 'Tax', biz: {} };
 function applyStoreCfg(v) { STORE = { ...STORE, ...(v || {}) }; FREE_SHIP = Number(STORE.free_over_cents) || 0; SHIP = Number(STORE.ship_flat_cents) || 0; renderClosedBar(); }
 const shopClosed = () => !!STORE.closed;
@@ -73,8 +74,8 @@ function applyBranding() {
 window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
 applyTheme();
 async function loadSiteTheme() {
-  const { data } = await sb.from('site_settings').select('key,value').in('key', ['theme', 'store']);
-  (Array.isArray(data) ? data : []).forEach((r) => { if (r.key === 'theme') { theme = r.value || {}; applyTheme(); } else if (r.key === 'store') applyStoreCfg(r.value); });
+  const { data } = await sb.from('site_settings').select('key,value').in('key', ['theme', 'store', 'seo']);
+  (Array.isArray(data) ? data : []).forEach((r) => { if (r.key === 'theme') { theme = r.value || {}; applyTheme(); } else if (r.key === 'store') applyStoreCfg(r.value); else if (r.key === 'seo') SEO = r.value || {}; });
 }
 async function saveSiteTheme() {
   if (!profile?.is_admin) return;
@@ -265,8 +266,8 @@ pages.product = async ([slug]) => {
     .sort((a, b) => (b.category === p.category) - (a.category === p.category)).slice(0, 4);
   const extra = (await sb.from('product_images').select('url').eq('product_id', p.id).order('position')).data || [];
   const pics = [p.image_url, ...extra.map((x) => x.url)].filter((u) => safeUrl(u));
-  const recent = await recentHtml(p.id); pushRV(p.id); document.title = `${p.name} · ${theme.name || 'Gomi Insulation'}`;
-  const gallery = pics.length ? `<div class="gallery"><img class="big" id="mainpic" src="${esc(pics[0])}" alt="${esc(p.name)}">${pics.length > 1 ? `<div class="thumbs">${pics.map((u, i) => `<img src="${esc(u)}" alt="Photo ${i + 1}" class="${i ? '' : 'on'}">`).join('')}</div>` : ''}</div>` : img(p, true);
+  const recent = await recentHtml(p.id); pushRV(p.id); setSeo({ title: p.seo_title || `${p.name}${p.r_value && !p.name.includes(p.r_value) ? ' ' + p.r_value : ''}`, description: p.seo_description || p.description, image: pics[0], type: 'product', path: '/product/' + p.slug + '/', jsonld: productLd(p, pics) });
+  const gallery = pics.length ? `<div class="gallery"><img class="big" id="mainpic" src="${esc(pics[0])}" alt="${esc(p.image_alt || p.name)}">${pics.length > 1 ? `<div class="thumbs">${pics.map((u, i) => `<img src="${esc(u)}" alt="Photo ${i + 1}" class="${i ? '' : 'on'}">`).join('')}</div>` : ''}</div>` : img(p, true);
   return `<div class="crumbs" role="navigation" aria-label="Breadcrumb"><a href="#/shop">Shop</a> › <a href="#/shop?category=${encodeURIComponent(p.category)}">${esc(p.category)}</a> › <span>${esc(p.name)}</span></div>
   <div class="detail"><div>${gallery}</div><div><span class="tag">${esc(p.category)}</span><h1>${esc(p.name)}</h1>
   <p class="price big">${money(p.price_cents)} <small>per ${esc(p.unit)}</small></p>${p.r_value ? `<p><strong>R-value:</strong> ${esc(p.r_value)}</p>` : ''}<p>${esc(p.description)}</p>
@@ -726,11 +727,35 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
       <div class="row"><a class="btn ghost" href="#/admin/forms/${f.id}">:ic-edit: Edit</a><a class="btn ghost" href="#/form/${esc(f.slug)}" target="_blank" rel="noopener">View ↗</a><button class="link dupform" data-id="${f.id}">Duplicate</button><button class="link delform" data-id="${f.id}" data-title="${esc(f.title)}" style="color:var(--err);margin-left:auto">Delete</button></div></article>`).join('')}</div>`
       : '<div class="emptyq">:ic-clipboard:<p><b>No forms yet</b></p><p class="muted">Create your first form — for example a “Request a quote” or “Book a site visit” form.</p><a class="btn" href="#/admin/forms/new">+ New form</a></div>'}`;
   }
+  if (sub === 'seo') {
+    const [pr, pgs] = await Promise.all([sb.from('products').select('id,name,slug,description,image_url,image_alt,seo_title,seo_description,active').order('name'), sb.from('pages').select('id,title,slug,body,seo_title,seo_description,published').order('title')]);
+    const chk = (t, d, extra = []) => { const issues = [], tl = (t || '').length, dl = (d || '').length;
+      if (!dl) issues.push('No meta description'); else if (dl < 70) issues.push('Description too short'); else if (dl > 160) issues.push('Description too long');
+      if (tl < 15) issues.push('Title too short'); else if (tl > 60) issues.push('Title too long'); return [...issues, ...extra]; };
+    const rows = [...(pr.data || []).filter((x) => x.active).map((x) => ({ kind: 'Product', name: x.name, href: `#/admin/products/${x.id}`, issues: chk(x.seo_title || x.name, x.seo_description || x.description, [...(safeUrl(x.image_url) ? (x.image_alt ? [] : ['No photo alt text']) : ['No photo'])]) })),
+      ...(pgs.data || []).filter((x) => x.published).map((x) => ({ kind: 'Page', name: x.title, href: `#/admin/pages/${x.id}`, issues: chk(x.seo_title || x.title, x.seo_description || x.body, []) }))];
+    const good = rows.filter((r) => !r.issues.length).length, score = rows.length ? Math.round((good / rows.length) * 100) : 100;
+    const o = { site_title: '', description: '', og_image: '', site_url: '', noindex: false, home_title: '', ...SEO };
+    return `<div class="sechead"><h1 style="margin:0">SEO</h1><span class="muted">Help customers find you on Google</span></div>
+    <div class="seogrid"><div class="stack"><section class="cs"><h3>Search health</h3><div class="scorewrap"><div class="score ${score >= 80 ? 'good' : score >= 50 ? 'mid' : 'bad'}">${score}</div><div><b>${good} of ${rows.length}</b> live items are fully optimised<br><small class="muted">Checks title and description length, photo alt text.</small></div></div>
+      ${rows.length ? `<div class="tablewrap"><table><tr><th>Item</th><th>Type</th><th>To fix</th><th></th></tr>${rows.sort((a, b) => b.issues.length - a.issues.length).map((r) => `<tr><td>${esc(r.name)}</td><td>${r.kind}</td><td>${r.issues.length ? r.issues.map((i) => `<span class="status pending">${esc(i)}</span>`).join(' ') : '<span class="status paid">Good</span>'}</td><td><a href="${r.href}">Edit</a></td></tr>`).join('')}</table></div>` : '<p class="muted">Nothing to check yet.</p>'}</section>
+    <section class="cs"><h3>Sitemap &amp; indexing</h3><p class="muted" style="margin-top:0">A build step creates <code>sitemap.xml</code>, <code>robots.txt</code> and a static page for every product and page (with titles, descriptions and structured data) so search engines can read them. It runs on every deploy and once a day — run it now from GitHub → Actions → “Deploy store to GitHub Pages” → Run workflow, or trigger your Netlify deploy. Then submit <code>${esc(seoBase())}/sitemap.xml</code> in Google Search Console.</p></section></div>
+    <form id="seoform" class="cs stack"><h3 style="margin:0">Site settings</h3>
+      <label>Site name in search results<input name="site_title" maxlength="80" value="${esc(o.site_title)}" placeholder="${esc(theme.name || 'Gomi Insulation')}"></label>
+      <label>Home page title<input name="home_title" maxlength="80" value="${esc(o.home_title)}" placeholder="Insulation supplies delivered to your site"></label>
+      <label>Default description<textarea name="description" rows="3" maxlength="300" placeholder="Quality insulation, delivered. Batts, rolls, foam and more.">${esc(o.description)}</textarea></label>
+      <label>Social share image URL <small class="muted">shown when your link is shared (1200×630 works best)</small><input name="og_image" type="url" value="${esc(o.og_image)}" placeholder="https://…"></label>
+      <label>Public website address <small class="muted">used in the sitemap and canonical links</small><input name="site_url" type="url" value="${esc(o.site_url)}" placeholder="https://www.gomiinsulation.com"></label>
+      <label class="switch"><input type="checkbox" name="noindex" ${o.noindex ? 'checked' : ''}><span class="track"></span><span>Hide the whole site from search engines</span></label>
+      <div class="serpwrap">${serp(o.home_title || seoSite(), o.description, '')}</div><button class="btn">Save SEO settings</button></form></div>`;
+  }
   if (sub === 'pages' && id) {
-    const pg = id === 'new' ? { title: '', slug: '', body: '# New page\n\nWrite your content here.', published: false, show_in_nav: false, show_in_footer: true, sort: 0 } : (await sb.from('pages').select('*').eq('id', id).single()).data;
+    const pg = id === 'new' ? { title: '', slug: '', body: PAGE_TEMPLATES.blank[1], published: false, show_in_nav: false, show_in_footer: true, sort: 0 } : (await sb.from('pages').select('*').eq('id', id).single()).data;
     PG = { ...pg };
-    return `<h1>${pg.id ? 'Edit page' : 'New page'}</h1><div class="pgedit">
+    PG.versions = pg.id ? (await sb.from('page_versions').select('id,title,body,author,created_at').eq('page_id', pg.id).order('id', { ascending: false }).limit(25)).data || [] : [];
+    return `<div class="sechead"><h1 style="margin:0">${pg.id ? 'Edit page' : 'New page'}</h1><span class="muted" id="pg_state">${pg.updated_at ? 'Last saved ' + ago(pg.updated_at) : 'Not saved yet'}</span></div><p style="margin:4px 0 12px"><a href="#/admin/pages">← All pages</a></p><div id="pg_draft" class="flash" hidden></div><div class="pgedit">
     <div class="stack">
+      ${pg.id ? '' : `<label>Start from a template<select id="pg_tpl">${Object.entries(PAGE_TEMPLATES).map(([k, v]) => `<option value="${k}">${v[0]}</option>`).join('')}</select></label>`}
       <label>Title<input id="pg_title" value="${esc(pg.title)}" maxlength="200"></label>
       <label>Link name<input id="pg_slug" value="${esc(pg.slug)}" maxlength="60" placeholder="auto from title"></label>
       <div class="row"><label class="check"><input type="checkbox" id="pg_pub" ${pg.published ? 'checked' : ''}> Published</label>
@@ -739,18 +764,24 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
       <label class="check">Order <input type="number" id="pg_sort" value="${pg.sort ?? 0}" style="width:80px"></label></div>
       <div class="mdbar row"><button type="button" class="btn ghost" data-md="# ">H1</button><button type="button" class="btn ghost" data-md="## ">H2</button><button type="button" class="btn ghost" data-wrap="**">B</button><button type="button" class="btn ghost" data-wrap="*"><i>I</i></button>
       <button type="button" class="btn ghost" data-md="- ">• List</button><button type="button" class="btn ghost" data-md="> ">:ic-quote: Quote</button><button type="button" class="btn ghost" data-ins="[link text](https://)">:ic-link: Link</button>
+      <button type="button" class="btn ghost" data-md="### ">H3</button><button type="button" class="btn ghost" data-md="1. ">1. List</button><button type="button" class="btn ghost" data-ins="\n---\n">Divider</button><button type="button" class="btn ghost" data-ins="\n| Column A | Column B |\n| --- | --- |\n| One | Two |\n">Table</button>
+      <button type="button" class="btn ghost" data-ins="\n{{faq: Question? | Answer.}}\n">FAQ</button><button type="button" class="btn ghost" data-ins="\n{{callout: Important note}}\n">Callout</button><button type="button" class="btn ghost" data-ins="\n{{youtube: https://www.youtube.com/watch?v=VIDEO_ID}}\n">Video</button><button type="button" class="btn ghost" id="pg_prodbtn">Product</button>
       <button type="button" class="btn ghost" data-ins="{{button: Label | #/shop}}">Button</button><label class="btn ghost" style="cursor:pointer">:ic-image: Image<input type="file" id="pg_img" accept="image/jpeg,image/png,image/webp,image/gif" hidden></label></div>
-      <textarea id="pg_body" rows="18" style="font-family:ui-monospace,Menlo,monospace;font-size:.9rem" maxlength="100000">${esc(pg.body)}</textarea>
+       <textarea id="pg_body" rows="18" style="font-family:ui-monospace,Menlo,monospace;font-size:.9rem" maxlength="100000">${esc(pg.body)}</textarea>
+      ${seoFields(pg, pg.title, '/page/' + (pg.slug || 'your-page') + '/')}
       <div class="row"><button type="button" class="btn" id="pg_save">Save page</button>${pg.id ? `<a class="btn ghost" href="#/page/${esc(pg.slug)}" target="_blank" rel="noopener">View ↗</a>` : ''}</div>
+      ${PG.versions.length ? `<details class="more"><summary>Version history (${PG.versions.length})</summary><div class="stack" style="gap:6px;margin-top:8px">${PG.versions.map((v) => `<div class="row" style="justify-content:space-between;flex-wrap:nowrap"><span><b>${esc(v.title)}</b> <small class="muted">${ago(v.created_at)}${v.author ? ' · ' + esc(v.author) : ''} · ${v.body.length} chars</small></span><button type="button" class="link pg_restore" data-id="${v.id}">Restore</button></div>`).join('')}</div></details>` : ''}
       <details class="more"><summary>Formatting help</summary><p class="muted" style="white-space:pre-wrap"># Heading   ## Smaller heading
 **bold**  *italic*  [link](https://…)  ![image](https://…)
 - bullet list      1. numbered list      &gt; quote      --- divider
-{{button: Shop now | #/shop}}  (a button link)</p></details></div>
-    <div><h3 style="margin-top:0">Preview</h3><article class="prose preview" id="pg_preview">${md(pg.body)}</article></div></div>`;
+{{button: Shop now | #/shop}}  (a button link)
+{{faq: Question? | Answer}}  {{callout: note}}  {{product: product-link-name}}  {{youtube: video url}}
+| A | B |  then  | --- | --- |  then rows (table)  ·  Ctrl+S saves, Ctrl+B / Ctrl+I bold / italic</p></details></div>
+    <div><div class="sechead"><h3 style="margin:0">Preview</h3><span class="muted" id="pg_stats">${wordStats(pg.body)}</span><div class="seg" id="pg_dev"><button type="button" class="on" data-w="">Desktop</button><button type="button" data-w="390px">Mobile</button></div></div><div class="prevframe" id="pg_frame"><article class="prose preview" id="pg_preview">${md(pg.body)}</article></div></div></div>`;
   }
   if (sub === 'pages') {
     const ps = (await sb.from('pages').select('*').order('sort').order('title')).data;
-    return `<h1>Pages</h1><p><a class="btn" href="#/admin/pages/new">+ New page</a></p>${ps.length ? `<table><tr><th>Page</th><th>Link</th><th>Status</th><th>Menu</th><th>Footer</th><th></th></tr>${ps.map((x) => `<tr><td><a href="#/admin/pages/${x.id}">${esc(x.title)}</a></td><td><code>#/page/${esc(x.slug)}</code></td><td>${x.published ? 'Published' : 'Draft'}</td><td>${x.show_in_nav ? ':ic-check:' : ''}</td><td>${x.show_in_footer ? ':ic-check:' : ''}</td><td><a href="#/page/${esc(x.slug)}">View</a> · <button class="link delpage" data-id="${x.id}" data-title="${esc(x.title)}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No pages yet.</p>'}`;
+    return `<div class="sechead"><h1 style="margin:0">Pages</h1><a class="btn" href="#/admin/pages/new">+ New page</a></div>${ps.length ? `<table><tr><th>Page</th><th>Link</th><th>Status</th><th>Menu</th><th>Footer</th><th></th></tr>${ps.map((x) => `<tr><td><a href="#/admin/pages/${x.id}">${esc(x.title)}</a></td><td><code>#/page/${esc(x.slug)}</code></td><td>${x.published ? 'Published' : 'Draft'}</td><td>${x.show_in_nav ? ':ic-check:' : ''}</td><td>${x.show_in_footer ? ':ic-check:' : ''}</td><td><a href="#/page/${esc(x.slug)}">View</a> · <button class="link pubpage" data-id="${x.id}" data-pub="${x.published ? '' : '1'}">${x.published ? 'Unpublish' : 'Publish'}</button> · <button class="link duppage" data-id="${x.id}">Duplicate</button> · <button class="link delpage" data-id="${x.id}" data-title="${esc(x.title)}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table>` : '<p>No pages yet.</p>'}`;
   }
   if (sub === 'locations' && id) {
     const l = id === 'new' ? { name: '', kind: 'store', address: '', city: '', postcode: '', phone: '', email: '', hours: '', active: true, pickup_enabled: true, is_default: false } : (await sb.from('locations').select('*').eq('id', id).single()).data;
@@ -1123,7 +1154,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <label>Photo (JPG, PNG, WebP, up to 5 MB)<input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif"></label>
     <input type="hidden" name="image_url" value="${esc(p.image_url || '')}">
     ${extras.length ? `<div class="extras">${extras.map((x) => `<figure><img src="${esc(x.url)}" alt=""><button type="button" class="link delimg" data-id="${x.id}" style="color:var(--err)">Remove</button></figure>`).join('')}</div>` : ''}
-    <label>More photos for the gallery (optional, you can pick several)<input type="file" name="extras" accept="image/jpeg,image/png,image/webp,image/gif" multiple></label><label class="check"><input type="checkbox" name="active" ${p.id && !p.active ? '' : 'checked'}> Visible in store</label><button class="btn">Save</button></form>`;
+    <label>More photos for the gallery (optional, you can pick several)<input type="file" name="extras" accept="image/jpeg,image/png,image/webp,image/gif" multiple></label><label>Photo description (alt text) <small class="muted">for accessibility and image search</small><input name="image_alt" maxlength="200" value="${esc(p.image_alt || '')}" placeholder="e.g. Roll of R-13 fiberglass batt insulation"></label>${seoFields(p, p.name, '/product/' + (p.slug || 'your-product') + '/')}<label class="check"><input type="checkbox" name="active" ${p.id && !p.active ? '' : 'checked'}> Visible in store</label><button class="btn">Save</button></form>`;
   }
   if (sub === 'products') {
     const ps = (await sb.from('products').select('*').order('name')).data;
@@ -1178,6 +1209,13 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   <h2 class="dsec">Manage</h2><div class="mgroups">${manage.map(([g, ls]) => `<div class="mgroup"><h4>${g}</h4><div class="qlinks">${ls.map(([i, l, h]) => `<a href="${h}"><span>${i}</span>${l}</a>`).join('')}</div></div>`).join('')}</div>`;
 };
 pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
+  document.getElementById('seoform')?.addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+    const value = { site_title: f.site_title.trim(), home_title: f.home_title.trim(), description: f.description.trim(), og_image: safeUrl(f.og_image.trim()), site_url: f.site_url.trim().replace(/\/+$/, ''), noindex: f.noindex === 'on' };
+    const { error } = await sb.from('site_settings').upsert({ key: 'seo', value, updated_at: new Date().toISOString() }); if (error) return fail(error);
+    SEO = value; flash('SEO settings saved.'); route();
+  });
+  wireSeoBox(document, sub === 'pages' ? '#pg_title' : "[name=name]");
   document.getElementById('shoptoggle')?.addEventListener('click', () => { if (shopClosed()) setShopClosed(false); else { const m = prompt('Message for customers (optional):', STORE.closed_message || ''); if (m !== null) setShopClosed(true, m.trim().slice(0, 300)); } });
   // team
   document.getElementById('teamsearch')?.addEventListener('submit', (e) => { e.preventDefault(); const v = new FormData(e.target).get('search').trim(); location.hash = '#/admin/team' + (v ? '?search=' + encodeURIComponent(v) : ''); });
@@ -1446,14 +1484,30 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       flash(`Sale #${data} recorded.`); location.hash = `#/admin/orders/${data}`;
     });
   }
+  document.querySelectorAll('.pubpage').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.from('pages').update({ published: !!b.dataset.pub }).eq('id', b.dataset.id); error ? fail(error) : (loadPages(), route()); }));
+  document.querySelectorAll('.duppage').forEach((b) => b.addEventListener('click', async () => {
+    const { data: o } = await sb.from('pages').select('*').eq('id', b.dataset.id).single(); const { id: _i, created_at: _c, updated_at: _u, ...rest } = o;
+    const { error } = await sb.from('pages').insert({ ...rest, title: o.title + ' (copy)', slug: (o.slug + '-copy-' + Math.floor(Math.random() * 900 + 100)).slice(0, 60), published: false, show_in_nav: false }); error ? fail(error) : (flash('Page duplicated as a draft.'), loadPages(), route());
+  }));
   document.querySelectorAll('.delpage').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm(`Delete the page "${b.dataset.title}"?`)) return; const { error } = await sb.from('pages').delete().eq('id', b.dataset.id); error ? fail(error) : (loadPages(), route());
   }));
   const body = document.getElementById('pg_body');
   if (body) {
     const prev = document.getElementById('pg_preview'); let t = null;
-    const refresh = () => { clearTimeout(t); t = setTimeout(() => (prev.innerHTML = md(body.value)), 150); };
-    body.addEventListener('input', refresh);
+    const draftKey = 'pgdraft_' + (PG.id || 'new'); let dirty = false;
+    const refresh = () => { clearTimeout(t); t = setTimeout(() => { prev.innerHTML = md(body.value); hydrateMd(prev); const st = document.getElementById('pg_stats'); if (st) st.textContent = wordStats(body.value); }, 150);
+      dirty = true; const ps = document.getElementById('pg_state'); if (ps) ps.textContent = 'Unsaved changes'; try { localStorage.setItem(draftKey, JSON.stringify({ title: document.getElementById('pg_title').value, body: body.value, at: Date.now() })); } catch {} };
+    body.addEventListener('input', refresh); document.getElementById('pg_title')?.addEventListener('input', () => { dirty = true; });
+    window.onbeforeunload = () => (dirty ? 'You have unsaved changes.' : undefined); window.addEventListener('hashchange', () => { window.onbeforeunload = null; }, { once: true });
+    hydrateMd(prev);
+    try { const d = JSON.parse(localStorage.getItem(draftKey) || 'null'); if (d && d.body !== body.value) { const bx = document.getElementById('pg_draft'); bx.hidden = false; bx.innerHTML = `Unsaved draft from ${ago(new Date(d.at).toISOString())} found. <button type="button" class="link" id="pg_usedraft">Restore it</button> · <button type="button" class="link" id="pg_dropdraft">Discard</button>`;
+      bx.addEventListener('click', (e) => { if (e.target.id === 'pg_usedraft') { document.getElementById('pg_title').value = d.title; body.value = d.body; refresh(); bx.hidden = true; } if (e.target.id === 'pg_dropdraft') { localStorage.removeItem(draftKey); bx.hidden = true; } }); } } catch {}
+    document.getElementById('pg_tpl')?.addEventListener('change', (e) => { const tp = PAGE_TEMPLATES[e.target.value]; if (body.value.trim() && !PAGE_TEMPLATES[Object.keys(PAGE_TEMPLATES).find((k) => PAGE_TEMPLATES[k][1] === body.value)] && !confirm('Replace what you have written with this template?')) return; body.value = tp[1]; const ti = document.getElementById('pg_title'); if (!ti.value) ti.value = tp[0] === 'Blank page' ? '' : tp[0]; refresh(); });
+    document.getElementById('pg_dev')?.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; document.querySelectorAll('#pg_dev button').forEach((x) => x.classList.toggle('on', x === b)); document.getElementById('pg_frame').style.maxWidth = b.dataset.w || ''; });
+    document.getElementById('pg_prodbtn')?.addEventListener('click', async () => { const { data } = await sb.from('products').select('name,slug').eq('active', true).order('name').limit(100); const slug = prompt('Which product? Type its link name:\n' + (data || []).map((x) => x.slug).join(', ')); if (slug) insert(`\n{{product: ${slug.trim()}}}\n`); });
+    document.querySelectorAll('.pg_restore').forEach((b) => b.addEventListener('click', () => { const v = PG.versions.find((x) => x.id === Number(b.dataset.id)); if (v && confirm('Load this older version into the editor? (Save to keep it.)')) { document.getElementById('pg_title').value = v.title; body.value = v.body; refresh(); } }));
+    body.addEventListener('keydown', (e) => { if (!(e.ctrlKey || e.metaKey)) return; const k = e.key.toLowerCase(); if (k === 's') { e.preventDefault(); document.getElementById('pg_save').click(); } else if (k === 'b' || k === 'i') { e.preventDefault(); const w = k === 'b' ? '**' : '*', a = body.selectionStart, z = body.selectionEnd; insert(w + (body.value.slice(a, z) || 'text') + w); } });
     const insert = (text, selectInside) => { const a = body.selectionStart, z = body.selectionEnd; body.setRangeText(text, a, z, 'end'); body.focus(); refresh(); };
     document.querySelector('.mdbar')?.addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return; const a = body.selectionStart, z = body.selectionEnd, sel = body.value.slice(a, z);
@@ -1470,10 +1524,10 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     document.getElementById('pg_save')?.addEventListener('click', async () => {
       const title = document.getElementById('pg_title').value.trim(); if (!title) return fail(new Error('Give the page a title.'));
       const row = { title, slug: slugify(document.getElementById('pg_slug').value || title) || 'page-' + Date.now(), body: body.value, published: document.getElementById('pg_pub').checked,
-        show_in_nav: document.getElementById('pg_nav').checked, show_in_footer: document.getElementById('pg_foot').checked, sort: parseInt(document.getElementById('pg_sort').value, 10) || 0, updated_at: new Date().toISOString() };
+        show_in_nav: document.getElementById('pg_nav').checked, show_in_footer: document.getElementById('pg_foot').checked, sort: parseInt(document.getElementById('pg_sort').value, 10) || 0, seo_title: document.querySelector('[name=seo_title]').value.trim(), seo_description: document.querySelector('[name=seo_description]').value.trim(), updated_at: new Date().toISOString() };
       const res = PG.id ? await sb.from('pages').update(row).eq('id', PG.id).select('id').single() : await sb.from('pages').insert(row).select('id').single();
       if (res.error) return fail(res.error.code === '23505' ? new Error('That link name is already used by another page.') : res.error);
-      flash('Page saved.'); loadPages(); location.hash = '#/admin/pages';
+      try { localStorage.removeItem('pgdraft_' + (PG.id || 'new')); } catch {} window.onbeforeunload = null; flash('Page saved.'); loadPages(); location.hash = '#/admin/pages';
     });
   }
   document.querySelectorAll('.rstatus').forEach((el) => el.addEventListener('change', async () => {
@@ -1592,7 +1646,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       f.image_url = sb.storage.from('product-images').getPublicUrl(path).data.publicUrl;
     }
     const row = { name: f.name.trim(), category: f.category.trim(), description: f.description, price_cents: Math.round(parseFloat(f.price) * 100), unit: f.unit.trim(),
-      r_value: f.r_value.trim(), image_url: safeUrl(f.image_url.trim()), active: !!f.active, cost_cents: Math.round((parseFloat(f.cost) || 0) * 100), reorder_point: parseInt(f.reorder_point, 10) || 0, reorder_qty: parseInt(f.reorder_qty, 10) || 0 };
+      r_value: f.r_value.trim(), image_url: safeUrl(f.image_url.trim()), active: !!f.active, cost_cents: Math.round((parseFloat(f.cost) || 0) * 100), reorder_point: parseInt(f.reorder_point, 10) || 0, reorder_qty: parseInt(f.reorder_qty, 10) || 0, seo_title: (f.seo_title || '').trim(), seo_description: (f.seo_description || '').trim(), image_alt: (f.image_alt || '').trim() };
     if (!pid) row.slug = (row.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'product') + '-' + Math.floor(Math.random() * 1000);
     const res = pid ? await sb.from('products').update(row).eq('id', pid).select('id').single() : await sb.from('products').insert(row).select('id').single();
     if (res.error) return fail(res.error);
@@ -1886,19 +1940,42 @@ function md(src) {
     if ((m = /^(#{1,3})\s+(.*)$/.exec(L))) { out += `<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`; i++; }
     else if (/^(-{3,}|\*{3,})\s*$/.test(L)) { out += '<hr>'; i++; }
     else if ((m = /^\{\{button:\s*(.+?)\s*\|\s*(\S+?)\s*\}\}\s*$/.exec(L))) { out += okUrl(m[2]) ? `<p><a class="btn" href="${esc(m[2])}"${/^https?:/.test(m[2]) ? ' target="_blank" rel="noopener"' : ''}>${esc(m[1])}</a></p>` : ''; i++; }
+    else if ((m = /^\{\{youtube:\s*(\S+?)\s*\}\}\s*$/.exec(L))) { const id = (/(?:v=|youtu\.be\/|embed\/)([\w-]{11})/.exec(m[1]) || [])[1]; out += id ? `<div class="mdvideo"><iframe src="https://www.youtube-nocookie.com/embed/${id}" title="Video" loading="lazy" allowfullscreen></iframe></div>` : ''; i++; }
+    else if ((m = /^\{\{product:\s*([a-z0-9-]+)\s*\}\}\s*$/.exec(L))) { out += `<div class="mdprod" data-slug="${m[1]}"></div>`; i++; }
+    else if ((m = /^\{\{callout:\s*(.+?)\s*\}\}\s*$/.exec(L))) { out += `<div class="mdcallout">:ic-alert: <span>${inline(m[1])}</span></div>`; i++; }
+    else if (/^\{\{faq:/.test(L)) { let it = []; while (i < lines.length && (m = /^\{\{faq:\s*(.+?)\s*\|\s*(.+?)\s*\}\}\s*$/.exec(lines[i]))) { it.push(m); i++; } if (!it.length) i++; out += it.map((x) => `<details class="mdfaq"><summary>${inline(x[1])}</summary><p>${inline(x[2])}</p></details>`).join(''); }
+    else if (/^\|.*\|\s*$/.test(L) && /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1] || '')) {
+      const cells = (r) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim()); const head = cells(L); i += 2; let rows = [];
+      while (i < lines.length && /^\|.*\|\s*$/.test(lines[i])) rows.push(cells(lines[i++]));
+      out += `<div class="tablewrap"><table class="mdtable"><tr>${head.map((c) => `<th>${inline(c)}</th>`).join('')}</tr>${rows.map((r) => `<tr>${head.map((_, k) => `<td>${inline(r[k] || '')}</td>`).join('')}</tr>`).join('')}</table></div>`; }
     else if (/^>\s?/.test(L)) { let q = []; while (i < lines.length && /^>\s?/.test(lines[i])) q.push(lines[i++].replace(/^>\s?/, '')); out += `<blockquote>${q.map(inline).join('<br>')}</blockquote>`; }
     else if (/^[-*]\s+/.test(L)) { let it = []; while (i < lines.length && /^[-*]\s+/.test(lines[i])) it.push(lines[i++].replace(/^[-*]\s+/, '')); out += `<ul>${it.map((x) => `<li>${inline(x)}</li>`).join('')}</ul>`; }
     else if (/^\d+\.\s+/.test(L)) { let it = []; while (i < lines.length && /^\d+\.\s+/.test(lines[i])) it.push(lines[i++].replace(/^\d+\.\s+/, '')); out += `<ol>${it.map((x) => `<li>${inline(x)}</li>`).join('')}</ol>`; }
-    else { let para = []; while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|>\s?|[-*]\s+|\d+\.\s+|-{3,}\s*$|\{\{button:)/.test(lines[i])) para.push(lines[i++]); out += `<p>${para.map(inline).join('<br>')}</p>`; }
+    else { let para = []; while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|>\s?|[-*]\s+|\d+\.\s+|-{3,}\s*$|\{\{|\|.*\|\s*$)/.test(lines[i])) para.push(lines[i++]); out += `<p>${para.map(inline).join('<br>')}</p>`; }
   }
   return out;
 }
+async function hydrateMd(root) {
+  const els = [...root.querySelectorAll('.mdprod:not([data-done])')]; if (!els.length) return;
+  const slugs = [...new Set(els.map((e) => e.dataset.slug))]; const { data } = await sb.from('products').select('name,slug,price_cents,unit,image_url,active').in('slug', slugs);
+  els.forEach((el) => { el.dataset.done = '1'; const p = (data || []).find((x) => x.slug === el.dataset.slug && x.active);
+    el.innerHTML = p ? `<a class="mdcard" href="#/product/${esc(p.slug)}">${safeUrl(p.image_url) ? `<img src="${esc(p.image_url)}" alt="" loading="lazy">` : ''}<span><b>${esc(p.name)}</b><small>${money(p.price_cents)} / ${esc(p.unit)}</small></span><span class="btn">View</span></a>` : `<small class="muted">Product “${esc(el.dataset.slug)}” not found.</small>`; });
+}
+const PAGE_TEMPLATES = {
+  blank: ['Blank page', '# Page title\n\nWrite your content here.'],
+  about: ['About us', "# About us\n\nTell your story: who you are, how long you've been insulating homes, and what makes you different.\n\n## Why choose us\n\n- Quality materials from trusted brands\n- Fast delivery to your site\n- Friendly advice from people who know insulation\n\n{{button: Shop now | #/shop}}"],
+  faq: ['FAQ', '# Frequently asked questions\n\n{{faq: How long does delivery take? | Most orders arrive within 3–5 business days.}}\n{{faq: Can I pick up my order? | Yes — choose pickup at checkout and we will email you when it is ready.}}\n{{faq: Which R-value do I need? | It depends on your climate zone and where you are insulating. Ask us for a quote.}}\n\n{{button: Ask a question | #/quote}}'],
+  shipping: ['Shipping & returns', '# Shipping & returns\n\n## Delivery\n\n| Order size | Cost | Time |\n| --- | --- | --- |\n| Under $500 | Flat rate | 3–5 days |\n| $500 and over | Free | 3–5 days |\n\n## Returns\n\n{{callout: Unopened products can be returned within 30 days.}}\n\nContact us to arrange a return.'],
+  contact: ['Contact', '# Contact us\n\nWe would love to hear from you.\n\n- Phone: (555) 123-4567\n- Email: hello@example.com\n- Hours: Mon–Fri, 8am–5pm\n\n{{button: Request a quote | #/quote}}'],
+};
+const wordStats = (t) => { const w = (t.trim().match(/\S+/g) || []).length; return `${w} word${w === 1 ? '' : 's'} · ${Math.max(1, Math.round(w / 200))} min read`; };
 pages.page = async ([slug]) => {
   const { data: pg } = await sb.from('pages').select('*').eq('slug', slug).maybeSingle();
   if (!pg) return '<h1>Page not found</h1><p><a href="#/">Back home</a></p>';
-  document.title = `${pg.title} · ${(theme.name || 'Gomi Insulation')}`;
+  setSeo({ title: pg.seo_title || pg.title, description: pg.seo_description || clip(pg.body.replace(/[#*>\[\]()`_{}|!-]+/g, ' '), 200), path: '/page/' + pg.slug + '/', noindex: !pg.published });
   return `<article class="prose">${!pg.published ? '<p class="flash error" style="margin-top:0">Draft — only admins can see this page.</p>' : ''}${profile?.is_admin ? `<p style="text-align:right"><a class="btn ghost" href="#/admin/pages/${pg.id}">:ic-edit: Edit page</a></p>` : ''}${md(pg.body)}</article>`;
 };
+pages.page.after = () => hydrateMd(document);
 
 // ---- locations, inventory, sales, point of sale (admin) ----
 const net = (o) => o.total_cents - (o.tax_cents || 0) - (o.refunded_cents || 0);
@@ -2062,13 +2139,59 @@ const ageBuckets = (open) => { const t0 = todayStr(), past = (i) => Math.floor((
   return [['Current', open.filter((i) => past(i) <= 0).reduce((a, i) => a + invBal(i), 0)], ['1–30 days', b(1, 30)], ['31–60', b(31, 60)], ['61–90', b(61, 90)], ['90+', b(91, 99999)]]; };
 
 // ---- router ----
+
+// ---- SEO: head tags, structured data, SERP previews ----
+const seoSite = () => (SEO.site_title || '').trim() || theme.name || 'Gomi Insulation';
+const seoBase = () => ((SEO.site_url || '').trim().replace(/\/+$/, '')) || (location.origin + location.pathname.replace(/\/[^/]*$/, ''));
+const clip = (t, n) => { t = String(t || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t; };
+function setMeta(attr, key, val) {
+  let el = document.head.querySelector(`meta[${attr}="${key}"]`);
+  if (!val) { el?.remove(); return; }
+  if (!el) { el = document.createElement('meta'); el.setAttribute(attr, key); document.head.appendChild(el); }
+  el.setAttribute('content', val);
+}
+function setSeo({ title, description, image, type = 'website', path = '', jsonld, noindex } = {}) {
+  const site = seoSite(), full = title ? `${title} · ${site}` : site; document.title = full;
+  const desc = clip(description || SEO.description || '', 300), url = path ? seoBase() + path : '';
+  setMeta('name', 'description', desc);
+  setMeta('name', 'robots', noindex || SEO.noindex ? 'noindex, nofollow' : '');
+  setMeta('property', 'og:title', title || site); setMeta('property', 'og:description', desc); setMeta('property', 'og:type', type);
+  setMeta('property', 'og:site_name', site); setMeta('property', 'og:url', url);
+  const img = safeUrl(image || SEO.og_image || ''); setMeta('property', 'og:image', img);
+  setMeta('name', 'twitter:card', img ? 'summary_large_image' : 'summary'); setMeta('name', 'twitter:title', title || site); setMeta('name', 'twitter:description', desc);
+  let link = document.head.querySelector('link[rel="canonical"]');
+  if (url) { if (!link) { link = document.createElement('link'); link.rel = 'canonical'; document.head.appendChild(link); } link.href = url; } else link?.remove();
+  document.head.querySelector('script#ldjson')?.remove();
+  if (jsonld) { const sc = document.createElement('script'); sc.type = 'application/ld+json'; sc.id = 'ldjson'; sc.textContent = JSON.stringify(jsonld).replace(/</g, '\\u003c'); document.head.appendChild(sc); }
+}
+const serp = (title, desc, path) => `<div class="serp" aria-label="Search result preview"><div class="serpurl">${esc(seoBase().replace(/^https?:\/\//, ''))}${esc(path ? ' › ' + path.replace(/^\//, '').split('/').join(' › ') : '')}</div><div class="serptitle">${esc(clip(title, 60)) || 'Page title'}</div><div class="serpdesc">${esc(clip(desc, 160)) || 'Add a description — this is the text people see under your link in Google.'}</div></div>`;
+const lenHint = (n, lo, hi) => `<span class="lenhint ${n === 0 ? '' : n < lo || n > hi ? 'warn' : 'good'}">${n} chars · aim for ${lo}–${hi}</span>`;
+function seoFields(o, fallbackTitle, path) {
+  return `<fieldset class="cmpset seobox" data-path="${esc(path)}"><legend>:ic-search: Search engines (SEO)</legend>
+    <label>Page title <small class="muted">defaults to “${esc(fallbackTitle || '')}”</small><input name="seo_title" maxlength="120" value="${esc(o.seo_title || '')}" data-seo="title">${lenHint((o.seo_title || fallbackTitle || '').length, 30, 60)}</label>
+    <label>Meta description<textarea name="seo_description" rows="3" maxlength="320" data-seo="desc">${esc(o.seo_description || '')}</textarea>${lenHint((o.seo_description || '').length, 70, 160)}</label>
+    <div class="serpwrap" data-seo="preview">${serp(o.seo_title || fallbackTitle, o.seo_description, path)}</div></fieldset>`;
+}
+function wireSeoBox(root, titleSel) {
+  const box = root.querySelector?.('.seobox'); if (!box) return;
+  const t = box.querySelector('[data-seo=title]'), d = box.querySelector('[data-seo=desc]'), pv = box.querySelector('[data-seo=preview]'), path = box.dataset.path;
+  const upd = () => { const ft = titleSel ? (document.querySelector(titleSel)?.value || '') : '', tt = t.value || ft;
+    pv.innerHTML = serp(tt, d.value, path);
+    const hints = box.querySelectorAll('.lenhint'), set = (el, n, lo, hi) => { el.textContent = `${n} chars · aim for ${lo}–${hi}`; el.className = 'lenhint ' + (n === 0 ? '' : n < lo || n > hi ? 'warn' : 'good'); };
+    set(hints[0], tt.length, 30, 60); set(hints[1], d.value.length, 70, 160); };
+  [t, d].forEach((x) => x.addEventListener('input', upd)); if (titleSel) document.querySelector(titleSel)?.addEventListener('input', upd);
+}
+const productLd = (p, pics) => ({ '@context': 'https://schema.org', '@type': 'Product', name: p.name, description: clip(p.description, 500), image: pics.slice(0, 4), category: p.category, sku: 'P' + p.id,
+  offers: { '@type': 'Offer', priceCurrency: window.GOMI.CURRENCY || 'USD', price: (p.price_cents / 100).toFixed(2), availability: p.stock > 0 ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock', url: seoBase() + '/product/' + p.slug + '/' } });
+
 async function route() {
   threadChan.forEach((c) => sb.removeChannel(c)); threadChan = [];
   let h = location.hash.slice(1); if (!h.startsWith('/')) h = '/'; // e.g. #access_token=… after email confirmation
   const [path, qs] = h.split('?'); const q = new URLSearchParams(qs || '');
   const [name = 'home', ...args] = path.split('/').filter(Boolean); const page = pages[name === '' ? 'home' : name];
   const TITLES = { shop: 'Shop', cart: 'Cart', checkout: 'Checkout', account: 'My account', messages: 'Messages', notifications: 'Notifications', login: 'Log in', register: 'Sign up', quote: 'Request a quote', wishlist: 'Wishlist', track: 'Track an order', admin: 'Admin', forgot: 'Reset password', reset: 'New password' };
-  document.title = TITLES[name] ? `${TITLES[name]} · ${theme.name || 'Gomi Insulation'}` : (theme.name || 'Gomi Insulation');
+  const PRIVATE = ['cart', 'checkout', 'account', 'messages', 'notifications', 'login', 'register', 'admin', 'invoice', 'estimate', 'reset', 'track', 'wishlist'];
+  setSeo({ title: name === 'home' || name === '' ? (SEO.home_title || '') : TITLES[name] || '', description: '', noindex: PRIVATE.includes(name), path: name === 'shop' ? '/#/shop' : '' });
   if (!page) { $app.innerHTML = '<h1>Not found</h1>'; return; }
   try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); setMenu(false);
     $app.querySelectorAll('table').forEach((t) => { if (!t.parentElement.classList.contains('tablewrap') && !t.closest('.invdoc, .tablewrap')) { const w = document.createElement('div'); w.className = 'tablewrap'; t.replaceWith(w); w.appendChild(t); }

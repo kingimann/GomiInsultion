@@ -136,3 +136,14 @@ Chat now supports photo/file attachments (private `message-files` bucket, signed
 ## Shop open / closed
 
 **Admin → Settings → Shop status** (or the *Close shop* button on the dashboard) turns online ordering off. A banner shows on every page, customers can still browse and fill a cart, but checkout is blocked — enforced in the database too (a trigger on `orders` rejects online orders while closed). In-store POS sales and invoices keep working. Add an optional message customers will see.
+
+## SEO tools
+
+- **Admin → SEO**: a search-health score for every live product/page (title & description length, photo alt text), site-wide settings (site name, home title, default description, share image, public website address, hide-from-search switch) and a Google-style preview.
+- **Product and page editors** have an SEO box (title, description, live Google preview with length hints) and products have photo alt text.
+- **On every page** the app sets title, description, Open Graph/Twitter tags, a canonical link and — for products — `Product` structured data. Cart, checkout, account, admin etc. are `noindex`.
+- **`scripts/build-seo.mjs`** (Node 18+) generates `sitemap.xml`, `robots.txt` and a static, crawlable page for each product and published page. It runs automatically in the GitHub Pages workflow (on push and daily) and as Netlify's build command. Set `SITE_URL` (a repository variable on GitHub, or an env var on Netlify) or fill in *Public website address* in Admin → SEO, then submit `/sitemap.xml` in Google Search Console. Locally: `SITE_URL=https://yoursite.com node scripts/build-seo.mjs` (output is git-ignored).
+
+## Page editor
+
+Templates (About, FAQ, Shipping, Contact), extra blocks (tables, FAQ accordions, callouts, YouTube video, product cards, H3, numbered lists, dividers), desktop/mobile preview with word count and reading time, autosaved drafts with restore, unsaved-changes warning, Ctrl+S / Ctrl+B / Ctrl+I, version history with restore (last 25 saves), and publish/unpublish/duplicate from the pages list.

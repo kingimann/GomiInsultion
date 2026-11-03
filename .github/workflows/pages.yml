@@ -2,7 +2,9 @@ name: Deploy store to GitHub Pages
 on:
   push:
     branches: [main]
-    paths: ['web/**']
+    paths: ['web/**', 'scripts/**']
+  schedule:
+    - cron: '17 6 * * *'   # daily, so new products/pages reach the sitemap
   workflow_dispatch:
 permissions:
   contents: read
@@ -15,6 +17,12 @@ jobs:
     environment: { name: github-pages, url: '${{ steps.d.outputs.page_url }}' }
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Build SEO files (sitemap, robots, product/page pages)
+        run: node scripts/build-seo.mjs
+        env:
+          SITE_URL: ${{ vars.SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
       - uses: actions/upload-pages-artifact@v3
         with: { path: web }
       - id: d

@@ -1,5 +1,7 @@
-# Netlify settings: the storefront is plain static files in web/, so there is no build step.
+# Netlify settings: the storefront is static files in web/; the build step generates sitemap.xml, robots.txt and
+# crawlable product/page files from your Supabase data (set SITE_URL in Netlify env vars, or in Admin → SEO).
 [build]
+  command = "node scripts/build-seo.mjs"
   publish = "web"
 
 [[headers]]

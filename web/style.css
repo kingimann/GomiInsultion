@@ -605,3 +605,4 @@ kbd{font:inherit;font-size:.72rem;border:1px solid var(--line);border-radius:6px
 @media(max-width:760px){.detail{grid-template-columns:minmax(0,1fr)}}
 .packrow .qty.sm{display:inline-flex;flex-direction:row;align-items:center}.packrow .qty.sm button{width:34px;height:38px}.packrow .qty.sm input{width:46px;text-align:center;border:0;background:transparent}
 .packrow{justify-content:space-between}
+.packedit{grid-template-columns:.7fr 1fr 1fr 1.2fr auto}@media(max-width:700px){.packedit{grid-template-columns:1fr 1fr}.packedit label:nth-child(4){grid-column:1/-1}}

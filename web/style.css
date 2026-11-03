@@ -636,3 +636,4 @@ img{max-width:100%}
 /* order history */
 .evlist{list-style:none;margin:0;padding:0;display:grid;gap:0}.evlist li{display:flex;gap:12px;padding:8px 0;position:relative}.evlist li:not(:last-child):before{content:"";position:absolute;left:5px;top:22px;bottom:-8px;width:2px;background:var(--line)}
 .evdot{flex:none;width:12px;height:12px;border-radius:50%;background:var(--brand);margin-top:5px}.ev-status .evdot{background:#2563eb}.ev-refund .evdot{background:var(--err)}.ev-tracking .evdot{background:#16a34a}.evlist small{display:block}
+.zoneedit{display:grid;grid-template-columns:1fr 1.6fr .7fr auto;gap:8px;align-items:end;margin-top:8px}.zoneedit label{margin:0}@media(max-width:600px){.zoneedit{grid-template-columns:1fr 1fr}.zoneedit label:nth-child(2){grid-column:1/-1}}

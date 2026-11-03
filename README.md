@@ -215,3 +215,7 @@ Every admin page now has a section bar (Dashboard, Orders, Products, Inventory�
 ## Order history & quotes → estimates
 
 Each admin order page now has a **History** timeline (placed, every status change, tracking added, refunds — with who did it and when), recorded automatically by the database. On **Admin → Quote requests**, **Create estimate** opens a new estimate already filled with the customer's name, email, phone and their message, and **Reply** opens an email.
+
+## Delivery zones (fee by postal code)
+
+**Settings → Shipping → Delivery zones**: add zones such as "Toronto — postal codes starting with M, L4 — $40". At checkout the delivery fee updates as the customer types their postal code ("Delivery to M5V 2T6 (Toronto): $40.00"); the longest matching prefix wins and everywhere else pays the normal flat fee. The database applies the same rule when the order is placed, so the fee can't be changed from the browser. Free-delivery-over and pickup still work as before.

@@ -7,3 +7,7 @@ web/product/
 web/page/
 web/sitemap.xml
 web/robots.txt
+
+web/category/
+web/brand/
+web/_redirects

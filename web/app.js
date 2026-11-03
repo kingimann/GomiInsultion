@@ -76,7 +76,7 @@ window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change',
 applyTheme();
 async function loadSiteTheme() {
   const { data } = await sb.from('site_settings').select('key,value').in('key', ['theme', 'store', 'seo']);
-  (Array.isArray(data) ? data : []).forEach((r) => { if (r.key === 'theme') { theme = r.value || {}; applyTheme(); } else if (r.key === 'store') applyStoreCfg(r.value); else if (r.key === 'seo') SEO = r.value || {}; });
+  (Array.isArray(data) ? data : []).forEach((r) => { if (r.key === 'theme') { theme = r.value || {}; applyTheme(); } else if (r.key === 'store') applyStoreCfg(r.value); else if (r.key === 'seo') { SEO = r.value || {}; applyTracking(); } });
 }
 async function saveSiteTheme() {
   if (!profile?.is_admin) return;
@@ -322,7 +322,7 @@ pages.product = async ([slug]) => {
     .sort((a, b) => (b.category === p.category) - (a.category === p.category)).slice(0, 4);
   const extra = (await sb.from('product_images').select('url').eq('product_id', p.id).order('position')).data || [];
   const pics = [p.image_url, ...extra.map((x) => x.url)].filter((u) => safeUrl(u));
-  const recent = await recentHtml(p.id); pushRV(p.id); setSeo({ title: p.seo_title || `${p.name}${p.r_value && !p.name.includes(p.r_value) ? ' ' + p.r_value : ''}`, description: p.seo_description || p.description, image: pics[0], type: 'product', path: '/product/' + p.slug + '/', jsonld: productLd(p, pics) });
+  const recent = await recentHtml(p.id); pushRV(p.id); setSeo({ title: p.seo_title || `${p.name}${p.r_value && !p.name.includes(p.r_value) ? ' ' + p.r_value : ''}`, description: p.seo_description || p.description, image: pics[0], type: 'product', path: '/product/' + p.slug + '/', jsonld: [productLd(p, pics), { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: [{ '@type': 'ListItem', position: 1, name: 'Shop', item: seoBase() + '/#/shop' }, { '@type': 'ListItem', position: 2, name: p.category, item: seoBase() + '/#/shop?category=' + encodeURIComponent(p.category) }, { '@type': 'ListItem', position: 3, name: p.name }] }] });
   const gallery = pics.length ? `<div class="gallery"><img class="big" id="mainpic" src="${esc(pics[0])}" alt="${esc(p.image_alt || p.name)}">${pics.length > 1 ? `<div class="thumbs">${pics.map((u, i) => `<img src="${esc(u)}" alt="Photo ${i + 1}" class="${i ? '' : 'on'}">`).join('')}</div>` : ''}</div>` : img(p, true);
   return `<div class="crumbs" role="navigation" aria-label="Breadcrumb"><a href="#/shop">Shop</a> › <a href="#/shop?category=${encodeURIComponent(p.category)}">${esc(p.category)}</a> › <span>${esc(p.name)}</span></div>
   <div class="detail"><div>${gallery}</div><div><span class="tag">${esc(p.category)}</span>${p.brand && p.brand !== p.category ? ` <a class="brandtag" href="#/shop?brand=${encodeURIComponent(p.brand)}">${esc(p.brand)}</a>` : ''}<h1>${esc(p.name)}</h1>
@@ -866,26 +866,53 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
       : '<div class="emptyq">:ic-clipboard:<p><b>No forms yet</b></p><p class="muted">Create your first form — for example a “Request a quote” or “Book a site visit” form.</p><a class="btn" href="#/admin/forms/new">+ New form</a></div>'}`;
   }
   if (sub === 'seo') {
-    const [pr, pgs] = await Promise.all([sb.from('products').select('id,name,slug,description,image_url,image_alt,seo_title,seo_description,active').order('name'), sb.from('pages').select('id,title,slug,body,seo_title,seo_description,published').order('title')]);
-    const chk = (t, d, extra = []) => { const issues = [], tl = (t || '').length, dl = (d || '').length;
-      if (!dl) issues.push('No meta description'); else if (dl < 70) issues.push('Description too short'); else if (dl > 160) issues.push('Description too long');
-      if (tl < 15) issues.push('Title too short'); else if (tl > 60) issues.push('Title too long'); return [...issues, ...extra]; };
-    const rows = [...(pr.data || []).filter((x) => x.active).map((x) => ({ kind: 'Product', name: x.name, href: `#/admin/products/${x.id}`, issues: chk(x.seo_title || x.name, x.seo_description || x.description, [...(safeUrl(x.image_url) ? (x.image_alt ? [] : ['No photo alt text']) : ['No photo'])]) })),
-      ...(pgs.data || []).filter((x) => x.published).map((x) => ({ kind: 'Page', name: x.title, href: `#/admin/pages/${x.id}`, issues: chk(x.seo_title || x.title, x.seo_description || x.body, []) }))];
-    const good = rows.filter((r) => !r.issues.length).length, score = rows.length ? Math.round((good / rows.length) * 100) : 100;
-    const o = { site_title: '', description: '', og_image: '', site_url: '', noindex: false, home_title: '', ...SEO };
-    return `<div class="sechead"><h1 style="margin:0">SEO</h1><span class="muted">Help customers find you on Google</span></div>
-    <div class="seogrid"><div class="stack"><section class="cs"><h3>Search health</h3><div class="scorewrap"><div class="score ${score >= 80 ? 'good' : score >= 50 ? 'mid' : 'bad'}">${score}</div><div><b>${good} of ${rows.length}</b> live items are fully optimised<br><small class="muted">Checks title and description length, photo alt text.</small></div></div>
-      ${rows.length ? `<div class="tablewrap"><table><tr><th>Item</th><th>Type</th><th>To fix</th><th></th></tr>${rows.sort((a, b) => b.issues.length - a.issues.length).map((r) => `<tr><td>${esc(r.name)}</td><td>${r.kind}</td><td>${r.issues.length ? r.issues.map((i) => `<span class="status pending">${esc(i)}</span>`).join(' ') : '<span class="status paid">Good</span>'}</td><td><a href="${r.href}">Edit</a></td></tr>`).join('')}</table></div>` : '<p class="muted">Nothing to check yet.</p>'}</section>
-    <section class="cs"><h3>Sitemap &amp; indexing</h3><p class="muted" style="margin-top:0">A build step creates <code>sitemap.xml</code>, <code>robots.txt</code> and a static page for every product and page (with titles, descriptions and structured data) so search engines can read them. It runs on every deploy and once a day — run it now from GitHub → Actions → “Deploy store to GitHub Pages” → Run workflow, or trigger your Netlify deploy. Then submit <code>${esc(seoBase())}/sitemap.xml</code> in Google Search Console.</p></section></div>
-    <form id="seoform" class="cs stack"><h3 style="margin:0">Site settings</h3>
+    const tab = ['overview', 'content', 'redirects', 'settings'].includes(q.get('tab')) ? q.get('tab') : 'overview', o = { site_title: '', description: '', og_image: '', site_url: '', noindex: false, home_title: '', gsc: '', ga4: '', twitter: '', ...SEO };
+    const [pr, pgs, rds] = await Promise.all([sb.from('products').select('id,name,slug,description,image_url,image_alt,seo_title,seo_description,focus_keyword,active,brand,r_value').order('name'), sb.from('pages').select('id,title,slug,body,seo_title,seo_description,focus_keyword,published').order('title'), sb.from('seo_redirects').select('*').order('id', { ascending: false })]);
+    const norm = (t) => String(t || '').trim().toLowerCase();
+    const items = [...(pr.data || []).filter((x) => x.active).map((x) => ({ t: 'products', kind: 'Product', id: x.id, name: x.name, title: x.seo_title || x.name, desc: x.seo_description || x.description, hasDesc: !!x.seo_description, seoTitle: x.seo_title || '', seoDesc: x.seo_description || '', kw: x.focus_keyword || '', slug: x.slug, alt: x.image_alt || '', photo: !!safeUrl(x.image_url), body: `${x.name} ${x.description}`, brand: x.brand, rv: x.r_value, href: `#/admin/products/${x.id}` })),
+      ...(pgs.data || []).filter((x) => x.published).map((x) => ({ t: 'pages', kind: 'Page', id: x.id, name: x.title, title: x.seo_title || x.title, desc: x.seo_description || x.body, hasDesc: !!x.seo_description, seoTitle: x.seo_title || '', seoDesc: x.seo_description || '', kw: x.focus_keyword || '', slug: x.slug, body: `${x.title} ${x.body}`, href: `#/admin/pages/${x.id}` }))];
+    const dupT = {}, dupD = {}; items.forEach((x) => { dupT[norm(x.title)] = (dupT[norm(x.title)] || 0) + 1; if (x.hasDesc) dupD[norm(x.seoDesc)] = (dupD[norm(x.seoDesc)] || 0) + 1; });
+    items.forEach((x) => { const is = [], tl = x.title.length, dl = x.desc.length;
+      if (!x.hasDesc && !x.desc) is.push('No meta description'); else if (dl < 70) is.push('Description too short'); else if (dl > 160) is.push('Description too long');
+      if (tl < 15) is.push('Title too short'); else if (tl > 60) is.push('Title too long');
+      if (dupT[norm(x.title)] > 1) is.push('Duplicate title'); if (x.hasDesc && dupD[norm(x.seoDesc)] > 1) is.push('Duplicate description');
+      if (x.kind === 'Product') { if (!x.photo) is.push('No photo'); else if (!x.alt) is.push('No photo alt text'); }
+      if (x.kw) { const k = norm(x.kw); if (!norm(x.title).includes(k)) is.push('Keyword not in title'); if (!norm(x.desc).includes(k)) is.push('Keyword not in description'); }
+      x.issues = is; });
+    const good = items.filter((r) => !r.issues.length).length, score = items.length ? Math.round((good / items.length) * 100) : 100, issueCount = items.reduce((a, r) => a + r.issues.length, 0);
+    const tabs = [['overview', 'Overview'], ['content', `Content${items.length - good ? ` (${items.length - good})` : ''}`], ['redirects', `Redirects${(rds.data || []).length ? ` (${rds.data.length})` : ''}`], ['settings', 'Settings']];
+    const head = `<div class="sechead"><h1 style="margin:0">SEO</h1><span class="muted">Help customers find you on Google</span></div><div class="seg seotabs" role="tablist">${tabs.map(([k, l]) => `<a class="${k === tab ? 'on' : ''}" role="tab" href="#/admin/seo?tab=${k}">${l}</a>`).join('')}</div>`;
+    if (tab === 'overview') {
+      const tc = (id, label, ok, fix) => `<li data-check="${id}" class="${ok === true ? 'ok' : ok === false ? 'bad' : 'wait'}"><span class="ci">${ok === true ? ':ic-check-circle:' : ok === false ? ':ic-alert:' : ':ic-clock:'}</span><div><b>${label}</b>${fix ? `<small class="muted">${fix}</small>` : ''}</div></li>`;
+      return `${head}<div class="seogrid"><div class="stack"><section class="cs"><h3>Content health</h3><div class="scorewrap"><div class="score ${score >= 80 ? 'good' : score >= 50 ? 'mid' : 'bad'}">${score}</div><div><b>${good} of ${items.length}</b> live products and pages are fully optimised<br><small class="muted">${issueCount} thing${issueCount === 1 ? '' : 's'} to fix.</small></div></div><a class="btn" href="#/admin/seo?tab=content">Fix content issues</a></section>
+      <section class="cs"><h3>Top issues</h3>${(() => { const c = {}; items.forEach((r) => r.issues.forEach((x) => (c[x] = (c[x] || 0) + 1))); const t = Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 6); return t.length ? `<ul class="plain">${t.map(([k, n]) => `<li><span>${esc(k)}</span><b>${n}</b></li>`).join('')}</ul>` : '<p class="muted" style="margin:0">Nothing to fix. :ic-check-circle:</p>'; })()}</section></div>
+      <section class="cs"><h3>Technical checks</h3><ul class="checks" id="techchecks">
+        ${tc('url', 'Public website address is set', !!o.site_url, o.site_url ? '' : 'Add it in Settings — needed for the sitemap and canonical links.')}${tc('index', 'Search engines are allowed to index the site', !o.noindex, o.noindex ? 'The site is hidden from search engines. Turn that off in Settings.' : '')}
+        ${tc('title', 'Site name and home page title are set', !!(o.site_title || o.home_title), 'Set them in Settings.')}${tc('desc', 'Default description is set', !!o.description, 'Shown when a page has no description of its own.')}${tc('og', 'Social share image is set', !!o.og_image, 'Makes links look good on Facebook, WhatsApp and Slack.')}
+        ${tc('gsc', 'Google Search Console verified', !!o.gsc, 'Add your verification code in Settings, then submit the sitemap.')}${tc('https', 'Site uses HTTPS', location.protocol === 'https:' || location.hostname === 'localhost', '')}
+        ${tc('sitemap', 'sitemap.xml is reachable', null, '')}${tc('robots', 'robots.txt is reachable', null, '')}</ul>
+        <p class="muted" style="margin-bottom:0">Submit <code>${esc(seoBase())}/sitemap.xml</code> in <a href="https://search.google.com/search-console" target="_blank" rel="noopener">Google Search Console</a>. The sitemap is rebuilt on every deploy and once a day.</p></section></div>`;
+    }
+    if (tab === 'content') return `${head}<section class="cs"><div class="toolbar"><input id="seoq" type="search" placeholder="Filter…" aria-label="Filter" style="max-width:260px"><div class="chips" id="seofilter" style="margin:0"><button type="button" class="chip on" data-f="">All</button><button type="button" class="chip" data-f="issues">Needs work</button><button type="button" class="chip" data-f="Product">Products</button><button type="button" class="chip" data-f="Page">Pages</button></div></div>
+      <div class="tablewrap"><table class="seotable"><tr><th>Item</th><th>Title</th><th>Description</th><th>To fix</th><th></th></tr>${items.sort((a, b) => b.issues.length - a.issues.length).map((r) => `<tr class="seorow" data-key="${r.t}:${r.id}" data-q="${esc((r.name + ' ' + r.kind).toLowerCase())}" data-kind="${r.kind}" data-issues="${r.issues.length}"><td><b>${esc(r.name)}</b><small class="muted" style="display:block">${r.kind}</small></td><td>${lenHint(r.title.length, 30, 60).replace('lenhint', 'lenhint')}</td><td>${lenHint(r.desc.length, 70, 160)}</td><td>${r.issues.length ? r.issues.map((i) => `<span class="status pending">${esc(i)}</span>`).join(' ') : '<span class="status paid">Good</span>'}</td><td><button type="button" class="btn ghost qe" data-key="${r.t}:${r.id}">Quick edit</button></td></tr>
+        <tr class="qerow" data-for="${r.t}:${r.id}" hidden><td colspan="5"><form class="stack qeform" data-t="${r.t}" data-id="${r.id}" data-name="${esc(r.name)}" data-brand="${esc(r.brand || '')}" data-rv="${esc(r.rv || '')}" data-desc="${esc(r.desc.slice(0, 400))}">
+          <label>Focus keyword <small class="muted">the phrase people would search for</small><input name="focus_keyword" maxlength="80" value="${esc(r.kw)}"></label>
+          <label>Page title<input name="seo_title" maxlength="120" value="${esc(r.seoTitle)}" placeholder="${esc(r.name)}"></label><label>Meta description<textarea name="seo_description" rows="2" maxlength="320">${esc(r.seoDesc)}</textarea></label>${r.kind === 'Product' ? `<label>Photo description (alt text)<input name="image_alt" maxlength="200" value="${esc(r.alt)}" placeholder="e.g. Roll of R-13 fiberglass batt insulation"></label>` : ''}
+          <div class="row"><button type="button" class="btn ghost suggest">:ic-star: Suggest</button><button class="btn">Save</button><a class="link" href="${r.href}">Open full editor</a></div></form></td></tr>`).join('')}</table></div></section>`;
+    if (tab === 'redirects') return `${head}<section class="cs"><h3 style="margin-top:0">Redirects</h3><p class="muted">Send old links to the right page (for example when you rename or remove a product). They are written into the site on the next deploy (<code>_redirects</code> for Netlify, plus a small forwarding page that works anywhere).</p>
+      <form id="rdform" class="row" style="align-items:end"><label style="flex:1;min-width:180px">Old path<input name="from" placeholder="/old-product/" required maxlength="200"></label><label style="flex:1;min-width:180px">Send to<input name="to" placeholder="/product/new-product/ or https://…" required maxlength="300"></label><button class="btn">Add redirect</button></form>
+      ${(rds.data || []).length ? `<div class="tablewrap"><table><tr><th>From</th><th>To</th><th>Added</th><th></th></tr>${rds.data.map((r) => `<tr><td><code>${esc(r.from_path)}</code></td><td><code>${esc(r.to_path)}</code></td><td>${new Date(r.created_at).toLocaleDateString()}</td><td><button class="link rddel" data-id="${r.id}" style="color:var(--err)">Delete</button></td></tr>`).join('')}</table></div>` : '<p class="muted" style="margin-bottom:0">No redirects yet.</p>'}</section>`;
+    return `${head}<form id="seoform" class="cs stack narrow"><h3 style="margin:0">Site settings</h3>
       <label>Site name in search results<input name="site_title" maxlength="80" value="${esc(o.site_title)}" placeholder="${esc(theme.name || 'Gomi Insulation')}"></label>
       <label>Home page title<input name="home_title" maxlength="80" value="${esc(o.home_title)}" placeholder="Insulation supplies delivered to your site"></label>
       <label>Default description<textarea name="description" rows="3" maxlength="300" placeholder="Quality insulation, delivered. Batts, rolls, foam and more.">${esc(o.description)}</textarea></label>
       <label>Social share image URL <small class="muted">shown when your link is shared (1200×630 works best)</small><input name="og_image" type="url" value="${esc(o.og_image)}" placeholder="https://…"></label>
       <label>Public website address <small class="muted">used in the sitemap and canonical links</small><input name="site_url" type="url" value="${esc(o.site_url)}" placeholder="https://www.gomiinsulation.com"></label>
+      <label>Twitter / X handle <small class="muted">optional</small><input name="twitter" maxlength="40" value="${esc(o.twitter)}" placeholder="@gomiinsulation"></label>
+      <fieldset class="cmpset"><legend>Tracking &amp; verification</legend><label>Google Search Console verification code <small class="muted">just the code from the “HTML tag” method</small><input name="gsc" maxlength="120" value="${esc(o.gsc)}" placeholder="abc123…"></label>
+      <label>Google Analytics 4 measurement ID <small class="muted">optional — adds Google's tracking script</small><input name="ga4" maxlength="20" value="${esc(o.ga4)}" placeholder="G-XXXXXXXXXX" pattern="G-[A-Za-z0-9]+"></label></fieldset>
       <label class="switch"><input type="checkbox" name="noindex" ${o.noindex ? 'checked' : ''}><span class="track"></span><span>Hide the whole site from search engines</span></label>
-      <div class="serpwrap">${serp(o.home_title || seoSite(), o.description, '')}</div><button class="btn">Save SEO settings</button></form></div>`;
+      <div class="serpwrap">${serp(o.home_title || seoSite(), o.description, '')}</div><button class="btn">Save SEO settings</button></form>`;
   }
   if (sub === 'pages' && id) {
     const pg = id === 'new' ? { title: '', slug: '', body: PAGE_TEMPLATES.blank[1], published: false, show_in_nav: false, show_in_footer: true, sort: 0 } : (await sb.from('pages').select('*').eq('id', id).single()).data;
@@ -1491,6 +1518,31 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     rows.forEach((r) => { draw(r, parseInt(r.dataset.orig, 10) || 0); r.addEventListener('input', () => draw(r, Math.max(0, totalOf(r)))); });
     bpb.addEventListener('input', () => rows.forEach((r) => draw(r, parseInt(r.querySelector('[name^=inv_]').value, 10) || 0)));
   }
+  if (document.getElementById('techchecks')) {
+    const mark = (id, ok, msg) => { const li = document.querySelector(`#techchecks [data-check=${id}]`); if (!li) return; li.className = ok ? 'ok' : 'bad'; li.querySelector('.ci').innerHTML = ok ? ':ic-check-circle:' : ':ic-alert:'; if (!ok) li.querySelector('div').insertAdjacentHTML('beforeend', `<small class="muted">${msg}</small>`); };
+    const probe = async (file, id, label, hint) => { try { const r = await fetch(file, { cache: 'no-store' }), t = r.ok ? await r.text() : ''; const ok = r.ok && !/<!doctype html/i.test(t.slice(0, 200)); mark(id, ok, ok ? '' : hint); } catch { mark(id, false, hint); } };
+    probe('sitemap.xml', 'sitemap', 'sitemap', 'Not found yet — it is created when the site is deployed. Check that your deploy runs the build step.'); probe('robots.txt', 'robots', 'robots', 'Not found yet — it is created when the site is deployed.');
+    document.querySelectorAll('#techchecks li.wait').forEach((li) => (li.className = 'wait'));
+  }
+  if (document.querySelector('.seotable')) {
+    const run = () => { const t = document.getElementById('seoq').value.toLowerCase().trim(), f = document.querySelector('#seofilter .on').dataset.f; document.querySelectorAll('.seorow').forEach((r) => { const ok = (!t || r.dataset.q.includes(t)) && (!f || (f === 'issues' ? Number(r.dataset.issues) > 0 : r.dataset.kind === f)); r.hidden = !ok; const q2 = document.querySelector(`.qerow[data-for="${r.dataset.key}"]`); if (!ok && q2) q2.hidden = true; }); };
+    document.getElementById('seoq').addEventListener('input', run); document.getElementById('seofilter').addEventListener('click', (e) => { const b = e.target.closest('[data-f]'); if (!b) return; document.querySelectorAll('#seofilter .chip').forEach((x) => x.classList.toggle('on', x === b)); run(); });
+    document.querySelector('.seotable').addEventListener('click', (e) => {
+      const qe = e.target.closest('.qe'); if (qe) { const row = document.querySelector(`.qerow[data-for="${qe.dataset.key}"]`); row.hidden = !row.hidden; return; }
+      const sg = e.target.closest('.suggest'); if (sg) { const f = sg.closest('form'), name = f.dataset.name, brand = f.dataset.brand, rv = f.dataset.rv;
+        let title = `${brand && !name.toLowerCase().includes(brand.toLowerCase()) ? brand + ' ' : ''}${name}${rv && !name.includes(rv) ? ' ' + rv : ''}`; if (title.length > 60) title = title.slice(0, 59).trimEnd() + '…';
+        const base = clip(f.dataset.desc || name, 110), desc = clip(`${base}${/[.!?]$/.test(base) ? '' : '.'} Order online from ${seoSite()}.`, 160);
+        if (!f.elements.seo_title.value) f.elements.seo_title.value = title; if (!f.elements.seo_description.value) f.elements.seo_description.value = desc; if (!f.elements.focus_keyword.value) f.elements.focus_keyword.value = name.toLowerCase().slice(0, 80); flash('Suggestions filled in — adjust and save.'); }
+    });
+    document.querySelector('.seotable').addEventListener('submit', async (e) => {
+      const f = e.target.closest('.qeform'); if (!f) return; e.preventDefault(); const d = Object.fromEntries(new FormData(f)), upd = { seo_title: d.seo_title.trim(), seo_description: d.seo_description.trim(), focus_keyword: d.focus_keyword.trim() }; if ('image_alt' in d) upd.image_alt = d.image_alt.trim();
+      const { error } = await sb.from(f.dataset.t).update(upd).eq('id', f.dataset.id); error ? fail(error) : (flash('Saved.'), route());
+    });
+  }
+  document.getElementById('rdform')?.addEventListener('submit', async (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); let from = f.from.trim(), to = f.to.trim();
+    if (!from.startsWith('/')) from = '/' + from; if (!/^https?:\/\//i.test(to) && !to.startsWith('/')) to = '/' + to; if (from.replace(/\/+$/, '') === to.replace(/\/+$/, '')) return fail(new Error('Old and new address are the same.'));
+    const { error } = await sb.from('seo_redirects').insert({ from_path: from, to_path: to }); error ? fail(error.code === '23505' ? new Error('That old path already has a redirect.') : error) : (flash('Redirect added — it goes live on the next deploy.'), route()); });
+  document.querySelectorAll('.rddel').forEach((b) => b.addEventListener('click', async () => { if (!confirm('Delete this redirect?')) return; const { error } = await sb.from('seo_redirects').delete().eq('id', b.dataset.id); error ? fail(error) : route(); }));
   document.getElementById('addzone')?.addEventListener('click', () => document.getElementById('zonerows').insertAdjacentHTML('beforeend', zoneRow()));
   document.getElementById('zonerows')?.addEventListener('click', (e) => e.target.closest('.rmzone')?.closest('.zoneedit').remove());
   document.getElementById('addspec')?.addEventListener('click', () => document.getElementById('specrows').insertAdjacentHTML('beforeend', specRow()));
@@ -1512,11 +1564,11 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   document.getElementById('packbox')?.addEventListener('input', calcAll); document.querySelector('[name=price]')?.addEventListener('input', calcAll); calcAll();
   document.getElementById('seoform')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
-    const value = { site_title: f.site_title.trim(), home_title: f.home_title.trim(), description: f.description.trim(), og_image: safeUrl(f.og_image.trim()), site_url: f.site_url.trim().replace(/\/+$/, ''), noindex: f.noindex === 'on' };
+    const value = { site_title: f.site_title.trim(), home_title: f.home_title.trim(), description: f.description.trim(), og_image: safeUrl(f.og_image.trim()), site_url: f.site_url.trim().replace(/\/+$/, ''), twitter: (f.twitter || '').trim(), gsc: (f.gsc || '').trim().replace(/[^\w-]/g, ''), ga4: /^G-[A-Za-z0-9]+$/.test((f.ga4 || '').trim()) ? f.ga4.trim() : '', noindex: f.noindex === 'on' };
     const { error } = await sb.from('site_settings').upsert({ key: 'seo', value, updated_at: new Date().toISOString() }); if (error) return fail(error);
     SEO = value; flash('SEO settings saved.'); route();
   });
-  wireSeoBox(document, sub === 'pages' ? '#pg_title' : "[name=name]");
+  wireSeoBox(document, sub === 'pages' ? '#pg_title' : '[name=name]', sub === 'pages' ? '#pg_body' : '[name=name], [name=description], [name=long_description]');
   document.getElementById('shoptoggle')?.addEventListener('click', () => { if (shopClosed()) setShopClosed(false); else { const m = prompt('Message for customers (optional):', STORE.closed_message || ''); if (m !== null) setShopClosed(true, m.trim().slice(0, 300)); } });
   // team
   document.getElementById('teamsearch')?.addEventListener('submit', (e) => { e.preventDefault(); const v = new FormData(e.target).get('search').trim(); location.hash = '#/admin/team' + (v ? '?search=' + encodeURIComponent(v) : ''); });
@@ -1848,7 +1900,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     document.getElementById('pg_save')?.addEventListener('click', async () => {
       const title = document.getElementById('pg_title').value.trim(); if (!title) return fail(new Error('Give the page a title.'));
       const row = { title, slug: slugify(document.getElementById('pg_slug').value || title) || 'page-' + Date.now(), body: body.value, published: document.getElementById('pg_pub').checked,
-        show_in_nav: document.getElementById('pg_nav').checked, show_in_footer: document.getElementById('pg_foot').checked, sort: parseInt(document.getElementById('pg_sort').value, 10) || 0, seo_title: document.querySelector('[name=seo_title]').value.trim(), seo_description: document.querySelector('[name=seo_description]').value.trim(), updated_at: new Date().toISOString() };
+        show_in_nav: document.getElementById('pg_nav').checked, show_in_footer: document.getElementById('pg_foot').checked, sort: parseInt(document.getElementById('pg_sort').value, 10) || 0, seo_title: document.querySelector('[name=seo_title]').value.trim(), seo_description: document.querySelector('[name=seo_description]').value.trim(), focus_keyword: document.querySelector('[name=focus_keyword]').value.trim(), updated_at: new Date().toISOString() };
       const res = PG.id ? await sb.from('pages').update(row).eq('id', PG.id).select('id').single() : await sb.from('pages').insert(row).select('id').single();
       if (res.error) return fail(res.error.code === '23505' ? new Error('That link name is already used by another page.') : res.error);
       try { localStorage.removeItem('pgdraft_' + (PG.id || 'new')); } catch {} window.onbeforeunload = null; flash('Page saved.'); loadPages(); location.hash = '#/admin/pages';
@@ -1975,7 +2027,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       r_value: f.r_value.trim(), image_url: safeUrl(f.image_url.trim()), active: !!f.active, cost_cents: Math.round((parseFloat(f.cost) || 0) * 100), reorder_point: parseInt(f.reorder_point, 10) || 0, reorder_qty: parseInt(f.reorder_qty, 10) || 0, compare_at_cents: Math.round((parseFloat(f.compare_at) || 0) * 100), brand: (f.brand || '').trim(), bags_per_bundle: (() => { const n = parseInt(f.bags_per_bundle, 10); return n >= 2 && n <= 1000 ? n : null; })(), sku: (f.sku || '').trim(), barcode: (f.barcode || '').trim(), long_description: f.long_description || '', features: (f.features || '').split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 30),
       specs: [...e.target.querySelectorAll('.specedit')].map((r) => ({ k: r.querySelector('[data-f=k]').value.trim(), v: r.querySelector('[data-f=v]').value.trim() })).filter((x) => x.k && x.v).slice(0, 40),
       documents: [...e.target.querySelectorAll('.docedit')].map((r) => ({ label: r.querySelector('[data-f=label]').value.trim(), url: safeUrl(r.querySelector('[data-f=url]').value.trim()) })).filter((x) => x.label && x.url).slice(0, 20),
-      video_url: ytId(f.video_url) ? f.video_url.trim() : '', warranty: (f.warranty || '').trim(), seo_title: (f.seo_title || '').trim(), seo_description: (f.seo_description || '').trim(), image_alt: (f.image_alt || '').trim() };
+      video_url: ytId(f.video_url) ? f.video_url.trim() : '', warranty: (f.warranty || '').trim(), seo_title: (f.seo_title || '').trim(), seo_description: (f.seo_description || '').trim(), focus_keyword: (f.focus_keyword || '').trim(), image_alt: (f.image_alt || '').trim() };
     if (!pid) row.slug = (row.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'product') + '-' + Math.floor(Math.random() * 1000);
     const res = pid ? await sb.from('products').update(row).eq('id', pid).select('id').single() : await sb.from('products').insert(row).select('id').single();
     if (res.error) return fail(res.error);
@@ -2540,6 +2592,11 @@ function setMeta(attr, key, val) {
   if (!el) { el = document.createElement('meta'); el.setAttribute(attr, key); document.head.appendChild(el); }
   el.setAttribute('content', val);
 }
+function applyTracking() {
+  const code = String(SEO.gsc || '').replace(/[^\w-]/g, ''); let m = document.head.querySelector('meta[name="google-site-verification"]');
+  if (code) { if (!m) { m = document.createElement('meta'); m.name = 'google-site-verification'; document.head.appendChild(m); } m.content = code; } else m?.remove();
+  const id = /^G-[A-Za-z0-9]+$/.test(SEO.ga4 || '') ? SEO.ga4 : ''; if (id && !document.getElementById('ga4s') && !/^(localhost|127\.)/.test(location.hostname)) { const sc = document.createElement('script'); sc.id = 'ga4s'; sc.async = true; sc.src = 'https://www.googletagmanager.com/gtag/js?id=' + id; document.head.appendChild(sc); window.dataLayer = window.dataLayer || []; window.gtag = function () { window.dataLayer.push(arguments); }; window.gtag('js', new Date()); window.gtag('config', id); }
+}
 function setSeo({ title, description, image, type = 'website', path = '', jsonld, noindex } = {}) {
   const site = seoSite(), full = title ? `${title} · ${site}` : site; document.title = full;
   const desc = clip(description || SEO.description || '', 300), url = path ? seoBase() + path : '';
@@ -2548,7 +2605,7 @@ function setSeo({ title, description, image, type = 'website', path = '', jsonld
   setMeta('property', 'og:title', title || site); setMeta('property', 'og:description', desc); setMeta('property', 'og:type', type);
   setMeta('property', 'og:site_name', site); setMeta('property', 'og:url', url);
   const img = safeUrl(image || SEO.og_image || ''); setMeta('property', 'og:image', img);
-  setMeta('name', 'twitter:card', img ? 'summary_large_image' : 'summary'); setMeta('name', 'twitter:title', title || site); setMeta('name', 'twitter:description', desc);
+  setMeta('name', 'twitter:card', img ? 'summary_large_image' : 'summary'); setMeta('name', 'twitter:site', SEO.twitter || ''); setMeta('name', 'twitter:title', title || site); setMeta('name', 'twitter:description', desc);
   let link = document.head.querySelector('link[rel="canonical"]');
   if (url) { if (!link) { link = document.createElement('link'); link.rel = 'canonical'; document.head.appendChild(link); } link.href = url; } else link?.remove();
   document.head.querySelector('script#ldjson')?.remove();
@@ -2558,18 +2615,29 @@ const serp = (title, desc, path) => `<div class="serp" aria-label="Search result
 const lenHint = (n, lo, hi) => `<span class="lenhint ${n === 0 ? '' : n < lo || n > hi ? 'warn' : 'good'}">${n} chars · aim for ${lo}–${hi}</span>`;
 function seoFields(o, fallbackTitle, path) {
   return `<fieldset class="cmpset seobox" data-path="${esc(path)}"><legend>:ic-search: Search engines (SEO)</legend>
+    <label>Focus keyword <small class="muted">the phrase customers would search for, e.g. “R-22 fiberglass insulation”</small><input name="focus_keyword" maxlength="80" value="${esc(o.focus_keyword || '')}" data-seo="kw"></label>
+    <ul class="kwcheck" data-seo="kwlist"></ul>
     <label>Page title <small class="muted">defaults to “${esc(fallbackTitle || '')}”</small><input name="seo_title" maxlength="120" value="${esc(o.seo_title || '')}" data-seo="title">${lenHint((o.seo_title || fallbackTitle || '').length, 30, 60)}</label>
     <label>Meta description<textarea name="seo_description" rows="3" maxlength="320" data-seo="desc">${esc(o.seo_description || '')}</textarea>${lenHint((o.seo_description || '').length, 70, 160)}</label>
-    <div class="serpwrap" data-seo="preview">${serp(o.seo_title || fallbackTitle, o.seo_description, path)}</div></fieldset>`;
+    <div class="row"><button type="button" class="btn ghost" data-seo="suggest">:ic-star: Suggest title &amp; description</button></div>
+    <div class="serpwrap" data-seo="preview">${serp(o.seo_title || fallbackTitle, o.seo_description, path)}</div>
+    <div class="socialprev" data-seo="social"></div></fieldset>`;
 }
-function wireSeoBox(root, titleSel) {
+function wireSeoBox(root, titleSel, bodySel) {
   const box = root.querySelector?.('.seobox'); if (!box) return;
-  const t = box.querySelector('[data-seo=title]'), d = box.querySelector('[data-seo=desc]'), pv = box.querySelector('[data-seo=preview]'), path = box.dataset.path;
-  const upd = () => { const ft = titleSel ? (document.querySelector(titleSel)?.value || '') : '', tt = t.value || ft;
+  const t = box.querySelector('[data-seo=title]'), d = box.querySelector('[data-seo=desc]'), pv = box.querySelector('[data-seo=preview]'), kw = box.querySelector('[data-seo=kw]'), kl = box.querySelector('[data-seo=kwlist]'), soc = box.querySelector('[data-seo=social]'), path = box.dataset.path;
+  const val = (sel) => (sel ? [...document.querySelectorAll(sel)].map((x) => x.value).join(' ') : '');
+  const upd = () => { const ft = titleSel ? (document.querySelector(titleSel)?.value || '') : '', tt = t.value || ft, body = val(bodySel);
     pv.innerHTML = serp(tt, d.value, path);
     const hints = box.querySelectorAll('.lenhint'), set = (el, n, lo, hi) => { el.textContent = `${n} chars · aim for ${lo}–${hi}`; el.className = 'lenhint ' + (n === 0 ? '' : n < lo || n > hi ? 'warn' : 'good'); };
-    set(hints[0], tt.length, 30, 60); set(hints[1], d.value.length, 70, 160); };
-  [t, d].forEach((x) => x.addEventListener('input', upd)); if (titleSel) document.querySelector(titleSel)?.addEventListener('input', upd);
+    set(hints[0], tt.length, 30, 60); set(hints[1], d.value.length, 70, 160);
+    const k = kw.value.trim().toLowerCase(); const has = (x) => String(x || '').toLowerCase().includes(k), slugish = (path || '').toLowerCase().replace(/-/g, ' ');
+    kl.innerHTML = k ? [['In the page title', has(tt)], ['In the meta description', has(d.value)], ['In the page address', slugish.includes(k.replace(/[^a-z0-9]+/g, ' ').trim())], ['In the page text', has(body)]].map(([l, ok]) => `<li class="${ok ? 'ok' : 'bad'}">${ok ? ':ic-check-circle:' : ':ic-alert:'} ${l}</li>`).join('') : '<li class="muted">Add a focus keyword to see a checklist.</li>';
+    const img = safeUrl(SEO.og_image || ''); soc.innerHTML = `<div class="soccard">${img ? `<img src="${esc(img)}" alt="">` : '<div class="socph">Social image</div>'}<div><small>${esc(seoBase().replace(/^https?:\/\//, ''))}</small><b>${esc(clip(tt, 70))}</b><span>${esc(clip(d.value, 110))}</span></div></div><small class="muted">How it looks when shared on Facebook or WhatsApp.</small>`; };
+  [t, d, kw].forEach((x) => x.addEventListener('input', upd)); [titleSel, bodySel].forEach((sel) => sel && document.querySelectorAll(sel).forEach((x) => x.addEventListener('input', upd)));
+  box.querySelector('[data-seo=suggest]')?.addEventListener('click', () => { const ft = (titleSel ? document.querySelector(titleSel)?.value : '') || '', body = val(bodySel).replace(/\s+/g, ' ').trim();
+    if (!t.value) t.value = clip(ft, 60); if (!d.value) d.value = clip(`${clip(body.replace(ft, '').trim() || ft, 110)} Order online from ${seoSite()}.`, 160); if (!kw.value) kw.value = ft.toLowerCase().slice(0, 80); upd(); });
+  upd();
 }
 const productLd = (p, pics) => ({ '@context': 'https://schema.org', '@type': 'Product', name: p.name, description: clip(p.description, 500), image: pics.slice(0, 4), category: p.category, ...(p.brand ? { brand: { '@type': 'Brand', name: p.brand } } : {}), sku: p.sku || 'P' + p.id, ...(p.barcode ? { gtin: p.barcode } : {}),
   offers: { '@type': 'Offer', priceCurrency: window.GOMI.CURRENCY || 'USD', price: (p.price_cents / 100).toFixed(2), availability: p.stock > 0 ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock', url: seoBase() + '/product/' + p.slug + '/' } });
@@ -2581,7 +2649,7 @@ async function route() {
   const [name = 'home', ...args] = path.split('/').filter(Boolean); const page = pages[name === '' ? 'home' : name];
   const TITLES = { shop: 'Shop', cart: 'Cart', checkout: 'Checkout', account: 'My account', messages: 'Messages', notifications: 'Notifications', login: 'Log in', register: 'Sign up', quote: 'Request a quote', wishlist: 'Wishlist', track: 'Track an order', admin: 'Admin', forgot: 'Reset password', reset: 'New password' };
   const PRIVATE = ['cart', 'checkout', 'account', 'messages', 'notifications', 'login', 'register', 'admin', 'invoice', 'estimate', 'reset', 'track', 'wishlist'];
-  setSeo({ title: name === 'home' || name === '' ? (SEO.home_title || '') : TITLES[name] || '', description: '', noindex: PRIVATE.includes(name), path: name === 'shop' ? '/#/shop' : '' });
+  setSeo({ title: name === 'home' || name === '' ? (SEO.home_title || '') : TITLES[name] || '', description: '', noindex: PRIVATE.includes(name), path: name === 'shop' ? '/#/shop' : '', jsonld: name === 'home' || name === '' ? [{ '@context': 'https://schema.org', '@type': 'WebSite', name: seoSite(), url: seoBase() + '/', potentialAction: { '@type': 'SearchAction', target: seoBase() + '/#/shop?q={search_term_string}', 'query-input': 'required name=search_term_string' } }, { '@context': 'https://schema.org', '@type': 'Organization', name: (STORE.biz?.legal_name || seoSite()), url: seoBase() + '/', ...(STORE.biz?.phone ? { telephone: STORE.biz.phone } : {}), ...(STORE.biz?.email ? { email: STORE.biz.email } : {}), ...(SEO.og_image ? { logo: SEO.og_image } : {}) }] : undefined });
   if (!page) { $app.innerHTML = '<h1>Not found</h1>'; return; }
   try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); if (name === 'admin' && args[0]) $app.insertAdjacentHTML('afterbegin', adminNavHtml(args[0])); setMenu(false);
     $app.querySelectorAll('table').forEach((t) => { if (!t.parentElement.classList.contains('tablewrap') && !t.closest('.invdoc, .tablewrap')) { const w = document.createElement('div'); w.className = 'tablewrap'; t.replaceWith(w); w.appendChild(t); }

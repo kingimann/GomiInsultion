@@ -2327,3 +2327,17 @@ begin
   return jsonb_build_object('id', oid, 'key', gk);
 end $function$
 ;
+
+-- ===== More SEO tools: focus keywords + redirects =====
+alter table public.products add column if not exists focus_keyword text not null default '' check (length(focus_keyword) <= 80);
+alter table public.pages add column if not exists focus_keyword text not null default '' check (length(focus_keyword) <= 80);
+create table if not exists public.seo_redirects (
+  id bigint generated always as identity primary key,
+  from_path text not null unique check (from_path ~ '^/[^\s?#]*$' and length(from_path) <= 200),
+  to_path text not null check (length(to_path) between 1 and 300),
+  permanent boolean not null default true, note text not null default '', created_at timestamptz not null default now());
+alter table public.seo_redirects enable row level security;
+drop policy if exists "read redirects" on public.seo_redirects;
+create policy "read redirects" on public.seo_redirects for select using (true);
+drop policy if exists "staff redirects" on public.seo_redirects;
+create policy "staff redirects" on public.seo_redirects for all using (public.has_perm('content.manage')) with check (public.has_perm('content.manage'));

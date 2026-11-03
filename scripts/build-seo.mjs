@@ -55,6 +55,23 @@ for (const g of pages) {
     body: `<h1>${esc(g.title)}</h1>${g.body.split(/\n{2,}/).map((x) => `<p>${esc(x.replace(/^#+\s*/, ''))}</p>`).join('')}` }));
   urls.push({ loc: path, pr: '0.5' });
 }
+// Category and brand landing pages (crawlable lists of products)
+const slugify = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+for (const kind of ['category', 'brand']) {
+  const groups = new Map(); for (const p of products) { const v = (p[kind] || '').trim(); if (v) (groups.get(v) || groups.set(v, []).get(v)).push(p); }
+  for (const [name, list] of groups) { if (!slugify(name)) continue; const path = `/${kind}/${slugify(name)}/`, desc = `Shop ${name} — ${list.length} product${list.length === 1 ? '' : 's'} from ${site}.`;
+    out(`${kind}/${slugify(name)}`, shell({ title: name, desc, type: 'website', path, hash: `#/shop?${kind}=${encodeURIComponent(name)}`,
+      ld: { '@context': 'https://schema.org', '@type': 'CollectionPage', name, description: desc, url: base + path, mainEntity: { '@type': 'ItemList', itemListElement: list.map((p, i) => ({ '@type': 'ListItem', position: i + 1, url: base + `/product/${p.slug}/`, name: p.name })) } },
+      body: `<h1>${esc(name)}</h1><ul>${list.map((p) => `<li><a href="${esc(pre)}product/${esc(p.slug)}/">${esc(p.name)}</a> — $${(p.price_cents / 100).toFixed(2)}</li>`).join('')}</ul>` }));
+    urls.push({ loc: path, pr: '0.6' }); }
+}
+// Redirects: Netlify _redirects file + a forwarding page that works on any host
+const reds = await get('seo_redirects?select=from_path,to_path&order=id').catch(() => []);
+if (reds.length) {
+  writeFileSync(join(root, '_redirects'), reds.map((r) => `${r.from_path} ${r.to_path} 301`).join('\n') + '\n');
+  for (const r of reds) { const dest = /^https?:/i.test(r.to_path) ? r.to_path : (base || '') + r.to_path, rel = r.from_path.replace(/^\/+|\/+$/g, ''); if (!rel || rel.includes('..')) continue;
+    out(rel, `<!doctype html><html><head><meta charset="utf-8"><title>Redirecting…</title><link rel="canonical" href="${esc(dest)}"><meta http-equiv="refresh" content="0; url=${esc(dest)}"><meta name="robots" content="noindex"></head><body><a href="${esc(dest)}">Continue</a><script>location.replace(${JSON.stringify(dest)});</script></body></html>`); }
+}
 writeFileSync(join(root, 'sitemap.xml'), `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((u) => `  <url><loc>${esc(base + u.loc)}</loc><priority>${u.pr}</priority></url>`).join('\n')}\n</urlset>\n`);
 writeFileSync(join(root, 'robots.txt'), seo.noindex ? 'User-agent: *\nDisallow: /\n' : `User-agent: *\nAllow: /\nDisallow: /#/admin\n${base ? `Sitemap: ${base}/sitemap.xml\n` : ''}`);
 console.log(`SEO build: ${products.length} products, ${pages.length} pages, ${urls.length} sitemap URLs`);

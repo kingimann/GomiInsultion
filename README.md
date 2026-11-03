@@ -155,3 +155,7 @@ Set an **Original price** on a product to show a strikethrough price and a “-X
 ## Discount code limits & mobile buy bar
 
 Discount codes can now have a **usage limit** and an **expiry date** (enforced by the database when an order is placed, with a live "used" counter), plus delete and status labels (Active / Off / Expired / Used up). On phones, product pages show a sticky **Add to cart** bar once the main button scrolls out of view.
+
+## Invoice & estimate PDFs
+
+Every invoice and estimate page (admin view and the customer's public link) has a **Download PDF** button that builds a clean A4 PDF in the browser — business details, bill-to, line items, discount/tax/totals, payments received, notes, terms, how-to-pay, page numbers and a PAID stamp when settled. Admins can also **Duplicate** an invoice into a new draft.

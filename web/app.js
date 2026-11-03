@@ -986,6 +986,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const ready = mng ? (await sb.rpc('messaging_ready')).data === true : true, logs = (await sb.from('message_log').select('*').eq('kind', 'invoice').eq('ref_id', inv.id).order('id', { ascending: false }).limit(8)).data || [];
     return `<p><a href="#/admin/invoices">← All invoices</a></p>
     ${mng ? `<div class="row noprint" style="margin-bottom:12px">${inv.status === 'draft' ? `<a class="btn ghost" href="#/admin/invoices/${inv.id}/edit">:ic-edit: Edit</a><button class="btn" id="opensend" type="button">:ic-mail: Send…</button><button class="btn ghost" data-invact="sent">Mark as sent (without sending)</button>` : ''}${inv.status === 'sent' ? `<a class="btn ghost" href="#/admin/invoices/${inv.id}/edit">:ic-edit: Edit</a><button class="btn" id="opensend" type="button">:ic-mail: Send / re-send…</button>` : ''}${inv.status === 'paid' ? '<button class="btn ghost" id="opensend" type="button">:ic-mail: Send a copy…</button>' : ''}
+      <button class="btn ghost dupinv" type="button">Duplicate</button>
       ${inv.status === 'void' ? '<button class="btn ghost" data-invact="draft">Reopen as draft</button>' : inv.status !== 'paid' && !inv.paid_cents ? '<button class="btn ghost" data-invact="void" style="color:var(--err)">Void</button>' : ''}${['draft', 'void'].includes(inv.status) ? '<button class="btn ghost" id="invdel" style="color:var(--err)">Delete</button>' : ''}<button class="btn ghost" id="printbtn" type="button">:ic-print: Print</button></div>
     ${inv.status === 'void' ? '' : sendPanel(inv, 'invoice', ready, q.get('send') === '1')}` : '<div class="row noprint"><button class="btn ghost" id="printbtn" type="button">:ic-print: Print</button></div>'}
     <div class="cartwrap"><div>${invDoc(inv, items, pays.map((x) => ({ ...x })))}</div><aside class="summary noprint">
@@ -1259,6 +1260,12 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   // invoices (list + detail)
   document.getElementById('invsearch')?.addEventListener('submit', (e) => { e.preventDefault(); const n = new URLSearchParams(q); const v = new FormData(e.target).get('search').trim(); v ? n.set('search', v) : n.delete('search'); location.hash = '#/admin/invoices?' + n; });
   document.getElementById('invcsv')?.addEventListener('click', () => download('invoices.csv', [['Number', 'Customer', 'Issued', 'Due', 'Total', 'Balance', 'Status'], ...[...document.querySelectorAll('#invtable tr[data-csv]')].map((r) => JSON.parse(r.dataset.csv))]));
+  document.querySelector('.dupinv')?.addEventListener('click', async () => {
+    if (!LASTDOC) return; const { inv, items } = LASTDOC, d = (n) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10), days = Math.max(0, Math.round((new Date(inv.due_date) - new Date(inv.issue_date)) / 864e5)) || 14;
+    const { data, error } = await sb.rpc('save_invoice', { inv: { id: null, customer_id: inv.customer_id || null, customer_name: inv.customer_name, customer_email: inv.customer_email, customer_address: inv.customer_address, notes: inv.notes, terms: inv.terms, discount_cents: inv.discount_cents, tax_rate: inv.tax_rate, tax_label: inv.tax_label, issue_date: d(0), due_date: d(days) },
+      items: items.map((i) => ({ description: i.description, qty: i.qty, unit_price_cents: i.unit_price_cents, taxable: i.taxable, product_id: i.product_id || null })) });
+    error ? fail(error) : (flash('Invoice duplicated as a draft.'), location.hash = `#/admin/invoices/${data}`);
+  });
   document.querySelectorAll('[data-invact]').forEach((b) => b.addEventListener('click', async () => {
     const act = b.dataset.invact; if (act === 'void' && !confirm('Void this invoice?')) return;
     const { error } = await sb.rpc('set_invoice_status', { iid: Number(id), new_status: act }); error ? fail(error) : (flash(act === 'sent' ? 'Invoice marked as sent — the customer has been emailed if email is set up.' : 'Invoice updated.'), route());
@@ -2049,7 +2056,41 @@ const calcInv = (lines, discCents, rate) => {
   const disc = Math.min(Math.max(discCents || 0, 0), sub), taxable = sub ? tsub - Math.round(disc * tsub / sub) : 0, tax = Math.round(taxable * (Number(rate) || 0) / 100);
   return { sub, disc, tax, total: sub - disc + tax };
 };
+let LASTDOC = null;
+function loadScript(src) { return new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res(); const sc = document.createElement('script'); sc.src = src; sc.onload = res; sc.onerror = () => rej(new Error('Could not load the PDF library. Check your connection.')); document.head.appendChild(sc); }); }
+async function downloadPdf() {
+  if (!LASTDOC) return; const { inv, items, pays } = LASTDOC, est = 'expires_on' in inv, b = STORE.biz || {};
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'); await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js');
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ unit: 'pt', format: 'a4' }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 44;
+  const hex = (getComputedStyle(document.documentElement).getPropertyValue('--brand') || '#ea580c').trim(), rgb = /^#[0-9a-f]{6}$/i.test(hex) ? [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) : [234, 88, 12];
+  const m = (c) => money(c).replace(/\u2212/g, '-'), bal = est ? 0 : invBal(inv), paidFull = !est && bal <= 0 && inv.total_cents > 0;
+  doc.setFillColor(...rgb); doc.rect(0, 0, W, 8, 'F');
+  doc.setFont('helvetica', 'bold').setFontSize(16).setTextColor(20); doc.text(b.legal_name || theme.name || 'Gomi Insulation', M, 46);
+  doc.setFont('helvetica', 'normal').setFontSize(9).setTextColor(100);
+  const biz = [...(b.address || '').split('\n'), b.phone, b.email, b.tax_number ? `${inv.tax_label || STORE.tax_label || 'Tax'} no. ${b.tax_number}` : ''].filter(Boolean); biz.forEach((l, i) => doc.text(String(l), M, 62 + i * 12));
+  doc.setFont('helvetica', 'bold').setFontSize(24).setTextColor(...rgb); doc.text(est ? 'ESTIMATE' : 'INVOICE', W - M, 48, { align: 'right' });
+  doc.setFontSize(9).setTextColor(60); const meta = [['Number', inv.number], ['Issued', inv.issue_date], [est ? 'Valid until' : 'Due', est ? inv.expires_on : inv.due_date]];
+  meta.forEach(([k, v], i) => { doc.setFont('helvetica', 'normal').setTextColor(120).text(k, W - M - 120, 68 + i * 14); doc.setFont('helvetica', 'bold').setTextColor(20).text(String(v), W - M, 68 + i * 14, { align: 'right' }); });
+  let y = Math.max(62 + biz.length * 12, 68 + meta.length * 14) + 26;
+  doc.setFont('helvetica', 'bold').setFontSize(8).setTextColor(120).text('BILL TO', M, y); doc.setFontSize(11).setTextColor(20).text(inv.customer_name || '', M, y + 15);
+  doc.setFont('helvetica', 'normal').setFontSize(9).setTextColor(70); const to = [...(inv.customer_address || '').split('\n'), inv.customer_email].filter(Boolean); to.forEach((l, i) => doc.text(String(l), M, y + 29 + i * 12)); y += 36 + to.length * 12;
+  doc.autoTable({ startY: y, margin: { left: M, right: M, bottom: 60 }, head: [['Description', 'Qty', 'Rate', 'Amount']], body: items.map((i) => [i.description + (i.taxable ? '' : ' (no tax)'), String(Number(i.qty)), m(i.unit_price_cents), m(Math.round(Number(i.qty) * i.unit_price_cents))]),
+    styles: { font: 'helvetica', fontSize: 9.5, cellPadding: 7, textColor: 30 }, headStyles: { fillColor: rgb, textColor: 255 }, didParseCell: (d) => { if (d.section === 'head' && d.column.index > 0) d.cell.styles.halign = 'right'; }, alternateRowStyles: { fillColor: [249, 248, 246] }, columnStyles: { 1: { halign: 'right', cellWidth: 50 }, 2: { halign: 'right', cellWidth: 80 }, 3: { halign: 'right', cellWidth: 90 } } });
+  y = doc.lastAutoTable.finalY + 16; const need = (h) => { if (y + h > H - 60) { doc.addPage(); y = 50; } };
+  const row = (k, v, bold) => { need(18); doc.setFont('helvetica', bold ? 'bold' : 'normal').setFontSize(bold ? 12 : 10).setTextColor(bold ? 20 : 80); doc.text(k, W - M - 170, y); doc.text(v, W - M, y, { align: 'right' }); y += bold ? 20 : 16; };
+  row('Subtotal', m(inv.subtotal_cents)); if (inv.discount_cents) row('Discount', '-' + m(inv.discount_cents)); if (inv.tax_cents) row(`${inv.tax_label || 'Tax'} (${Number(inv.tax_rate)}%)`, m(inv.tax_cents)); row('Total', m(inv.total_cents), true);
+  if (!est) { if (inv.paid_cents) row('Paid', '-' + m(inv.paid_cents)); doc.setTextColor(...rgb); row('Balance due', m(bal), true); }
+  if (!est && (pays || []).length) { y += 8; need(40); doc.setFont('helvetica', 'bold').setFontSize(10).setTextColor(20).text('Payments received', M, y); doc.autoTable({ startY: y + 6, margin: { left: M, right: M }, body: pays.map((p) => [p.paid_on, p.method || 'Payment', m(p.amount_cents)]), styles: { fontSize: 9, cellPadding: 5 }, theme: 'plain', columnStyles: { 2: { halign: 'right' } } }); y = doc.lastAutoTable.finalY + 10; }
+  const block = (title, text) => { if (!text) return; const lines = doc.setFont('helvetica', 'normal').setFontSize(9).splitTextToSize(String(text), W - 2 * M); need(16 + lines.length * 12); doc.setFont('helvetica', 'bold').setTextColor(20).text(title, M, y); doc.setFont('helvetica', 'normal').setTextColor(80).text(lines, M, y + 13); y += 22 + lines.length * 12; };
+  block('Notes', inv.notes); block('Terms', inv.terms); if (!est && bal > 0) block('How to pay', STORE.invoice_pay_info);
+  const pages = doc.getNumberOfPages(); for (let i = 1; i <= pages; i++) { doc.setPage(i); doc.setFontSize(8).setTextColor(150).text(`${inv.number} · Page ${i} of ${pages}`, W / 2, H - 24, { align: 'center' });
+    if (paidFull && i === 1) { doc.setTextColor(22, 163, 74).setFont('helvetica', 'bold').setFontSize(40); doc.saveGraphicsState(); doc.setGState(new doc.GState({ opacity: 0.25 })); doc.text('PAID', W - M - 10, 130, { align: 'right', angle: 12 }); doc.restoreGraphicsState(); } }
+  doc.save(`${est ? 'Estimate' : 'Invoice'}-${inv.number}.pdf`);
+}
+document.addEventListener('click', async (e) => { if (!e.target.closest('.pdfbtn')) return; const btn = e.target.closest('.pdfbtn'); btn.disabled = true; try { await downloadPdf(); } catch (err) { fail(err); } finally { btn.disabled = false; } });
+function addPdfButtons() { document.querySelectorAll('#printbtn').forEach((p) => { if (!p.previousElementSibling?.classList.contains('pdfbtn') && document.querySelector('.invdoc')) p.insertAdjacentHTML('beforebegin', '<button class="btn ghost pdfbtn noprint" type="button">:ic-download: Download PDF</button>'); }); }
 const invDoc = (inv, items, pays) => {
+  LASTDOC = { inv, items, pays };
   const est = 'expires_on' in inv, b = STORE.biz || {}, bal = est ? 0 : invBal(inv), eff = est ? (inv.status === 'sent' && inv.expires_on < todayStr() ? 'expired' : inv.status) : invEff(inv);
   return `<div class="invdoc"><div class="invtop"><div><h2 style="margin:0">${esc(b.legal_name || theme.name || 'Gomi Insulation')}</h2><p class="muted" style="margin:4px 0 0">${[b.address, b.phone, b.email].filter(Boolean).map(esc).join('<br>')}${b.tax_number ? `<br>${esc(inv.tax_label || STORE.tax_label || 'Tax')} no. ${esc(b.tax_number)}` : ''}</p></div>
     <div class="invmeta"><h1 style="margin:0">${est ? 'ESTIMATE' : 'INVOICE'}</h1><table><tr><td>Number</td><td><b>${esc(inv.number)}</b></td></tr><tr><td>Issued</td><td>${esc(inv.issue_date)}</td></tr><tr><td>${est ? 'Valid until' : 'Due'}</td><td>${esc(est ? inv.expires_on : inv.due_date)}</td></tr><tr><td>Status</td><td><span class="status ${['overdue', 'expired', 'declined'].includes(eff) ? 'cancelled' : eff === 'accepted' || eff === 'converted' ? 'paid' : eff}">${eff}</span></td></tr></table></div></div>
@@ -2234,7 +2275,7 @@ async function route() {
       const heads = [...t.querySelectorAll('th')].map((x) => x.textContent);
       t.querySelectorAll('tr').forEach((tr) => [...tr.children].forEach((td, i) => { if (td.tagName === 'TD') td.dataset.label = heads[i] || ''; }));
     });
-    void $app.offsetWidth; $app.classList.add('in'); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
+    void $app.offsetWidth; $app.classList.add('in'); addPdfButtons(); page.after?.(args, q); window.scrollTo(0, 0); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
 }
 window.addEventListener('hashchange', route);
 sb.auth.onAuthStateChange((ev) => {

@@ -187,3 +187,7 @@ Products now have a **brand**. Anyone who can manage the catalog *or* the invent
 ## Shop layout
 
 The shop now has a filter sidebar (category and brand with product counts, price range, in stock, on sale), a sort menu, grid/list view toggle (remembered), removable filter chips with "Clear all", and on phones the filters open as a bottom sheet from a *Filters* button. Facet counts update with the other filters you've applied.
+
+## Bundles + bags in inventory
+
+Stock is stored in bags. Each product can have **Bags / bundle** (it varies, e.g. 2–6) — set it right in **Admin → Inventory**. The table then shows every total as "3 bundles + 5 bags", and the **Bundles + bags** switch lets you count stock as bundles plus loose bags (the app converts to bags and records the change in the activity log). Changing a product's bundle size also updates its selling bundle (price per bag stays the same, so the bundle total changes). Products sold only as bags just leave it empty. Warehouse and catalog staff can edit it.

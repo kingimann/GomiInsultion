@@ -338,7 +338,9 @@ const ROOTS = /^#\/?((shop|cart|account|login|register|messages|notifications|ad
 function syncBackBtn() {
   const bb = document.getElementById('backbtn'); if (!bb) return;
   const isSub = !ROOTS.test(location.hash); document.body.classList.toggle('subpage', isSub); bb.hidden = !isSub;
-  const t = document.getElementById('subtitle'); if (t) t.textContent = (document.querySelector('#app h1')?.textContent || document.title.split(' · ')[0] || '').trim().slice(0, 40);
+  const t = document.getElementById('subtitle'), h1 = document.querySelector('#app h1'); document.querySelectorAll('#app .h1dup').forEach((x) => x.classList.remove('h1dup'));
+  if (t) t.textContent = (h1?.textContent || document.title.split(' · ')[0] || '').trim().slice(0, 40);
+  if (h1 && isSub && !h1.closest('header, .pagecover, .hero, .detail, .invdoc, .slip') && (h1.textContent || '').trim().length <= 40 && !h1.querySelector('*')) h1.classList.add('h1dup');
 }
 document.getElementById('backbtn')?.addEventListener('click', () => { if (NAVDEPTH > 0 && history.length > 1) history.back(); else { const h = location.hash.replace(/\/[^/]*$/, '').split('?')[0]; location.hash = h.length > 2 ? h : '#/'; } });
 { let last = 0, ticking = false; window.addEventListener('scroll', () => { if (ticking) return; ticking = true; requestAnimationFrame(() => { const y = window.scrollY, d = y - last; if (Math.abs(d) > 8) { document.body.classList.toggle('hdrhide', d > 0 && y > 90 && !document.body.classList.contains('msearch')); last = y; } if (y < 40) document.body.classList.remove('hdrhide'); ticking = false; }); }, { passive: true }); }
@@ -694,7 +696,8 @@ pages.checkout = async () => {
   <div class="giftbox"><label>Gift card <small class="muted">(optional)</small><span class="row" style="flex-wrap:nowrap"><input id="giftcode" value="${esc(getGift()?.code || '')}" placeholder="GC-XXXX-XXXX" style="flex:1;min-width:0;text-transform:uppercase" autocomplete="off"><button type="button" class="btn ghost" id="giftapply">${getGift() ? 'Remove' : 'Apply'}</button></span></label></div>
   <p class="muted" style="margin:0">${C.PAYMENTS ? ':ic-lock: You will be taken to a secure Stripe page to pay by card.' : "Payment: we'll email you an invoice and payment options once your order is confirmed."}</p>
   <button class="btn block">${C.PAYMENTS ? 'Continue to payment' : 'Place order'}</button></section></form>
-  <aside class="summary"><h3>Order summary</h3><ul class="olist">${lines.map((l) => `<li><span class="cthumb sm">${img(l)}</span><span>${esc(qtyText(l))} × ${esc(l.name)}</span><b>${money(lineTotal(l))}</b></li>`).join('')}</ul>${totalsHtml(t)}<a class="muted" href="#/cart" style="text-align:center;display:block">← Edit cart</a></aside></div>`;
+  <aside class="summary"><h3>Order summary</h3><ul class="olist">${lines.map((l) => `<li><span class="cthumb sm">${img(l)}</span><span>${esc(qtyText(l))} × ${esc(l.name)}</span><b>${money(lineTotal(l))}</b></li>`).join('')}</ul>${totalsHtml(t)}<a class="muted" href="#/cart" style="text-align:center;display:block">← Edit cart</a></aside></div>
+  <div class="cartbar"><div><small class="muted">${t.gift ? 'Balance due' : 'Total'}</small><b id="cobartotal">${money(t.gift ? t.total - t.gift : t.total)}</b></div><button type="button" class="btn" id="cobar">${C.PAYMENTS ? 'Pay now' : 'Place order'}</button></div>`;
 };
 pages.checkout.after = () => {
   document.getElementById('savedaddr')?.addEventListener('change', (e) => {
@@ -712,6 +715,7 @@ pages.checkout.after = () => {
   document.querySelectorAll('#co input[name=fulfillment]').forEach((r) => r.addEventListener('change', setFulfil));
   ['email', 'name', 'phone'].forEach((k) => document.querySelector(`#co [name=${k}]`)?.addEventListener('change', (e) => { try { localStorage.setItem('cart_' + k, e.target.value.trim()); } catch {} syncCart(); }));
   document.querySelector('#co [name=postcode]')?.addEventListener('input', setFulfil); document.getElementById('savedaddr')?.addEventListener('change', setFulfil); setFulfil();
+  document.getElementById('cobar')?.addEventListener('click', () => document.getElementById('co').requestSubmit());
   document.getElementById('giftapply')?.addEventListener('click', async () => {
     if (getGift()) { localStorage.removeItem('gift'); return route(); }
     const code = document.getElementById('giftcode').value.trim().toUpperCase(); if (!code) return;

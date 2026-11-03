@@ -548,3 +548,11 @@ kbd{font:inherit;font-size:.72rem;border:1px solid var(--line);border-radius:6px
 @media print{.slip{border:0;padding:0;margin:0}}
 /* tables */
 .tablewrap table th{position:sticky;top:0;z-index:1}table tr:not(:first-child):hover td{background:var(--brand-soft)}
+
+/* bundle / pack pricing */
+.packs{border:1px solid var(--line);border-radius:var(--r);padding:14px;margin:14px 0;display:grid;gap:8px;background:var(--card)}.packs h3{margin:0 0 2px}
+.packrow{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--line);border-radius:var(--rb)}.packrow>div{flex:1;min-width:150px;display:grid}.packrow.best{border-color:var(--brand);background:var(--brand-soft)}
+.packnudge{display:block;color:var(--brand);font-weight:600;margin-top:2px}
+.packedit{display:grid;grid-template-columns:1.4fr .8fr 1fr auto;gap:8px;align-items:end;margin-top:8px}.packedit label{margin:0}
+@media(max-width:600px){.packedit{grid-template-columns:1fr 1fr}.packedit label:first-child{grid-column:1/-1}}
+.packhint{display:block;color:var(--brand);font-weight:600;margin:2px 0 4px}

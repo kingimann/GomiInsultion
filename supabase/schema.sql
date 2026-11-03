@@ -1998,3 +1998,118 @@ begin
   end if;
   return new;
 end $$;
+
+-- ===== Bundle / pack pricing (bags vs bundles) =====
+-- Stock is always counted in the product's base unit (e.g. bags). A pack gives a lower price per base unit
+-- when you buy at least `units` of them: 10 bags with an 8-bag bundle price = 8 at the bundle price + 2 at the normal price.
+create table if not exists public.product_packs (
+  id bigint generated always as identity primary key, product_id bigint not null references public.products(id) on delete cascade,
+  label text not null check (length(label) between 1 and 60), units int not null check (units between 2 and 10000),
+  unit_price_cents int not null check (unit_price_cents >= 0), unique (product_id, units));
+alter table public.product_packs enable row level security;
+drop policy if exists "read packs" on public.product_packs;
+create policy "read packs" on public.product_packs for select using (true);
+drop policy if exists "staff packs" on public.product_packs;
+create policy "staff packs" on public.product_packs for all using (public.has_perm('catalog.manage')) with check (public.has_perm('catalog.manage'));
+
+create or replace function public.pack_split(pid bigint, base int, q int) returns table(qty int, price int, label text)
+language plpgsql stable security definer set search_path = public as $$
+declare r record; n int; rest int := q;
+begin
+  for r in select * from product_packs where product_id = pid and unit_price_cents < base order by units desc loop
+    n := rest / r.units;
+    if n > 0 then qty := n * r.units; price := r.unit_price_cents; label := r.label; return next; rest := rest - qty; end if;
+  end loop;
+  if rest > 0 then qty := rest; price := base; label := ''; return next; end if;
+end $$;
+create or replace function public.pack_total(pid bigint, base int, q int) returns int language sql stable security definer set search_path = public as $$
+  select coalesce(sum(qty * price), 0)::int from public.pack_split(pid, base, q) $$;
+grant execute on function public.pack_split(bigint, int, int), public.pack_total(bigint, int, int) to anon, authenticated;
+
+CREATE OR REPLACE FUNCTION public.place_order(items jsonb, customer jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare pk record; it jsonb; p public.products; q int; sub int := 0; ship int; oid bigint; gk uuid; item_id bigint;
+  disc int := 0; pct int; code text := nullif(upper(trim(coalesce(customer->>'code',''))), '');
+  free_over int := public.store_cfg('free_over_cents', 50000)::int; flat int := public.store_cfg('ship_flat_cents', 1500)::int;
+  rate numeric := public.store_cfg('tax_rate', 0); tax int; tlabel text := public.store_cfg_text('tax_label', 'Tax');
+  pickup boolean := coalesce(customer->>'fulfillment', 'delivery') = 'pickup'; loc public.locations; pref bigint;
+  addr text; city text; pc text; avail int;
+begin
+  if jsonb_array_length(items) = 0 then raise exception 'Cart is empty'; end if;
+  if pickup then
+    select * into loc from locations where id = nullif(customer->>'location_id', '')::bigint and active and pickup_enabled;
+    if not found then raise exception 'Please choose a pickup location'; end if;
+    pref := loc.id;
+    addr := 'Pickup: ' || loc.name || case when loc.address <> '' then ', ' || loc.address else '' end; city := coalesce(nullif(loc.city, ''), '-'); pc := coalesce(nullif(loc.postcode, ''), '-');
+  else
+    pref := (select id from locations where is_default);
+    addr := customer->>'address'; city := customer->>'city'; pc := customer->>'postcode';
+    if coalesce(btrim(addr), '') = '' or coalesce(btrim(city), '') = '' or coalesce(btrim(pc), '') = '' then raise exception 'Please enter your delivery address'; end if;
+  end if;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint and active for update;
+    if not found or q < 1 then raise exception 'Not enough stock for %', coalesce(p.name, 'an item'); end if;
+    if pickup then select coalesce(qty, 0) into avail from inventory where product_id = p.id and location_id = loc.id;
+    else select coalesce(sum(i.qty), 0) into avail from inventory i join locations l on l.id = i.location_id where i.product_id = p.id and l.active; end if;
+    if coalesce(avail, 0) < q then raise exception 'Not enough stock for %', p.name; end if;
+    sub := sub + public.pack_total(p.id, p.price_cents, q);
+  end loop;
+  if code is not null then
+    pct := public.check_code(code, sub);
+    if pct is null then raise exception 'That discount code is not valid'; end if;
+    disc := sub * pct / 100;
+  end if;
+  ship := case when pickup or (free_over > 0 and sub - disc >= free_over) then 0 else flat end;
+  tax := round((sub - disc + ship) * rate / 100.0)::int;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents, discount_cents, promo_code, location_id, fulfillment, source, tax_cents, tax_label)
+  values (auth.uid(), customer->>'email', customer->>'name', coalesce(customer->>'phone',''), addr, city, pc, coalesce(customer->>'notes',''), sub, ship, sub - disc + ship + tax, disc, code, pref,
+          case when pickup then 'pickup' else 'delivery' end, 'online', tax, case when tax > 0 then tlabel else '' end)
+  returning id, guest_key into oid, gk;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint;
+    for pk in select * from public.pack_split(p.id, p.price_cents, q) loop
+      insert into order_items (order_id, product_id, name, price_cents, qty) values (oid, p.id, p.name || case when pk.label <> '' then ' (' || pk.label || ' price)' else '' end, pk.price, pk.qty) returning id into item_id;
+      perform public.allocate_stock(item_id, p.id, pk.qty, pref, pickup, oid);
+    end loop;
+  end loop;
+  return jsonb_build_object('id', oid, 'key', gk);
+end $function$
+;
+
+CREATE OR REPLACE FUNCTION public.record_sale(loc_id bigint, items jsonb, customer jsonb, payment text)
+ RETURNS bigint
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare pk record; it jsonb; p public.products; q int; sub int := 0; oid bigint; item_id bigint; loc public.locations; rate numeric := public.store_cfg('tax_rate', 0); tax int; tlabel text := public.store_cfg_text('tax_label', 'Tax');
+begin
+  if not public.has_perm('pos') then raise exception 'Not allowed'; end if;
+  select * into loc from locations where id = loc_id and active;
+  if not found then raise exception 'Choose an active location'; end if;
+  if jsonb_array_length(items) = 0 then raise exception 'Add at least one product'; end if;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents, status, location_id, fulfillment, source, payment_method)
+  values (null, coalesce(customer->>'email', ''), coalesce(nullif(customer->>'name', ''), 'Walk-in customer'), coalesce(customer->>'phone', ''), 'In store: ' || loc.name,
+          coalesce(nullif(loc.city, ''), '-'), coalesce(nullif(loc.postcode, ''), '-'), coalesce(customer->>'notes', ''), 0, 0, 0, 'paid', loc.id, 'pickup', 'in_store', left(coalesce(payment, ''), 40))
+  returning id into oid;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int; select * into p from products where id = (it->>'id')::bigint for update;
+    if not found or q < 1 then raise exception 'Invalid item'; end if;
+    for pk in select * from public.pack_split(p.id, p.price_cents, q) loop
+      insert into order_items (order_id, product_id, name, price_cents, qty) values (oid, p.id, p.name || case when pk.label <> '' then ' (' || pk.label || ' price)' else '' end, pk.price, pk.qty) returning id into item_id;
+      begin perform public.allocate_stock(item_id, p.id, pk.qty, loc.id, true, oid);
+      exception when others then raise exception 'Not enough stock of % at %', p.name, loc.name; end;
+    end loop;
+    sub := sub + public.pack_total(p.id, p.price_cents, q);
+  end loop;
+  tax := round(sub * rate / 100.0)::int;
+  update orders set subtotal_cents = sub, tax_cents = tax, tax_label = case when tax > 0 then tlabel else '' end, total_cents = sub + tax where id = oid;
+  return oid;
+end $function$
+;

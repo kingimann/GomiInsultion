@@ -170,11 +170,17 @@ document.addEventListener('click', (e) => {
   w = w.includes(id) ? w.filter((x) => x !== id) : [...w, id]; localStorage.setItem('wish', JSON.stringify(w));
   b.innerHTML = w.includes(id) ? ':ic-heart-fill:' : ':ic-heart:'; b.style.color = w.includes(id) ? '#dc2626' : ''; renderNav(); if (location.hash.startsWith('#/wishlist')) route();
 });
+const packRow = (k, i, p) => `<div class="packedit" data-i="${i}"><label>Name<input data-f="label" value="${esc(k.label || '')}" placeholder="Bundle of 8" maxlength="60"></label><label>${esc(su(p?.unit) || 'Units')} in it<input data-f="units" type="number" min="2" step="1" value="${k.units || ''}" placeholder="8"></label><label>Price per ${esc(su(p?.unit) || 'unit')} ($)<input data-f="price" type="number" min="0" step="0.01" value="${k.unit_price_cents != null ? (k.unit_price_cents / 100).toFixed(2) : ''}" placeholder="${p?.price_cents ? (p.price_cents / 100 * 0.9).toFixed(2) : ''}"></label><button type="button" class="ibtn danger rmpack" aria-label="Remove">:ic-x:</button></div>`;
+const packTable = (p) => { const ks = (p.packs || []).filter((k) => k.unit_price_cents < p.price_cents); if (!ks.length) return '';
+  return `<div class="packs"><h3>Choose your size</h3><div class="packrow"><div><b>Single ${esc(su(p.unit))}</b><small class="muted">${money(p.price_cents)} each</small></div><span></span>${p.stock > 0 ? `<button type="button" class="btn ghost" data-addqty="1">Add 1</button>` : ''}</div>
+    ${ks.map((k) => `<div class="packrow best"><div><b>${esc(k.label)}</b><small class="muted">${k.units} × ${esc(su(p.unit))} · ${money(k.unit_price_cents)} per ${esc(su(p.unit))} · <b>${money(k.units * k.unit_price_cents)}</b> total</small></div><span class="savepill">Save ${packSave(p, k)}% per ${esc(su(p.unit))}</span>${p.stock >= k.units ? `<button type="button" class="btn" data-addqty="${k.units}">Add ${esc(k.label)}</button>` : '<small class="muted">Not enough stock</small>'}</div>`).join('')}
+    <small class="muted">Buy more than one bundle, or a bundle plus extra ${esc(su(p.unit))}s — the cart mixes the prices automatically.</small></div>`; };
+const packHint = (p) => { const ks = (p.packs || []).filter((k) => k.unit_price_cents < p.price_cents).sort((a, b) => a.unit_price_cents - b.unit_price_cents); return ks.length ? `<small class="packhint">${esc(ks[0].label)}: ${money(ks[0].unit_price_cents)} per ${esc(su(p.unit))} · save ${packSave(p, ks[0])}%</small>` : ''; };
 const onSale = (p) => p.compare_at_cents > p.price_cents;
 const salePct = (p) => Math.round((1 - p.price_cents / p.compare_at_cents) * 100);
 const priceHtml = (p) => onSale(p) ? `<span class="was">${money(p.compare_at_cents)}</span> <span class="now">${money(p.price_cents)}</span>` : money(p.price_cents);
 const card = (p) => `<article class="card">${p.stock <= 0 ? '<span class="badge">Sold out</span>' : onSale(p) ? `<span class="badge sale">-${salePct(p)}%</span>` : p.stock <= 5 ? `<span class="badge warn">Only ${p.stock} left</span>` : p.stock <= 10 ? '<span class="badge warn">Low stock</span>' : ''}<button class="heart" data-id="${p.id}" aria-label="Save to wishlist" style="${getWish().includes(p.id) ? 'color:#dc2626' : ''}">${getWish().includes(p.id) ? ':ic-heart-fill:' : ':ic-heart:'}</button><a href="#/product/${esc(p.slug)}">${img(p)}</a><div class="pad"><span class="tag">${esc(p.category)}</span>
-  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}${saveBadge(p)}<div class="cardfoot"><p class="price">${priceHtml(p)}</p>${p.stock > 0 ? `<button class="addbtn" data-id="${p.id}" data-stock="${p.stock}" data-name="${esc(p.name)}" aria-label="Add ${esc(p.name)} to cart">+ Add</button>` : '<span class="muted" style="font-size:.85rem">Sold out</span>'}</div></div></article>`;
+  <h3><a href="#/product/${esc(p.slug)}">${esc(p.name)}</a></h3><p class="muted">${p.r_value ? esc(p.r_value) + ' · ' : ''}per ${esc(p.unit)}</p>${ratingLine(p)}${saveBadge(p)}${packHint(p)}<div class="cardfoot"><p class="price">${priceHtml(p)}</p>${p.stock > 0 ? `<button class="addbtn" data-id="${p.id}" data-stock="${p.stock}" data-name="${esc(p.name)}" aria-label="Add ${esc(p.name)} to cart">+ Add</button>` : '<span class="muted" style="font-size:.85rem">Sold out</span>'}</div></div></article>`;
 const getPromo = () => { try { return JSON.parse(localStorage.getItem('promo') || 'null'); } catch { return null; } };
 const totals = (sub, pickup = false) => { const pr = getPromo(), disc = pr && sub ? Math.floor(sub * pr.percent / 100) : 0; const ship = pickup || !sub || (FREE_SHIP > 0 && sub - disc >= FREE_SHIP) ? 0 : SHIP; const base = sub - disc + ship, tax = Math.round(base * (Number(STORE.tax_rate) || 0) / 100); return { sub, disc, code: disc ? pr.code : '', ship, tax, taxLabel: STORE.tax_label || 'Tax', total: base + tax }; };
 const totalsHtml = (t) => `<dl class="totals"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount${t.code ? ' (' + esc(t.code) + ')' : ''}</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>Shipping</dt><dd>${t.ship ? money(t.ship) : 'Free'}</dd>${t.tax ? `<dt>${esc(t.taxLabel || 'Tax')}</dt><dd>${money(t.tax)}</dd>` : ''}<dt>Total</dt><dd><strong>${money(t.total)}</strong></dd>${t.refunded ? `<dt>Refunded</dt><dd>−${money(t.refunded)}</dd>` : ''}</dl>`;
@@ -225,7 +231,7 @@ document.getElementById('search').addEventListener('submit', (e) => { e.preventD
 const pages = {};
 pages.home = async () => {
   await loadRatings();
-  const { data, error } = await sb.from('products').select('*').eq('active', true).order('id').limit(8); if (error) throw error;
+  const { data, error } = await sb.from('products').select('*').eq('active', true).order('id').limit(8); if (data) await attachPacks(data); if (error) throw error;
   const catCount = {}; ((await sb.from('products').select('category').eq('active', true)).data || []).forEach((r) => (catCount[r.category] = (catCount[r.category] || 0) + 1));
   const cats = Object.keys(catCount).sort();
   return `<section class="hero"><div class="hero-art" aria-hidden="true"></div><h1>Insulation for every build.</h1><p>Batts, spray foam, rigid board and more. Order online and get it delivered to your site.</p>
@@ -244,7 +250,7 @@ pages.shop = async (_, q) => {
   if (instock) req = req.gt('stock', 0); if (pmin) req = req.gte('price_cents', pmin); if (pmax) req = req.lte('price_cents', pmax);
   if (category) req = req.eq('category', category);
   if (term) req = req.or(`name.ilike.%${term}%,description.ilike.%${term}%,category.ilike.%${term}%`);
-  let { data, error } = await req; if (error) throw error; if (sale) data = data.filter(onSale);
+  let { data, error } = await req; if (error) throw error; if (sale) data = data.filter(onSale); await attachPacks(data);
   const cats = [...new Set((await sb.from('products').select('category').eq('active', true)).data.map((r) => r.category))].sort();
   return `<h1>${esc(category || 'All products')}</h1><div class="chips"><a class="chip ${!category ? 'on' : ''}" href="#/shop">All</a>
   ${cats.map((c) => `<a class="chip ${c === category ? 'on' : ''}" href="#/shop?category=${encodeURIComponent(c)}">${esc(c)}</a>`).join('')}</div>
@@ -266,6 +272,7 @@ pages.shop.after = (_, q) => document.getElementById('filters')?.addEventListene
 pages.product = async ([slug]) => {
   const { data: p } = await sb.from('products').select('*').eq('slug', slug).maybeSingle();
   if (!p) return '<h1>Not found</h1>';
+  await attachPacks([p]);
   await loadRatings();
   const revs = (await sb.from('reviews').select('*').eq('product_id', p.id).order('created_at', { ascending: false })).data || [];
   const mine = session && revs.find((r) => r.user_id === session.user.id);
@@ -282,6 +289,7 @@ pages.product = async ([slug]) => {
   return `<div class="crumbs" role="navigation" aria-label="Breadcrumb"><a href="#/shop">Shop</a> › <a href="#/shop?category=${encodeURIComponent(p.category)}">${esc(p.category)}</a> › <span>${esc(p.name)}</span></div>
   <div class="detail"><div>${gallery}</div><div><span class="tag">${esc(p.category)}</span><h1>${esc(p.name)}</h1>
   <p class="price big">${priceHtml(p)} <small>per ${esc(p.unit)}</small>${onSale(p) ? ` <span class="savepill">Save ${salePct(p)}%</span>` : ''}</p>${p.r_value ? `<p><strong>R-value:</strong> ${esc(p.r_value)}</p>` : ''}<p>${esc(p.description)}</p>
+  ${packTable(p)}
   ${p.stock > 0 ? `<form class="row" id="add"><div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="qty" value="1" min="1" max="${p.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div><button class="btn">Add to cart</button></form>
   <p class="stockpill ${p.stock <= 10 ? 'low' : ''}"><i></i>${p.stock <= 10 ? `Only ${p.stock} left` : 'In stock'}</p>` : `<p class="flash error" style="margin-bottom:8px">Out of stock</p><form id="alertform" class="row" data-id="${p.id}" style="flex-wrap:nowrap"><input name="email" type="email" required placeholder="Email me when it's back" value="${esc(session?.user.email || '')}" aria-label="Email"><button class="btn">:ic-bell: Notify me</button></form>`}
   <ul class="trust"><li>:ic-truck: ${FREE_SHIP > 0 ? `Free shipping on orders over ${money(FREE_SHIP)}` : `Flat ${money(SHIP)} delivery`}</li><li>:ic-chat: Questions? <a href="#/messages">Message us</a> or <a href="#/quote">request a quote</a></li></ul>
@@ -322,6 +330,10 @@ pages.product.after = ([slug]) => {
       area.addEventListener('input', upd); document.getElementById('waste').addEventListener('input', upd); upd();
     });
   }
+  document.querySelectorAll('[data-addqty]').forEach((b) => b.addEventListener('click', async () => {
+    const { data: p } = await sb.from('products').select('id,stock,name').eq('slug', slug).single(); const cart = getCart();
+    cart[p.id] = Math.min((cart[p.id] || 0) + Number(b.dataset.addqty), p.stock); setCart(cart); flash(`Added to your cart: ${b.textContent.replace(/^Add\s*/, '') || '1'} of ${p.name}.`); location.hash = '#/cart';
+  }));
   document.getElementById('add')?.addEventListener('submit', async (e) => {
   e.preventDefault();
   const { data: p } = await sb.from('products').select('id,stock,name').eq('slug', slug).single();
@@ -330,20 +342,26 @@ pages.product.after = ([slug]) => {
 });
 };
 
+// Pack pricing: bags vs bundles. Mirrors the database's pack_split(): biggest packs first, remainder at the normal price.
+const packSplit = (p, q) => { let rest = q; const out = []; [...(p.packs || [])].filter((k) => k.unit_price_cents < p.price_cents).sort((a, b) => b.units - a.units).forEach((k) => { const n = Math.floor(rest / k.units); if (n > 0) { out.push({ qty: n * k.units, price: k.unit_price_cents, label: k.label }); rest -= n * k.units; } }); if (rest > 0) out.push({ qty: rest, price: p.price_cents, label: '' }); return out; };
+const lineTotal = (p, q = p.qty) => packSplit(p, q).reduce((a, r) => a + r.qty * r.price, 0);
+const su = (u) => String(u || '').replace(/\s*\(.*?\)\s*/g, ' ').trim();
+const packSave = (p, k) => Math.round((1 - k.unit_price_cents / p.price_cents) * 100);
+async function attachPacks(list) { const ids = list.map((x) => x.id); if (!ids.length) return list; const { data } = await sb.from('product_packs').select('*').in('product_id', ids).order('units'); list.forEach((x) => (x.packs = (data || []).filter((k) => k.product_id === x.id))); return list; }
 async function cartLines() {
   const cart = getCart(), ids = Object.keys(cart); if (!ids.length) return [];
   const { data } = await sb.from('products').select('*').in('id', ids).eq('active', true);
-  return data.filter((p) => p.stock > 0).map((p) => ({ ...p, qty: Math.min(cart[p.id], p.stock) }));
+  const live = data.filter((p) => p.stock > 0); await attachPacks(live); return live.map((p) => ({ ...p, qty: Math.min(cart[p.id], p.stock) }));
 }
 pages.cart = async () => {
   const lines = await cartLines();
   if (!lines.length) return '<div class="empty"><div style="font-size:3rem">:ic-cart:</div><h1>Your cart is empty</h1><p class="muted">Browse our insulation and add what you need.</p><a class="btn" href="#/shop">Start shopping</a></div>';
-  const t = totals(lines.reduce((a, l) => a + l.price_cents * l.qty, 0));
+  const t = totals(lines.reduce((a, l) => a + lineTotal(l), 0));
   const left = FREE_SHIP > 0 ? FREE_SHIP - (t.sub - t.disc) : 0;
   return `<h1>Your cart</h1><div class="cartwrap"><form id="cartform"><div class="citems">${lines.map((l) => `<div class="citem"><a href="#/product/${esc(l.slug)}" class="cthumb">${img(l)}</a>
-    <div class="cinfo"><a class="cname" href="#/product/${esc(l.slug)}">${esc(l.name)}</a><small class="muted">${money(l.price_cents)} per ${esc(l.unit)}</small></div>
+    <div class="cinfo"><a class="cname" href="#/product/${esc(l.slug)}">${esc(l.name)}</a><small class="muted">${packSplit(l, l.qty).map((r) => `${r.qty} × ${money(r.price)}${r.label ? ' (' + esc(r.label) + ')' : ''}`).join(' + ')} per ${esc(l.unit)}</small>${(l.packs || []).some((k) => k.units > l.qty && k.unit_price_cents < l.price_cents) ? (() => { const k = l.packs.filter((x) => x.units > l.qty && x.unit_price_cents < l.price_cents).sort((a, b) => a.units - b.units)[0]; return `<small class="packnudge">Add ${k.units - l.qty} more to get the ${esc(k.label)} price (save ${packSave(l, k)}% per ${esc(su(l.unit))})</small>`; })() : ''}</div>
     <div class="qty"><button type="button" data-d="-1" aria-label="Less">−</button><input type="number" name="${l.id}" value="${l.qty}" min="0" max="${l.stock}" aria-label="Quantity"><button type="button" data-d="1" aria-label="More">+</button></div>
-    <b class="ctotal">${money(l.price_cents * l.qty)}</b><button type="button" class="crm" data-id="${l.id}" aria-label="Remove ${esc(l.name)}">:ic-x:</button></div>`).join('')}</div></form>
+    <b class="ctotal">${money(lineTotal(l))}</b><button type="button" class="crm" data-id="${l.id}" aria-label="Remove ${esc(l.name)}">:ic-x:</button></div>`).join('')}</div></form>
   <aside class="summary"><h3>Order summary</h3>${FREE_SHIP > 0 ? `<p class="muted" style="margin:0">${left > 0 ? `Add <b>${money(left)}</b> more for free shipping` : ':ic-award: You qualify for free shipping!'}</p><div class="progress"><i style="width:${Math.min(100, (t.sub - t.disc) / FREE_SHIP * 100)}%"></i></div>` : ''}
   <form id="promo" class="row" style="flex-wrap:nowrap"><input name="code" placeholder="Discount code" value="${esc(getPromo()?.code || '')}" aria-label="Discount code" style="flex:1;min-width:0"><button class="btn ghost">Apply</button></form>
   ${totalsHtml(t)}<a class="btn block" href="#/checkout">Checkout</a><a class="muted" href="#/shop" style="text-align:center;display:block;margin-top:10px">← Continue shopping</a></aside></div>`;
@@ -352,7 +370,7 @@ pages.cart.after = () => {
   document.getElementById('promo')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const code = new FormData(e.target).get('code').trim().toUpperCase();
     if (!code) { localStorage.removeItem('promo'); return route(); }
-    const sub = (await cartLines()).reduce((a, l) => a + l.price_cents * l.qty, 0);
+    const sub = (await cartLines()).reduce((a, l) => a + lineTotal(l), 0);
     const { data } = await sb.rpc('check_code', { c: code, subtotal: sub });
     if (!data) { localStorage.removeItem('promo'); flash('That code is not valid for this order.', 'error'); return route(); }
     localStorage.setItem('promo', JSON.stringify({ code, percent: data })); flash(`Code ${code} applied: ${data}% off.`); route();
@@ -373,7 +391,7 @@ pages.checkout = async () => {
   if (shopClosed()) return `<div class="authcard"><div class="authicon">:ic-lock:</div><h1>The shop is closed</h1><p class="muted">${esc(closedMsg())}${esc(reopenNote())}</p><a class="btn" href="#/cart">Back to cart</a> <a class="btn ghost" href="#/products">Keep browsing</a></div>`;
   SAVED = session ? (await sb.from('addresses').select('*').order('is_default', { ascending: false }).order('id')).data || [] : [];
   const d = SAVED[0] || {};
-  const t = totals(lines.reduce((a, l) => a + l.price_cents * l.qty, 0));
+  const t = totals(lines.reduce((a, l) => a + lineTotal(l), 0));
   const pk = (await sb.rpc('pickup_locations', { items: lines.map((l) => ({ id: l.id, qty: l.qty })) })).data || [];
   CHK = { lines, t, pk };
   const f = (n, l, v = '', x = '') => `<label>${l}<input name="${n}" value="${esc(v)}" ${x}></label>`;
@@ -390,7 +408,7 @@ pages.checkout = async () => {
   <section class="cs"><h3><span class="num">3</span> Notes &amp; payment</h3><label>Order notes (optional)<textarea name="notes" rows="3" placeholder="Gate code, delivery instructions…"></textarea></label>
   <p class="muted" style="margin:0">${C.PAYMENTS ? ':ic-lock: You will be taken to a secure Stripe page to pay by card.' : "Payment: we'll email you an invoice and payment options once your order is confirmed."}</p>
   <button class="btn block">${C.PAYMENTS ? 'Continue to payment' : 'Place order'}</button></section></form>
-  <aside class="summary"><h3>Order summary</h3><ul class="olist">${lines.map((l) => `<li><span class="cthumb sm">${img(l)}</span><span>${l.qty} × ${esc(l.name)}</span><b>${money(l.qty * l.price_cents)}</b></li>`).join('')}</ul>${totalsHtml(t)}<a class="muted" href="#/cart" style="text-align:center;display:block">← Edit cart</a></aside></div>`;
+  <aside class="summary"><h3>Order summary</h3><ul class="olist">${lines.map((l) => `<li><span class="cthumb sm">${img(l)}</span><span>${l.qty} × ${esc(l.name)}</span><b>${money(lineTotal(l))}</b></li>`).join('')}</ul>${totalsHtml(t)}<a class="muted" href="#/cart" style="text-align:center;display:block">← Edit cart</a></aside></div>`;
 };
 pages.checkout.after = () => {
   document.getElementById('savedaddr')?.addEventListener('change', (e) => {
@@ -860,15 +878,19 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <table><tr><th>Name</th><th>Type</th><th>Address</th><th>Units in stock</th><th>Pickup</th><th>Status</th></tr>${ls.map((l) => `<tr><td><a href="#/admin/locations/${l.id}">${esc(l.name)}</a>${l.is_default ? ' <span class="status paid">default</span>' : ''}</td><td>${KINDS[l.kind] || ''}</td><td>${esc([l.address, l.city, l.postcode].filter(Boolean).join(', '))}</td><td>${units[l.id] || 0}</td><td>${l.pickup_enabled ? ':ic-check:' : ''}</td><td>${l.active ? 'Active' : 'Inactive'}</td></tr>`).join('')}</table>`;
   }
   if (sub === 'inventory') {
-    const [prods, locs, inv, log] = await Promise.all([sb.from('products').select('id,name,category,active').order('name'), sb.from('locations').select('*').order('is_default', { ascending: false }).order('name'),
-      sb.from('inventory').select('*'), sb.from('inventory_log').select('*').order('id', { ascending: false }).limit(40)]);
+    const [prods, locs, inv, log, sold] = await Promise.all([sb.from('products').select('id,name,category,active,cost_cents,price_cents,reorder_point').order('name'), sb.from('locations').select('*').order('is_default', { ascending: false }).order('name'),
+      sb.from('inventory').select('*'), sb.from('inventory_log').select('*').order('id', { ascending: false }).limit(40),
+      sb.from('order_items').select('product_id,qty,orders!inner(created_at,status)').neq('orders.status', 'cancelled').gte('orders.created_at', new Date(Date.now() - 30 * 864e5).toISOString()).limit(5000)]);
     const P = prods.data, L = locs.data, qty = {}; inv.data.forEach((r) => (qty[`${r.product_id}:${r.location_id}`] = r.qty));
     const pname = Object.fromEntries(P.map((x) => [x.id, x.name])), lname = Object.fromEntries(L.map((x) => [x.id, x.name]));
     const KIND_L = { adjust: 'Adjusted', sale: 'Sale', restock: 'Restocked', transfer_in: 'Transfer in', transfer_out: 'Transfer out' };
     return `<h1>Inventory</h1><p><a class="btn ghost" href="#/admin/locations">Manage locations</a> <button class="btn ghost" id="invcsv">:ic-download: Export CSV</button></p>
-    <div class="row" style="margin-bottom:8px"><input id="invsearch" placeholder="Filter products…" aria-label="Filter products" style="flex:1;max-width:320px"></div>
-    <table id="invtable"><tr><th>Product</th>${L.map((l) => `<th>${esc(l.name)}${l.active ? '' : ' (inactive)'}</th>`).join('')}<th>Total</th></tr>
-    ${P.map((x) => { const tot = L.reduce((a, l) => a + (qty[`${x.id}:${l.id}`] || 0), 0); return `<tr data-name="${esc(x.name.toLowerCase())}"><td><b>${esc(x.name)}</b>${x.active ? '' : ' <span class="muted">(hidden)</span>'}<br><small class="muted">${esc(x.category)}</small></td>${L.map((l) => `<td><input type="number" min="0" class="invq" data-p="${x.id}" data-l="${l.id}" value="${qty[`${x.id}:${l.id}`] || 0}" aria-label="${esc(x.name)} at ${esc(l.name)}"></td>`).join('')}<td class="invtot ${tot <= 10 ? 'lowtot' : ''}">${tot}</td></tr>`; }).join('')}</table>
+    ${(() => { const sold30 = {}; (sold.data || []).forEach((r) => (sold30[r.product_id] = (sold30[r.product_id] || 0) + r.qty)); INVSOLD = sold30;
+      const rows = P.map((x) => { const tot = L.reduce((a, l) => a + (qty[`${x.id}:${l.id}`] || 0), 0); return { x, tot, st: tot === 0 ? 'out' : tot <= (x.reorder_point ?? 10) ? 'low' : 'ok' }; }), live = rows.filter((r) => r.x.active);
+      return `<div class="kpis"><div class="kpi"><span class="lbl">Products</span><b>${live.length}</b></div><div class="kpi"><span class="lbl">Units on hand</span><b>${live.reduce((a, r) => a + r.tot, 0).toLocaleString()}</b></div><div class="kpi"><span class="lbl">Stock value (cost)</span><b>${money(live.reduce((a, r) => a + r.tot * (r.x.cost_cents || 0), 0))}</b><small class="muted">${money(live.reduce((a, r) => a + r.tot * r.x.price_cents, 0))} at retail</small></div><div class="kpi"><span class="lbl">Needs attention</span><b class="${rows.some((r) => r.st !== 'ok') ? 'down' : ''}">${live.filter((r) => r.st === 'low').length} low · ${live.filter((r) => r.st === 'out').length} out</b></div></div>`; })()}
+    <div class="toolbar" style="margin:14px 0 8px"><input id="invsearch" placeholder="Filter products…" aria-label="Filter products" style="flex:1;max-width:320px"><div class="chips" id="invst" style="margin:0">${[['', 'All'], ['low', 'Low'], ['out', 'Out of stock'], ['ok', 'Healthy']].map(([v, l], i) => `<button type="button" class="chip ${i ? '' : 'on'}" data-st="${v}">${l}</button>`).join('')}</div><select id="invsort" aria-label="Sort"><option value="name">A–Z</option><option value="stock">Lowest stock</option><option value="cover">Least days of cover</option><option value="value">Highest value</option></select></div>
+    <div class="tablewrap"><table id="invtable"><tr><th>Product</th>${L.map((l) => `<th>${esc(l.name)}${l.active ? '' : ' (inactive)'}</th>`).join('')}<th>Total</th><th>Status</th><th>Value</th><th title="Stock on hand ÷ average daily sales over the last 30 days">Days left</th></tr>
+    ${P.map((x) => { const tot = L.reduce((a, l) => a + (qty[`${x.id}:${l.id}`] || 0), 0), st = tot === 0 ? 'out' : tot <= (x.reorder_point ?? 10) ? 'low' : 'ok', s30 = INVSOLD[x.id] || 0, cover = s30 > 0 ? Math.round(tot / (s30 / 30)) : 9999; return `<tr data-name="${esc(x.name.toLowerCase())}" data-st="${st}" data-stock="${tot}" data-cover="${cover}" data-value="${tot * (x.cost_cents || 0)}"><td><b>${esc(x.name)}</b>${x.active ? '' : ' <span class="muted">(hidden)</span>'}<br><small class="muted">${esc(x.category)}</small></td>${L.map((l) => `<td><input type="number" min="0" class="invq" data-p="${x.id}" data-l="${l.id}" value="${qty[`${x.id}:${l.id}`] || 0}" aria-label="${esc(x.name)} at ${esc(l.name)}"></td>`).join('')}<td class="invtot ${st !== 'ok' ? 'lowtot' : ''}">${tot}</td><td><span class="status ${st === 'out' ? 'cancelled' : st === 'low' ? 'pending' : 'paid'}">${st === 'out' ? 'Out' : st === 'low' ? 'Low' : 'OK'}</span></td><td>${money(tot * (x.cost_cents || 0))}</td><td>${cover === 9999 ? '<span class="muted">no sales</span>' : cover + ' d'}</td></tr>`; }).join('')}</table></div>
     <h2>Transfer stock between locations</h2>${L.length < 2 ? '<p class="muted">Add a second location to transfer stock.</p>' : `<form id="tf" class="row"><select name="pid" required><option value="">Product…</option>${P.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>
     <select name="from" required><option value="">From…</option>${L.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select><select name="to" required><option value="">To…</option>${L.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select>
     <input name="amount" type="number" min="1" placeholder="Qty" required style="width:90px"><input name="note" placeholder="Note (optional)" style="flex:1;min-width:160px"><button class="btn">Transfer</button></form>`}
@@ -907,7 +929,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
 `;
   }
   if (sub === 'pos') {
-    const [locs, prods, inv] = await Promise.all([sb.from('locations').select('*').eq('active', true).order('is_default', { ascending: false }).order('name'), sb.from('products').select('id,name,price_cents,unit,category').eq('active', true).order('name'), sb.from('inventory').select('*')]);
+    const [locs, prods, inv] = await Promise.all([sb.from('locations').select('*').eq('active', true).order('is_default', { ascending: false }).order('name'), sb.from('products').select('id,name,price_cents,unit,category').eq('active', true).order('name').then(async (r) => { if (r.data) await attachPacks(r.data); return r; }), sb.from('inventory').select('*')]);
     if (!locs.data.length) return '<h1>Point of sale</h1><p>Add a location first.</p>';
     POS = { locs: locs.data, prods: prods.data, inv: inv.data, loc: POS?.loc && locs.data.some((l) => l.id === POS.loc) ? POS.loc : locs.data[0].id, cart: {} };
     return `<h1>Point of sale</h1><p class="muted">Record a sale made in person. Stock is taken from the location you pick.</p>
@@ -1212,6 +1234,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   if (sub === 'products' && (id === 'new' || id)) {
     const p = id === 'new' ? {} : (await sb.from('products').select('*').eq('id', id).single()).data;
     const extras = id === 'new' ? [] : (await sb.from('product_images').select('*').eq('product_id', id).order('position')).data;
+    const packs = id === 'new' ? [] : (await sb.from('product_packs').select('*').eq('product_id', id).order('units')).data || [];
     const locsAll = (await sb.from('locations').select('id,name,active').order('is_default', { ascending: false }).order('name')).data || [];
     const invRows = id === 'new' ? [] : (await sb.from('inventory').select('*').eq('product_id', id)).data || [];
     const stockFields = `<fieldset class="choices"><legend>Stock by location</legend>${locsAll.map((l) => { const q0 = invRows.find((r) => r.location_id === l.id)?.qty ?? 0; return `<label>${esc(l.name)}${l.active ? '' : ' (inactive)'}<input type="number" min="0" name="inv_${l.id}" data-orig="${q0}" value="${q0}"></label>`; }).join('')}<small class="muted">Total stock is the sum across locations. Move stock between locations on the <a href="#/admin/inventory">Inventory</a> page.</small></fieldset>`;
@@ -1221,6 +1244,8 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <div class="two2"><label>Price<input name="price" type="number" step="0.01" min="0" required value="${p.price_cents != null ? (p.price_cents / 100).toFixed(2) : ''}"></label><label>Original price <small class="muted">shows a sale badge</small><input name="compare_at" type="number" step="0.01" min="0" value="${p.compare_at_cents ? (p.compare_at_cents / 100).toFixed(2) : ''}" placeholder="optional"></label></div>
     ${t('unit', 'Unit (e.g. bundle, roll)', 'required')}${t('r_value', 'R-value')}
     <div class="two2"><label>Unit cost ($) <small class="muted">what you pay</small><input name="cost" type="number" step="0.01" min="0" value="${((p.cost_cents || 0) / 100).toFixed(2)}"></label><label>Reorder when stock ≤<input name="reorder_point" type="number" min="0" value="${p.reorder_point ?? 10}"></label></div>
+    <fieldset class="cmpset" id="packbox"><legend>Bundles &amp; pack prices</legend><p class="muted" style="margin:0">Sell by the ${esc(p.unit || 'unit')} (e.g. bag) and give a lower price per ${esc(p.unit || 'unit')} when customers buy a bundle. Stock is still counted in ${esc(p.unit || 'unit')}s.</p>
+      <div id="packrows">${packs.map((k, i) => packRow(k, i, p)).join('')}</div><button type="button" class="btn ghost" id="addpack">+ Add a bundle size</button></fieldset>
     <label>Usual reorder quantity<input name="reorder_qty" type="number" min="0" value="${p.reorder_qty ?? 0}"></label>${stockFields}
     ${p.image_url ? `<img src="${esc(safeUrl(p.image_url))}" alt="" style="max-width:160px;border-radius:10px">` : ''}
     <label>Photo (JPG, PNG, WebP, up to 5 MB)<input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif"></label>
@@ -1304,6 +1329,8 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     ['prodq', 'prodcat', 'prodview'].forEach((i) => document.getElementById(i).addEventListener('input', filt)); filt();
     document.getElementById('prodcsv').addEventListener('click', () => download('products.csv', [['Name', 'Category', 'Price', 'Cost', 'Stock', 'Unit', 'Status'], ...rows().filter((r) => !r.hidden).map((r) => JSON.parse(r.dataset.csv))]));
   }
+  document.getElementById('addpack')?.addEventListener('click', () => { const box = document.getElementById('packrows'); box.insertAdjacentHTML('beforeend', packRow({}, box.children.length, { unit: document.querySelector('[name=unit]')?.value || 'unit', price_cents: Math.round((parseFloat(document.querySelector('[name=price]')?.value) || 0) * 100) })); });
+  document.getElementById('packbox')?.addEventListener('click', (e) => e.target.closest('.rmpack')?.closest('.packedit').remove());
   document.getElementById('seoform')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
     const value = { site_title: f.site_title.trim(), home_title: f.home_title.trim(), description: f.description.trim(), og_image: safeUrl(f.og_image.trim()), site_url: f.site_url.trim().replace(/\/+$/, ''), noindex: f.noindex === 'on' };
@@ -1541,7 +1568,13 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     const { error } = await sb.from('locations').delete().eq('id', LOC.id); error ? fail(error) : (flash('Location deleted.'), (location.hash = '#/admin/locations'));
   });
   // inventory
-  document.getElementById('invsearch')?.addEventListener('input', (e) => { const t = e.target.value.toLowerCase(); document.querySelectorAll('#invtable tr[data-name]').forEach((r) => (r.hidden = !r.dataset.name.includes(t))); });
+  if (document.getElementById('invst')) {
+    const tb = document.getElementById('invtable'); let st = '';
+    const run = () => { const t = (document.getElementById('invsearch').value || '').toLowerCase(), so = document.getElementById('invsort').value, key = { name: (r) => r.dataset.name, stock: (r) => Number(r.dataset.stock), cover: (r) => Number(r.dataset.cover), value: (r) => -Number(r.dataset.value) }[so];
+      [...tb.querySelectorAll('tr[data-name]')].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)).forEach((r) => { tb.appendChild(r); r.hidden = !(r.dataset.name.includes(t) && (!st || r.dataset.st === st)); }); };
+    document.getElementById('invsearch').addEventListener('input', run); document.getElementById('invsort').addEventListener('change', run);
+    document.getElementById('invst').addEventListener('click', (e) => { const b = e.target.closest('[data-st]'); if (!b) return; st = b.dataset.st; document.querySelectorAll('#invst .chip').forEach((x) => x.classList.toggle('on', x === b)); run(); });
+  }
   document.querySelectorAll('.invq').forEach((el) => el.addEventListener('change', async () => {
     const v = parseInt(el.value, 10); if (!(v >= 0)) { el.value = 0; return fail(new Error('Quantity must be 0 or more.')); }
     const { error } = await sb.rpc('set_inventory', { pid: Number(el.dataset.p), lid: Number(el.dataset.l), new_qty: v, note: 'Manual adjustment' }); if (error) return fail(error);
@@ -1554,7 +1587,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   });
   document.getElementById('invcsv')?.addEventListener('click', () => {
     const heads = [...document.querySelectorAll('#invtable tr:first-child th')].map((x) => x.textContent);
-    const rows = [...document.querySelectorAll('#invtable tr[data-name]')].map((r) => [r.querySelector('b').textContent, ...[...r.querySelectorAll('.invq')].map((i) => i.value), r.querySelector('.invtot').textContent]);
+    const rows = [...document.querySelectorAll('#invtable tr[data-name]')].map((r) => [r.querySelector('b').textContent, ...[...r.querySelectorAll('.invq')].map((i) => i.value), r.querySelector('.invtot').textContent, r.dataset.st, (Number(r.dataset.value) / 100).toFixed(2), r.dataset.cover === '9999' ? '' : r.dataset.cover]);
     download('inventory.csv', [heads, ...rows]);
   });
   // sales
@@ -1571,8 +1604,8 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     };
     const drawCart = () => {
       const lines = Object.entries(POS.cart).map(([id, qty]) => ({ p: POS.prods.find((x) => x.id === Number(id)), qty })).filter((l) => l.p);
-      const total = lines.reduce((a, l) => a + l.p.price_cents * l.qty, 0);
-      document.getElementById('poscart').innerHTML = lines.length ? `${lines.map((l) => `<div class="posline"><span>${esc(l.p.name)}</span><span class="row" style="flex-wrap:nowrap"><button type="button" class="btn ghost" data-q="-1" data-id="${l.p.id}" aria-label="Less">−</button><b>${l.qty}</b><button type="button" class="btn ghost" data-q="1" data-id="${l.p.id}" aria-label="More">+</button></span><span>${money(l.p.price_cents * l.qty)}</span></div>`).join('')}<div class="posline" style="font-size:1.2rem"><b>Total</b><span></span><b>${money(total)}</b></div>` : '<p class="muted">Tap a product to add it.</p>';
+      const total = lines.reduce((a, l) => a + lineTotal(l.p, l.qty), 0);
+      document.getElementById('poscart').innerHTML = lines.length ? `${lines.map((l) => `<div class="posline"><span>${esc(l.p.name)}</span><span class="row" style="flex-wrap:nowrap"><button type="button" class="btn ghost" data-q="-1" data-id="${l.p.id}" aria-label="Less">−</button><b>${l.qty}</b><button type="button" class="btn ghost" data-q="1" data-id="${l.p.id}" aria-label="More">+</button></span><span>${money(lineTotal(l.p, l.qty))}</span></div>`).join('')}<div class="posline" style="font-size:1.2rem"><b>Total</b><span></span><b>${money(total)}</b></div>` : '<p class="muted">Tap a product to add it.</p>';
     };
     drawGrid(); drawCart();
     document.getElementById('posloc').addEventListener('change', (e) => { POS.loc = Number(e.target.value); POS.cart = {}; drawGrid(); drawCart(); });
@@ -1755,6 +1788,10 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     if (!pid) row.slug = (row.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'product') + '-' + Math.floor(Math.random() * 1000);
     const res = pid ? await sb.from('products').update(row).eq('id', pid).select('id').single() : await sb.from('products').insert(row).select('id').single();
     if (res.error) return fail(res.error);
+    { const rows = [...e.target.querySelectorAll('.packedit')].map((r) => ({ label: r.querySelector('[data-f=label]').value.trim(), units: parseInt(r.querySelector('[data-f=units]').value, 10), unit_price_cents: Math.round((parseFloat(r.querySelector('[data-f=price]').value) || 0) * 100) })).filter((r) => r.label && r.units >= 2);
+      if (rows.length) { const bad = rows.find((r) => r.unit_price_cents >= row.price_cents); if (bad) flash(`"${bad.label}" costs the same or more per unit than the single price, so it will not be used.`, 'error'); }
+      const del = await sb.from('product_packs').delete().eq('product_id', res.data.id); if (del.error) return fail(del.error);
+      if (rows.length) { const ins = await sb.from('product_packs').insert(rows.map((r) => ({ ...r, product_id: res.data.id }))); if (ins.error) return fail(ins.error.code === '23505' ? new Error('Two bundle sizes have the same number of units.') : ins.error); } }
     for (const el of form_inv(e.target)) { // stock per location
       if (el.value === el.dataset.orig && pid) continue; const v = parseInt(el.value, 10); if (!(v >= 0) || (!pid && v === 0)) continue;
       const r = await sb.rpc('set_inventory', { pid: res.data.id, lid: Number(el.name.slice(4)), new_qty: v, note: pid ? 'Set from product editor' : 'Initial stock' }); if (r.error) return fail(r.error);
@@ -2178,7 +2215,7 @@ pages.invoice = async ([id], q) => {
   const canPay = C.PAYMENTS && INVPUB.key && inv.status === 'sent' && invBal(inv) >= 50, partial = STORE.invoice_allow_partial !== false;
   return `<div class="row noprint" style="justify-content:flex-end;margin-bottom:10px">${canPay ? `<form id="payform2" class="row" style="margin-right:auto">${partial ? `<label class="muted" style="display:flex;gap:8px;align-items:center">Amount to pay <input id="payamt" type="number" step="0.01" min="0.5" max="${(invBal(inv) / 100).toFixed(2)}" value="${(invBal(inv) / 100).toFixed(2)}" style="width:130px"></label>` : ''}<button class="btn" id="payonline">:ic-card: Pay by card</button></form>` : ''}<button class="btn ghost" id="printbtn" type="button">:ic-print: Print / save as PDF</button></div>${invDoc(inv, items, pays)}`;
 };
-let INVPUB = null, ESTPUB = null;
+let INVPUB = null, ESTPUB = null, INVSOLD = {};
 pages.invoice.after = () => {
   document.getElementById('printbtn')?.addEventListener('click', () => window.print());
   document.getElementById('payform2')?.addEventListener('submit', async (e) => {

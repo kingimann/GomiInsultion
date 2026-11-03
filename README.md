@@ -300,3 +300,7 @@ Barcode/SKU scanning (type or scan, press Enter), category chips, search, quanti
 - **Product options**: give products the same *Option group* and each an *Option label* (e.g. "R-13 · 15 in"); the product page shows them as switchable options. Each option is its own product with its own price and stock.
 - **Orders**: "Edit contact & shipping details" (logged in the history) and a printable 4×6 **shipping label**. Carrier rates/label purchase need a carrier account (e.g. Shippo/EasyPost) and aren't included.
 - **Analytics** (Admin → Analytics): first-party page views, visitors, top pages, referrers, devices, orders per visitor — no cookies, staff excluded.
+
+## Returns & installable app
+- **Returns:** logged-in customers can "Request a return" on their order page (within 90 days, one open request per order). Staff get a notification and manage requests in Admin → Returns (approved / received / refunded / declined, with a note shown to the customer).
+- **Installable app:** a service worker (`web/sw.js`) makes the site installable ("Add to Home Screen") and shows the last visited page when offline. It always fetches the newest files first, so updates still appear immediately.

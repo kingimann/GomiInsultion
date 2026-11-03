@@ -3072,3 +3072,35 @@ begin
   select coalesce(name, email, 'staff') into who from profiles where id = auth.uid();
   insert into order_events (order_id, kind, detail, actor) values (oid, 'edit', 'Contact / shipping details edited', who);
 end $$;
+
+-- Return requests
+create table if not exists public.return_requests (
+  id bigint generated always as identity primary key,
+  order_id bigint not null references public.orders(id) on delete cascade,
+  user_id uuid default auth.uid(),
+  reason text not null check (char_length(reason) between 1 and 80),
+  details text not null default '' check (char_length(details) <= 2000),
+  status text not null default 'requested' check (status in ('requested','approved','received','refunded','declined')),
+  staff_note text not null default '',
+  created_at timestamptz not null default now()
+);
+alter table public.return_requests enable row level security;
+drop policy if exists "own returns" on public.return_requests; drop policy if exists "staff returns" on public.return_requests;
+create policy "own returns" on public.return_requests for select using (user_id = auth.uid());
+create policy "staff returns" on public.return_requests for all using (public.has_perm('orders.view')) with check (public.has_perm('orders.manage'));
+create or replace function public.request_return(oid bigint, why text, info text default '') returns bigint language plpgsql security definer set search_path = public as $$
+declare o public.orders; rid bigint;
+begin
+  if auth.uid() is null then raise exception 'Please log in'; end if;
+  perform public.rate_check('return', 5, interval '1 day');
+  select * into o from orders where id = oid and user_id = auth.uid();
+  if not found then raise exception 'Order not found'; end if;
+  if o.status = 'cancelled' then raise exception 'This order was cancelled'; end if;
+  if o.created_at < now() - interval '90 days' then raise exception 'Returns must be requested within 90 days of the order. Please contact us.'; end if;
+  if exists (select 1 from return_requests where order_id = oid and status in ('requested','approved','received')) then raise exception 'There is already an open return request for this order'; end if;
+  insert into return_requests (order_id, reason, details) values (oid, left(btrim(why), 80), left(coalesce(info, ''), 2000)) returning id into rid;
+  insert into notifications (user_id, kind, title, body, link)
+    select pr.id, 'return', 'Return requested: order #' || oid, left(btrim(why), 80), '#/admin/returns' from profiles pr where public.user_has_perm(pr.id, 'orders.manage');
+  return rid;
+end $$;
+grant execute on function public.request_return(bigint, text, text) to authenticated;

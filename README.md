@@ -292,3 +292,11 @@ Barcode/SKU scanning (type or scan, press Enter), category chips, search, quanti
 ## Blog & fixed-amount discount codes
 - **Blog:** in Admin → Pages choose "+ New blog post" (or set a page's Type to Blog post). Posts appear on `#/blog` (newest first, read time, related posts), get a Blog link in the menu automatically, and include BlogPosting structured data + sitemap entry.
 - **Discount codes** can now be "$ off" as well as "% off" (still with minimum order, usage limit and expiry).
+
+## Trade pricing, gift cards, newsletter, options, analytics, order edits
+- **Customer groups** (Admin → Customers → Groups): a group gives its members an automatic % off every order when logged in (the bigger of group discount and any discount code applies). Assign a customer on their page.
+- **Gift cards** (Admin → Gift cards): issue a card (auto or custom code); customers enter it at checkout, the balance is deducted, and the order shows the gift card amount and balance due. A log shows every use.
+- **Newsletter**: footer sign-up form (rate-limited, honeypot), Admin → Subscribers with CSV export and "copy all emails". Sending the emails themselves is done in your email tool.
+- **Product options**: give products the same *Option group* and each an *Option label* (e.g. "R-13 · 15 in"); the product page shows them as switchable options. Each option is its own product with its own price and stock.
+- **Orders**: "Edit contact & shipping details" (logged in the history) and a printable 4×6 **shipping label**. Carrier rates/label purchase need a carrier account (e.g. Shippo/EasyPost) and aren't included.
+- **Analytics** (Admin → Analytics): first-party page views, visitors, top pages, referrers, devices, orders per visitor — no cookies, staff excluded.

@@ -2922,3 +2922,153 @@ end $function$
 ;
 alter table public.discount_codes drop constraint if exists discount_codes_percent_check;
 alter table public.discount_codes add constraint discount_codes_percent_check check (percent between 0 and 100 and (percent > 0 or amount_cents > 0));
+
+-- ===== Trade pricing, gift cards, newsletter, variants, analytics =====
+create table if not exists public.customer_groups (id bigint generated always as identity primary key, name text not null unique check (char_length(name) between 1 and 60), percent int not null default 0 check (percent between 0 and 100), created_at timestamptz not null default now());
+alter table public.customer_groups enable row level security;
+drop policy if exists "groups read" on public.customer_groups; drop policy if exists "groups manage" on public.customer_groups;
+create policy "groups read" on public.customer_groups for select using (auth.uid() is not null);
+create policy "groups manage" on public.customer_groups for all using (public.has_perm('customers.manage')) with check (public.has_perm('customers.manage'));
+alter table public.profiles add column if not exists group_id bigint references public.customer_groups(id) on delete set null;
+create or replace function public.set_customer_group(uid uuid, gid bigint) returns void language plpgsql security definer set search_path = public as $$
+begin if not public.has_perm('customers.manage') then raise exception 'Not allowed'; end if; update profiles set group_id = gid where id = uid; end $$;
+create or replace function public.my_group_percent() returns int language sql stable security definer set search_path = public as $$
+  select coalesce((select g.percent from profiles p join customer_groups g on g.id = p.group_id where p.id = auth.uid()), 0) $$;
+
+create table if not exists public.gift_cards (code text primary key check (code = upper(code)), initial_cents int not null check (initial_cents > 0), balance_cents int not null check (balance_cents >= 0), active boolean not null default true, expires_at timestamptz, recipient text, note text, created_at timestamptz not null default now());
+create table if not exists public.gift_card_log (id bigint generated always as identity primary key, code text not null, order_id bigint, amount_cents int not null, note text, created_at timestamptz not null default now());
+alter table public.gift_cards enable row level security; alter table public.gift_card_log enable row level security;
+drop policy if exists "gift manage" on public.gift_cards; drop policy if exists "giftlog read" on public.gift_card_log;
+create policy "gift manage" on public.gift_cards for all using (public.has_perm('orders.manage')) with check (public.has_perm('orders.manage'));
+create policy "giftlog read" on public.gift_card_log for select using (public.has_perm('orders.view'));
+alter table public.orders add column if not exists gift_cents int not null default 0;
+alter table public.orders add column if not exists gift_code text;
+create or replace function public.check_gift(c text) returns int language sql stable security definer set search_path = public as $$
+  select balance_cents from gift_cards where code = upper(trim(c)) and active and balance_cents > 0 and (expires_at is null or expires_at > now()) $$;
+create or replace function public.issue_gift_card(amount_cents int, recipient text default null, note text default null, custom_code text default null) returns text language plpgsql security definer set search_path = public as $$
+declare c text := coalesce(nullif(upper(regexp_replace(coalesce(custom_code, ''), '[^A-Za-z0-9-]', '', 'g')), ''), 'GC-' || upper(substr(md5(random()::text || clock_timestamp()::text), 1, 4)) || '-' || upper(substr(md5(random()::text || clock_timestamp()::text), 1, 4)));
+begin
+  if not public.has_perm('orders.manage') then raise exception 'Not allowed'; end if;
+  if amount_cents < 100 then raise exception 'Minimum gift card is $1.00'; end if;
+  insert into gift_cards (code, initial_cents, balance_cents, recipient, note) values (c, amount_cents, amount_cents, recipient, note);
+  insert into gift_card_log (code, amount_cents, note) values (c, amount_cents, 'Issued');
+  return c;
+end $$;
+grant execute on function public.check_gift(text), public.my_group_percent() to anon, authenticated;
+
+create table if not exists public.subscribers (id bigint generated always as identity primary key, email text not null, name text, source text default 'footer', token uuid not null default gen_random_uuid(), subscribed_at timestamptz not null default now(), unsubscribed_at timestamptz);
+create unique index if not exists subscribers_email_key on public.subscribers (lower(email));
+alter table public.subscribers enable row level security;
+drop policy if exists "subs read" on public.subscribers; drop policy if exists "subs manage" on public.subscribers;
+create policy "subs read" on public.subscribers for select using (public.has_perm('customers.view'));
+create policy "subs manage" on public.subscribers for all using (public.has_perm('customers.manage')) with check (public.has_perm('customers.manage'));
+create or replace function public.subscribe(em text, nm text default null, src text default 'footer') returns void language plpgsql security definer set search_path = public as $$
+begin
+  perform public.rate_check('subscribe', 5, interval '1 hour');
+  em := lower(btrim(coalesce(em, '')));
+  if em !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' or char_length(em) > 200 then raise exception 'Please enter a valid email address'; end if;
+  insert into subscribers (email, name, source) values (em, left(nm, 100), left(src, 40))
+  on conflict (lower(email)) do update set unsubscribed_at = null, name = coalesce(excluded.name, subscribers.name);
+end $$;
+create or replace function public.unsubscribe(tok uuid) returns void language sql security definer set search_path = public as $$ update subscribers set unsubscribed_at = now() where token = tok $$;
+grant execute on function public.subscribe(text, text, text), public.unsubscribe(uuid) to anon, authenticated;
+
+alter table public.products add column if not exists variant_group text;
+alter table public.products add column if not exists variant_label text;
+
+create table if not exists public.page_views (id bigint generated always as identity primary key, day date not null default current_date, path text not null, ref text, device text, sid text, created_at timestamptz not null default now());
+create index if not exists page_views_day_idx on public.page_views (day);
+alter table public.page_views enable row level security;
+drop policy if exists "views read" on public.page_views;
+create policy "views read" on public.page_views for select using (public.has_perm('reports.view'));
+create or replace function public.track_view(p text, r text default null, d text default null, s text default null) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if p is null or char_length(p) > 200 or p like '/admin%' or p like '#/admin%' then return; end if;
+  perform public.rate_check('view', 200, interval '1 hour');
+  insert into page_views (path, ref, device, sid) values (left(p, 200), left(r, 200), left(d, 20), left(s, 40));
+end $$;
+grant execute on function public.track_view(text, text, text, text) to anon, authenticated;
+delete from page_views where created_at < now() - interval '400 days';
+
+CREATE OR REPLACE FUNCTION public.place_order(items jsonb, customer jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare pk record; it jsonb; p public.products; q int; sub int := 0; ship int; oid bigint; gk uuid; item_id bigint;
+  disc int := 0; pct int; gdisc int := 0; gname text; gcode text := nullif(upper(trim(coalesce(customer->>'gift_code',''))), ''); gc public.gift_cards; gift int := 0; tot int; code text := nullif(upper(trim(coalesce(customer->>'code',''))), '');
+  free_over int := public.store_cfg('free_over_cents', 50000)::int; flat int := public.store_cfg('ship_flat_cents', 1500)::int;
+  rate numeric := public.store_cfg('tax_rate', 0); tax int; tlabel text := public.store_cfg_text('tax_label', 'Tax');
+  pickup boolean := coalesce(customer->>'fulfillment', 'delivery') = 'pickup'; loc public.locations; pref bigint;
+  addr text; city text; pc text; avail int;
+begin
+  perform public.rate_check('order', 8, interval '1 hour');
+  if jsonb_array_length(items) = 0 then raise exception 'Cart is empty'; end if;
+  if pickup then
+    select * into loc from locations where id = nullif(customer->>'location_id', '')::bigint and active and pickup_enabled;
+    if not found then raise exception 'Please choose a pickup location'; end if;
+    pref := loc.id;
+    addr := 'Pickup: ' || loc.name || case when loc.address <> '' then ', ' || loc.address else '' end; city := coalesce(nullif(loc.city, ''), '-'); pc := coalesce(nullif(loc.postcode, ''), '-');
+  else
+    pref := (select id from locations where is_default);
+    addr := customer->>'address'; city := customer->>'city'; pc := customer->>'postcode';
+    if coalesce(btrim(addr), '') = '' or coalesce(btrim(city), '') = '' or coalesce(btrim(pc), '') = '' then raise exception 'Please enter your delivery address'; end if;
+  end if;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint and active for update;
+    if not found or q < 1 then raise exception 'Not enough stock for %', coalesce(p.name, 'an item'); end if;
+    if pickup then select coalesce(qty, 0) into avail from inventory where product_id = p.id and location_id = loc.id;
+    else select coalesce(sum(i.qty), 0) into avail from inventory i join locations l on l.id = i.location_id where i.product_id = p.id and l.active; end if;
+    if coalesce(avail, 0) < q then raise exception 'Not enough stock for %', p.name; end if;
+    sub := sub + public.pack_total(p.id, p.price_cents, q);
+  end loop;
+  if code is not null then
+    disc := public.code_discount(code, sub);
+    if disc is null then raise exception 'That discount code is not valid'; end if;
+  end if;
+  if auth.uid() is not null then
+    select round(sub * g.percent / 100.0)::int, g.name into gdisc, gname from profiles pr join customer_groups g on g.id = pr.group_id where pr.id = auth.uid();
+    if coalesce(gdisc, 0) > disc then disc := gdisc; code := 'Trade: ' || gname; end if;
+  end if;
+  ship := case when pickup or (free_over > 0 and sub - disc >= free_over) then 0 else public.ship_fee_for(pc) end;
+  tax := round((sub - disc + ship) * rate / 100.0)::int;
+  tot := sub - disc + ship + tax;
+  if gcode is not null then
+    select * into gc from gift_cards where gift_cards.code = gcode and active and (expires_at is null or expires_at > now()) for update;
+    if not found or gc.balance_cents <= 0 then raise exception 'That gift card is not valid or has no balance'; end if;
+    gift := least(gc.balance_cents, tot);
+  end if;
+  insert into orders (user_id, email, name, phone, address, city, postcode, notes, subtotal_cents, shipping_cents, total_cents, discount_cents, promo_code, location_id, fulfillment, source, tax_cents, tax_label, gift_cents, gift_code)
+  values (auth.uid(), customer->>'email', customer->>'name', coalesce(customer->>'phone',''), addr, city, pc, coalesce(customer->>'notes',''), sub, ship, tot, disc, code, pref,
+          case when pickup then 'pickup' else 'delivery' end, 'online', tax, case when tax > 0 then tlabel else '' end, gift, gcode)
+  returning id, guest_key into oid, gk;
+  for it in select * from jsonb_array_elements(items) loop
+    q := (it->>'qty')::int;
+    select * into p from products where id = (it->>'id')::bigint;
+    for pk in select * from public.pack_split(p.id, p.price_cents, q) loop
+      insert into order_items (order_id, product_id, name, price_cents, qty, pack_units, bundle_size) values (oid, p.id, p.name || case when pk.label <> '' then ' (' || pk.label || ' price)' else '' end, pk.price, pk.qty, pk.units, coalesce(p.bags_per_bundle, (select min(k.units) from product_packs k where k.product_id = p.id))) returning id into item_id;
+      perform public.allocate_stock(item_id, p.id, pk.qty, pref, pickup, oid);
+    end loop;
+  end loop;
+  if gift > 0 then
+    update gift_cards set balance_cents = balance_cents - gift where gift_cards.code = gcode;
+    insert into gift_card_log (code, order_id, amount_cents, note) values (gcode, oid, -gift, 'Order #' || oid);
+  end if;
+  return jsonb_build_object('id', oid, 'key', gk);
+end $function$
+
+;
+
+-- Edit order contact / shipping details (logged in order history)
+create or replace function public.edit_order_details(oid bigint, nm text, em text, ph text, addr text, cty text, pc text, nts text) returns void language plpgsql security definer set search_path = public as $$
+declare o public.orders; who text;
+begin
+  if not public.has_perm('orders.manage') then raise exception 'Not allowed'; end if;
+  select * into o from orders where id = oid; if not found then raise exception 'Order not found'; end if;
+  if btrim(coalesce(nm, '')) = '' then raise exception 'Name is required'; end if;
+  update orders set name = left(btrim(nm), 120), email = left(btrim(coalesce(em, '')), 200), phone = left(btrim(coalesce(ph, '')), 40), address = left(btrim(coalesce(addr, '')), 300), city = left(btrim(coalesce(cty, '')), 100), postcode = left(btrim(coalesce(pc, '')), 20), notes = left(coalesce(nts, ''), 2000) where id = oid;
+  select coalesce(name, email, 'staff') into who from profiles where id = auth.uid();
+  insert into order_events (order_id, kind, detail, actor) values (oid, 'edit', 'Contact / shipping details edited', who);
+end $$;

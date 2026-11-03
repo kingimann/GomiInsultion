@@ -15,6 +15,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const clip = (t, n) => { t = String(t || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1).trimEnd() + '…' : t; };
 const safe = (u) => (/^https?:\/\//i.test(u || '') ? u : '');
 
+// Never let a data hiccup (network, Supabase) fail the deploy: skip the SEO files and still publish the site.
+try {
 const settings = Object.fromEntries((await get('site_settings?select=key,value&key=in.(theme,seo,store)')).map((r) => [r.key, r.value]));
 const seo = settings.seo || {}, site = seo.site_title || settings.theme?.name || 'Gomi Insulation';
 const base = (process.env.SITE_URL || seo.site_url || '').replace(/\/+$/, '');
@@ -55,7 +57,8 @@ for (const g of pages) {
 }
 writeFileSync(join(root, 'sitemap.xml'), `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((u) => `  <url><loc>${esc(base + u.loc)}</loc><priority>${u.pr}</priority></url>`).join('\n')}\n</urlset>\n`);
 writeFileSync(join(root, 'robots.txt'), seo.noindex ? 'User-agent: *\nDisallow: /\n' : `User-agent: *\nAllow: /\nDisallow: /#/admin\n${base ? `Sitemap: ${base}/sitemap.xml\n` : ''}`);
+console.log(`SEO build: ${products.length} products, ${pages.length} pages, ${urls.length} sitemap URLs`);
+} catch (e) { console.warn('! SEO files skipped: ' + (e && e.message || e)); }
 // Cache-bust the app files so visitors always get the newest version after a deploy.
 { const f = join(root, 'index.html'); let h = readFileSync(f, 'utf8'); const v = Date.now().toString(36);
   h = h.replace(/(href="style\.css|src="(?:config|icons|app)\.js)(\?v=\w+)?"/g, `$1?v=${v}"`); writeFileSync(f, h); }
-console.log(`SEO build: ${products.length} products, ${pages.length} pages, ${urls.length} sitemap URLs`);

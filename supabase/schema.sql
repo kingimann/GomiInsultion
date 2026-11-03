@@ -1341,3 +1341,225 @@ create or replace function public.get_invoice_public(iid bigint, k uuid) returns
 grant execute on function public.get_invoice_public(bigint, uuid) to anon, authenticated;
 revoke all on function public.save_invoice(jsonb, jsonb), public.record_invoice_payment(bigint, int, text, text, date, text), public.delete_invoice_payment(bigint), public.set_invoice_status(bigint, text), public.delete_invoice(bigint) from public, anon;
 grant execute on function public.save_invoice(jsonb, jsonb), public.record_invoice_payment(bigint, int, text, text, date, text), public.delete_invoice_payment(bigint), public.set_invoice_status(bigint, text), public.delete_invoice(bigint) to authenticated;
+
+-- ===== Estimates, recurring invoices, online invoice payments =====
+create or replace function public.doc_totals(items jsonb, disc_in int, rate numeric) returns jsonb language plpgsql immutable as $$
+declare it jsonb; amt int; sub int := 0; tsub int := 0; disc int; taxable int; tax int;
+begin
+  if jsonb_typeof(items) <> 'array' or jsonb_array_length(items) = 0 then raise exception 'Add at least one line item'; end if;
+  for it in select * from jsonb_array_elements(items) loop
+    amt := round((it->>'qty')::numeric * (it->>'unit_price_cents')::numeric)::int; sub := sub + amt;
+    if coalesce((it->>'taxable')::boolean, true) then tsub := tsub + amt; end if;
+  end loop;
+  disc := least(greatest(coalesce(disc_in, 0), 0), sub);
+  taxable := case when sub > 0 then tsub - round(disc * tsub::numeric / sub)::int else 0 end;
+  tax := round(taxable * coalesce(rate, 0) / 100.0)::int;
+  return jsonb_build_object('sub', sub, 'disc', disc, 'tax', tax, 'total', sub - disc + tax);
+end $$;
+
+create sequence if not exists public.estimate_number_seq start 1001;
+create table if not exists public.estimates (
+  id bigint generated always as identity primary key, number text unique not null, view_key uuid not null default gen_random_uuid(),
+  customer_id uuid references public.profiles(id) on delete set null, customer_name text not null check (length(btrim(customer_name)) > 0),
+  customer_email text not null default '', customer_address text not null default '', issue_date date not null default current_date, expires_on date not null default (current_date + 30),
+  status text not null default 'draft' check (status in ('draft','sent','accepted','declined','converted')),
+  notes text not null default '' check (length(notes) <= 3000), terms text not null default '' check (length(terms) <= 3000),
+  discount_cents int not null default 0 check (discount_cents >= 0), tax_rate numeric not null default 0, tax_label text not null default '',
+  subtotal_cents int not null default 0, tax_cents int not null default 0, total_cents int not null default 0,
+  invoice_id bigint references public.invoices(id) on delete set null, sent_at timestamptz, responded_at timestamptz,
+  created_by uuid default auth.uid(), created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table if not exists public.estimate_items (
+  id bigint generated always as identity primary key, estimate_id bigint not null references public.estimates(id) on delete cascade,
+  description text not null check (length(btrim(description)) between 1 and 500), qty numeric(12,3) not null default 1 check (qty > 0),
+  unit_price_cents int not null default 0, taxable boolean not null default true, product_id bigint references public.products(id) on delete set null, sort int not null default 0);
+alter table public.estimates enable row level security; alter table public.estimate_items enable row level security;
+drop policy if exists "view estimates" on public.estimates;
+create policy "view estimates" on public.estimates for select using (public.has_perm('invoices.view') or (customer_id = auth.uid() and status <> 'draft'));
+drop policy if exists "view estimate items" on public.estimate_items;
+create policy "view estimate items" on public.estimate_items for select using (exists (select 1 from public.estimates e where e.id = estimate_id and (public.has_perm('invoices.view') or (e.customer_id = auth.uid() and e.status <> 'draft'))));
+
+-- internal helper: create an invoice from JSON (no permission check; callers decide who may)
+create or replace function public.make_invoice(inv jsonb, items jsonb) returns bigint language plpgsql security definer set search_path = public as $$
+declare iid bigint; it jsonb; n int := 0; t jsonb; rate numeric := coalesce(nullif(inv->>'tax_rate', '')::numeric, 0);
+begin
+  t := public.doc_totals(items, coalesce(nullif(inv->>'discount_cents', '')::int, 0), rate);
+  insert into invoices (number, customer_id, customer_name, customer_email, customer_address, issue_date, due_date, notes, terms, discount_cents, tax_rate, tax_label, subtotal_cents, tax_cents, total_cents)
+  values (public.store_cfg_text('invoice_prefix', 'INV') || '-' || nextval('public.invoice_number_seq'), nullif(inv->>'customer_id', '')::uuid, btrim(inv->>'customer_name'), coalesce(inv->>'customer_email', ''), coalesce(inv->>'customer_address', ''),
+    coalesce(nullif(inv->>'issue_date', '')::date, current_date), coalesce(nullif(inv->>'due_date', '')::date, current_date + 14), coalesce(inv->>'notes', ''), coalesce(inv->>'terms', ''),
+    (t->>'disc')::int, rate, coalesce(inv->>'tax_label', ''), (t->>'sub')::int, (t->>'tax')::int, (t->>'total')::int) returning id into iid;
+  for it in select * from jsonb_array_elements(items) loop
+    n := n + 1;
+    insert into invoice_items (invoice_id, description, qty, unit_price_cents, taxable, product_id, sort)
+    values (iid, btrim(it->>'description'), (it->>'qty')::numeric, (it->>'unit_price_cents')::int, coalesce((it->>'taxable')::boolean, true), nullif(it->>'product_id', '')::bigint, n);
+  end loop;
+  return iid;
+end $$;
+revoke all on function public.make_invoice(jsonb, jsonb) from public, anon, authenticated;
+
+create or replace function public.save_estimate(est jsonb, items jsonb) returns bigint language plpgsql security definer set search_path = public as $$
+declare eid bigint := nullif(est->>'id', '')::bigint; it jsonb; n int := 0; t jsonb; rate numeric; lbl text; cur record;
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  rate := coalesce(nullif(est->>'tax_rate', '')::numeric, public.store_cfg('tax_rate', 0)); lbl := coalesce(nullif(est->>'tax_label', ''), public.store_cfg_text('tax_label', 'Tax'));
+  t := public.doc_totals(items, coalesce(nullif(est->>'discount_cents', '')::int, 0), rate);
+  if eid is null then
+    insert into estimates (number, customer_id, customer_name, customer_email, customer_address, issue_date, expires_on, notes, terms, discount_cents, tax_rate, tax_label, subtotal_cents, tax_cents, total_cents)
+    values ('EST-' || nextval('public.estimate_number_seq'), nullif(est->>'customer_id', '')::uuid, btrim(est->>'customer_name'), coalesce(est->>'customer_email', ''), coalesce(est->>'customer_address', ''),
+      coalesce(nullif(est->>'issue_date', '')::date, current_date), coalesce(nullif(est->>'expires_on', '')::date, current_date + 30), coalesce(est->>'notes', ''), coalesce(est->>'terms', ''),
+      (t->>'disc')::int, rate, lbl, (t->>'sub')::int, (t->>'tax')::int, (t->>'total')::int) returning id into eid;
+    perform audit('estimate.created', 'estimate', eid::text, '{}');
+  else
+    select * into cur from estimates where id = eid for update; if not found then raise exception 'No such estimate'; end if;
+    if cur.status not in ('draft', 'sent') then raise exception 'This estimate is % and can no longer be edited', cur.status; end if;
+    update estimates set customer_id = nullif(est->>'customer_id', '')::uuid, customer_name = btrim(est->>'customer_name'), customer_email = coalesce(est->>'customer_email', ''), customer_address = coalesce(est->>'customer_address', ''),
+      issue_date = coalesce(nullif(est->>'issue_date', '')::date, issue_date), expires_on = coalesce(nullif(est->>'expires_on', '')::date, expires_on), notes = coalesce(est->>'notes', ''), terms = coalesce(est->>'terms', ''),
+      discount_cents = (t->>'disc')::int, tax_rate = rate, tax_label = lbl, subtotal_cents = (t->>'sub')::int, tax_cents = (t->>'tax')::int, total_cents = (t->>'total')::int, updated_at = now() where id = eid;
+    delete from estimate_items where estimate_id = eid;
+  end if;
+  for it in select * from jsonb_array_elements(items) loop
+    n := n + 1;
+    insert into estimate_items (estimate_id, description, qty, unit_price_cents, taxable, product_id, sort)
+    values (eid, btrim(it->>'description'), (it->>'qty')::numeric, (it->>'unit_price_cents')::int, coalesce((it->>'taxable')::boolean, true), nullif(it->>'product_id', '')::bigint, n);
+  end loop;
+  return eid;
+end $$;
+
+create or replace function public.set_estimate_status(eid bigint, new_status text) returns void language plpgsql security definer set search_path = public as $$
+declare e public.estimates;
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  select * into e from estimates where id = eid for update; if not found then raise exception 'No such estimate'; end if;
+  if e.status = 'converted' then raise exception 'This estimate was already converted to an invoice'; end if;
+  if new_status = 'sent' then
+    update estimates set status = 'sent', sent_at = coalesce(sent_at, now()), updated_at = now() where id = eid;
+    perform notify_user(e.customer_id, 'invoice', 'Estimate ' || e.number || ' from the store', 'Total $' || to_char(e.total_cents / 100.0, 'FM999990.00') || ', valid until ' || e.expires_on, '#/estimate/' || eid);
+    perform public.send_notification('estimate_sent', jsonb_build_object('estimate_id', eid));
+  elsif new_status in ('draft', 'accepted', 'declined') then
+    update estimates set status = new_status, responded_at = case when new_status in ('accepted', 'declined') then now() else null end, updated_at = now() where id = eid;
+  else raise exception 'Unknown status'; end if;
+  perform audit('estimate.' || new_status, 'estimate', eid::text, '{}');
+end $$;
+
+create or replace function public.respond_estimate(eid bigint, k uuid, accept boolean) returns void language plpgsql security definer set search_path = public as $$
+declare e public.estimates;
+begin
+  select * into e from estimates where id = eid and view_key = k and status = 'sent' for update;
+  if not found then raise exception 'This estimate can no longer be answered'; end if;
+  if e.expires_on < current_date then raise exception 'This estimate has expired'; end if;
+  update estimates set status = case when accept then 'accepted' else 'declined' end, responded_at = now(), updated_at = now() where id = eid;
+  perform notify_admins('invoice', 'Estimate ' || e.number || case when accept then ' accepted' else ' declined' end, e.customer_name || ' · $' || to_char(e.total_cents / 100.0, 'FM999990.00'), '#/admin/estimates/' || eid);
+end $$;
+
+create or replace function public.convert_estimate(eid bigint) returns bigint language plpgsql security definer set search_path = public as $$
+declare e public.estimates; iid bigint; its jsonb;
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  select * into e from estimates where id = eid for update; if not found then raise exception 'No such estimate'; end if;
+  if e.status = 'converted' then raise exception 'Already converted'; end if;
+  select coalesce(jsonb_agg(jsonb_build_object('description', description, 'qty', qty, 'unit_price_cents', unit_price_cents, 'taxable', taxable, 'product_id', product_id) order by sort), '[]') into its from estimate_items where estimate_id = eid;
+  iid := public.make_invoice(jsonb_build_object('customer_id', e.customer_id, 'customer_name', e.customer_name, 'customer_email', e.customer_email, 'customer_address', e.customer_address,
+    'due_date', current_date + coalesce(public.store_cfg('invoice_due_days', 14), 14)::int, 'notes', e.notes, 'terms', e.terms, 'discount_cents', e.discount_cents, 'tax_rate', e.tax_rate, 'tax_label', e.tax_label), its);
+  update estimates set status = 'converted', invoice_id = iid, updated_at = now() where id = eid;
+  perform audit('estimate.converted', 'estimate', eid::text, jsonb_build_object('invoice_id', iid));
+  return iid;
+end $$;
+
+create or replace function public.delete_estimate(eid bigint) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  if (select status from estimates where id = eid) = 'converted' then raise exception 'Converted estimates are kept for your records'; end if;
+  delete from estimates where id = eid; perform audit('estimate.deleted', 'estimate', eid::text, '{}');
+end $$;
+
+create or replace function public.get_estimate_public(eid bigint, k uuid) returns jsonb language sql stable security definer set search_path = public as $$
+  select to_jsonb(e) - 'view_key' - 'created_by' || jsonb_build_object('items', (select coalesce(jsonb_agg(to_jsonb(x) order by x.sort), '[]') from estimate_items x where x.estimate_id = e.id))
+  from estimates e where e.id = eid and e.view_key = k and e.status <> 'draft' $$;
+
+-- recurring invoices
+create table if not exists public.recurring_invoices (
+  id bigint generated always as identity primary key, name text not null check (length(btrim(name)) between 1 and 120), customer_id uuid references public.profiles(id) on delete set null,
+  customer_name text not null check (length(btrim(customer_name)) > 0), customer_email text not null default '', customer_address text not null default '',
+  frequency text not null check (frequency in ('weekly','monthly','quarterly','yearly')), every int not null default 1 check (every between 1 and 24),
+  next_run date not null, end_date date, due_days int not null default 14 check (due_days between 0 and 365), auto_send boolean not null default false, active boolean not null default true,
+  items jsonb not null default '[]', discount_cents int not null default 0, tax_rate numeric not null default 0, tax_label text not null default '', notes text not null default '', terms text not null default '',
+  last_invoice_id bigint references public.invoices(id) on delete set null, runs int not null default 0, created_by uuid default auth.uid(), created_at timestamptz not null default now());
+alter table public.recurring_invoices enable row level security;
+drop policy if exists "view recurring" on public.recurring_invoices;
+create policy "view recurring" on public.recurring_invoices for select using (public.has_perm('invoices.view'));
+
+create or replace function public.save_recurring(rec jsonb, items jsonb) returns bigint language plpgsql security definer set search_path = public as $$
+declare rid bigint := nullif(rec->>'id', '')::bigint; rate numeric := coalesce(nullif(rec->>'tax_rate', '')::numeric, 0);
+begin
+  if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if;
+  perform public.doc_totals(items, coalesce(nullif(rec->>'discount_cents', '')::int, 0), rate); -- validates the lines
+  if rid is null then
+    insert into recurring_invoices (name, customer_id, customer_name, customer_email, customer_address, frequency, every, next_run, end_date, due_days, auto_send, items, discount_cents, tax_rate, tax_label, notes, terms)
+    values (btrim(rec->>'name'), nullif(rec->>'customer_id', '')::uuid, btrim(rec->>'customer_name'), coalesce(rec->>'customer_email', ''), coalesce(rec->>'customer_address', ''), rec->>'frequency', coalesce(nullif(rec->>'every', '')::int, 1),
+      (rec->>'next_run')::date, nullif(rec->>'end_date', '')::date, coalesce(nullif(rec->>'due_days', '')::int, 14), coalesce((rec->>'auto_send')::boolean, false), items, coalesce(nullif(rec->>'discount_cents', '')::int, 0), rate, coalesce(rec->>'tax_label', ''), coalesce(rec->>'notes', ''), coalesce(rec->>'terms', ''))
+    returning id into rid;
+  else
+    update recurring_invoices set name = btrim(rec->>'name'), customer_id = nullif(rec->>'customer_id', '')::uuid, customer_name = btrim(rec->>'customer_name'), customer_email = coalesce(rec->>'customer_email', ''), customer_address = coalesce(rec->>'customer_address', ''),
+      frequency = rec->>'frequency', every = coalesce(nullif(rec->>'every', '')::int, 1), next_run = (rec->>'next_run')::date, end_date = nullif(rec->>'end_date', '')::date, due_days = coalesce(nullif(rec->>'due_days', '')::int, 14),
+      auto_send = coalesce((rec->>'auto_send')::boolean, false), items = save_recurring.items, discount_cents = coalesce(nullif(rec->>'discount_cents', '')::int, 0), tax_rate = rate, tax_label = coalesce(rec->>'tax_label', ''), notes = coalesce(rec->>'notes', ''), terms = coalesce(rec->>'terms', '') where id = rid;
+    if not found then raise exception 'No such recurring invoice'; end if;
+  end if;
+  return rid;
+end $$;
+create or replace function public.set_recurring_active(rid bigint, on_off boolean) returns void language plpgsql security definer set search_path = public as $$
+begin if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if; update recurring_invoices set active = on_off where id = rid; end $$;
+create or replace function public.delete_recurring(rid bigint) returns void language plpgsql security definer set search_path = public as $$
+begin if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if; delete from recurring_invoices where id = rid; end $$;
+
+create or replace function public.run_recurring_internal() returns int language plpgsql security definer set search_path = public as $$
+declare r record; iid bigint; made int := 0; guard int; step interval;
+begin
+  for r in select * from recurring_invoices where active and next_run <= current_date and (end_date is null or next_run <= end_date) order by id for update loop
+    guard := 0;
+    while r.next_run <= current_date and (r.end_date is null or r.next_run <= r.end_date) and guard < 12 loop
+      guard := guard + 1;
+      iid := public.make_invoice(jsonb_build_object('customer_id', r.customer_id, 'customer_name', r.customer_name, 'customer_email', r.customer_email, 'customer_address', r.customer_address,
+        'issue_date', r.next_run, 'due_date', r.next_run + r.due_days, 'notes', r.notes, 'terms', r.terms, 'discount_cents', r.discount_cents, 'tax_rate', r.tax_rate, 'tax_label', r.tax_label), r.items);
+      made := made + 1;
+      if r.auto_send then
+        update invoices set status = 'sent', sent_at = now() where id = iid;
+        perform notify_user(r.customer_id, 'invoice', 'New invoice from the store', r.name, '#/invoice/' || iid);
+        perform public.send_notification('invoice_sent', jsonb_build_object('invoice_id', iid));
+      end if;
+      perform notify_admins('invoice', 'Recurring invoice created', r.name || ' · ' || r.customer_name, '#/admin/invoices/' || iid);
+      step := case r.frequency when 'weekly' then make_interval(days => 7 * r.every) when 'monthly' then make_interval(months => r.every) when 'quarterly' then make_interval(months => 3 * r.every) else make_interval(years => r.every) end;
+      r.next_run := (r.next_run + step)::date; r.runs := r.runs + 1;
+      update recurring_invoices set next_run = r.next_run, runs = r.runs, last_invoice_id = iid, active = (end_date is null or r.next_run <= end_date) where id = r.id;
+    end loop;
+  end loop;
+  return made;
+end $$;
+create or replace function public.run_recurring_invoices() returns int language plpgsql security definer set search_path = public as $$
+begin if not public.has_perm('invoices.manage') then raise exception 'Not allowed'; end if; return public.run_recurring_internal(); end $$;
+
+-- online invoice payments (called by the Stripe webhook with the service role)
+create unique index if not exists invoice_payments_ref_uq on public.invoice_payments (invoice_id, reference) where reference <> '';
+create or replace function public.record_invoice_payment_system(iid bigint, amount int, pay_method text, ref text) returns void language plpgsql security definer set search_path = public as $$
+declare inv public.invoices; amt int;
+begin
+  select * into inv from invoices where id = iid for update; if not found or inv.status = 'void' then return; end if;
+  if exists (select 1 from invoice_payments where invoice_id = iid and reference = ref and ref <> '') then return; end if;
+  amt := least(amount, inv.total_cents - inv.paid_cents); if amt < 1 then return; end if;
+  insert into invoice_payments (invoice_id, amount_cents, method, reference, note, created_by) values (iid, amt, pay_method, ref, 'Paid online', null);
+  update invoices set paid_cents = paid_cents + amt, status = case when paid_cents + amt >= total_cents then 'paid' else status end, sent_at = coalesce(sent_at, now()), updated_at = now() where id = iid;
+  perform notify_admins('invoice', 'Online payment on ' || inv.number, '$' || to_char(amt / 100.0, 'FM999990.00') || ' from ' || inv.customer_name, '#/admin/invoices/' || iid);
+  perform audit('invoice.payment', 'invoice', iid::text, jsonb_build_object('amount_cents', amt, 'method', pay_method));
+end $$;
+
+revoke all on function public.save_estimate(jsonb, jsonb), public.set_estimate_status(bigint, text), public.convert_estimate(bigint), public.delete_estimate(bigint), public.save_recurring(jsonb, jsonb),
+  public.set_recurring_active(bigint, boolean), public.delete_recurring(bigint), public.run_recurring_invoices() from public, anon;
+grant execute on function public.save_estimate(jsonb, jsonb), public.set_estimate_status(bigint, text), public.convert_estimate(bigint), public.delete_estimate(bigint), public.save_recurring(jsonb, jsonb),
+  public.set_recurring_active(bigint, boolean), public.delete_recurring(bigint), public.run_recurring_invoices() to authenticated;
+grant execute on function public.get_estimate_public(bigint, uuid), public.respond_estimate(bigint, uuid, boolean) to anon, authenticated;
+revoke all on function public.run_recurring_internal(), public.record_invoice_payment_system(bigint, int, text, text), public.doc_totals(jsonb, int, numeric) from public, anon, authenticated;
+grant execute on function public.record_invoice_payment_system(bigint, int, text, text) to service_role;
+
+-- daily job for recurring invoices (Supabase pg_cron); also runnable from Admin → Invoices → Recurring
+do $$ begin
+  create extension if not exists pg_cron;
+  perform cron.schedule('recurring-invoices', '15 6 * * *', 'select public.run_recurring_internal()');
+exception when others then raise notice 'pg_cron not available: %', sqlerrm; end $$;

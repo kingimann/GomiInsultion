@@ -18,6 +18,11 @@ Deno.serve(async (req) => {
   const raw = await req.text();
   if (!(await verify(raw, req.headers.get('stripe-signature'), Deno.env.get('STRIPE_WEBHOOK_SECRET')!))) return new Response('bad signature', { status: 400 });
   const evt = JSON.parse(raw);
+  const iid = Number(evt.data?.object?.metadata?.invoice_id);
+  if (iid && evt.type === 'checkout.session.completed') {
+    const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+    await admin.rpc('record_invoice_payment_system', { iid, amount: Number(evt.data.object.amount_total) || 0, pay_method: 'Card (Stripe)', ref: String(evt.data.object.id) });
+  }
   const oid = Number(evt.data?.object?.metadata?.order_id);
   if (oid) {
     const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);

@@ -591,7 +591,7 @@ const salesChart = (orders) => {
 const RESP_STATUS = { new: 'New', in_progress: 'In progress', done: 'Done' };
 let FB = null, PG = null;
 const SECTION_PERM = { orders: 'orders.view', products: 'catalog.manage', inventory: 'inventory.view', locations: 'inventory.view', sales: 'reports.view', pos: 'pos', customers: 'customers.view', forms: 'content.manage', pages: 'content.manage', codes: 'content.manage',
-  compare: 'catalog.manage', purchasing: 'purchasing.view', suppliers: 'purchasing.view', invoices: 'invoices.view', team: 'team.manage', settings: 'team.manage', activity: 'team.manage', quotes: 'customers.view' };
+  compare: 'catalog.manage', purchasing: 'purchasing.view', suppliers: 'purchasing.view', invoices: 'invoices.view', team: 'team.manage', settings: 'team.manage', activity: 'team.manage', quotes: 'customers.view', estimates: 'invoices.view' };
 const ROLES = { owner: 'Owner — full access, including who is an admin', admin: 'Admin — full access (cannot change owners/admins)', manager: 'Manager — orders, refunds, products, inventory, purchasing, content, customers, reports',
   staff: 'Staff — in-store sales (POS), view orders, customers and stock, messages', warehouse: 'Warehouse — pick & ship orders, manage stock and purchase orders', accountant: 'Accountant — invoicing, reports, view orders and customers',
   support: 'Support — messages, view orders and customers', customer: 'Customer — no admin access' }; // form being edited in the builder
@@ -828,25 +828,32 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <div class="chips"><a class="chip ${!ent ? 'on' : ''}" href="#/admin/activity">Everything</a>${ents.map((e) => `<a class="chip ${ent === e ? 'on' : ''}" href="#/admin/activity?entity=${e}">${e.replace('_', ' ')}</a>`).join('')}</div>
     ${rows.length ? `<table><tr><th>When</th><th>Who</th><th>What</th></tr>${rows.map((a) => `<tr><td>${dateOf(a.created_at)}</td><td>${esc(a.actor)}</td><td>${fmtAudit(a)}</td></tr>`).join('')}</table>` : '<p class="muted">Nothing recorded yet.</p>'}`;
   }
-  if (sub === 'invoices' && (id === 'new' || extra === 'edit')) {
-    const ex = id === 'new' ? null : (await sb.from('invoices').select('*').eq('id', id).single()).data;
-    const exItems = ex ? (await sb.from('invoice_items').select('*').eq('invoice_id', id).order('sort')).data : [];
-    if (ex && ['paid', 'void'].includes(ex.status)) return `<h1>Invoice ${esc(ex.number)}</h1><p class="flash error" style="margin-top:0">A ${ex.status} invoice can't be edited.</p><p><a class="btn ghost" href="#/admin/invoices/${ex.id}">← Back to invoice</a></p>`;
-    const [custs, prods] = await Promise.all([sb.from('profiles').select('id,name,email').eq('role', 'customer').order('name').limit(300), sb.from('products').select('id,name,price_cents').eq('active', true).order('name')]);
-    INV = { id: ex?.id || null, customer_id: ex?.customer_id || '', customer_name: ex?.customer_name || '', customer_email: ex?.customer_email || '', customer_address: ex?.customer_address || '',
-      issue_date: ex?.issue_date || todayStr(), due_date: ex?.due_date || addDays(todayStr(), Number(STORE.invoice_due_days) || 14), notes: ex?.notes || '', terms: ex ? ex.terms : (STORE.invoice_terms || ''),
-      discount_cents: ex?.discount_cents || 0, tax_rate: ex ? Number(ex.tax_rate) : (Number(STORE.tax_rate) || 0), tax_label: ex?.tax_label || STORE.tax_label || 'Tax',
-      items: ex ? exItems.map((x) => ({ description: x.description, qty: Number(x.qty), unit_price_cents: x.unit_price_cents, taxable: x.taxable, product_id: x.product_id })) : [{ description: '', qty: 1, unit_price_cents: 0, taxable: true, product_id: null }], custs: custs.data || [], prods: prods.data || [] };
-    return `<h1>${ex ? 'Edit invoice ' + esc(ex.number) : 'New invoice'}</h1><p><a href="#/admin/invoices${ex ? '/' + ex.id : ''}">← Cancel</a></p><div class="invedit">
-      <section class="cs"><h3>Customer</h3><label>Name <small class="muted">(type to pick an existing customer, or enter anyone)</small><input id="iv_name" list="custlist" value="${esc(INV.customer_name)}" required autocomplete="off"></label>
-      <datalist id="custlist">${INV.custs.map((c) => `<option value="${esc(c.name || c.email)}" data-id="${c.id}" data-email="${esc(c.email)}">${esc(c.email)}</option>`).join('')}</datalist>
-      <div class="two2"><label>Email<input id="iv_email" type="email" value="${esc(INV.customer_email)}"></label><label>Issue date<input id="iv_issue" type="date" value="${INV.issue_date}"></label></div>
-      <div class="two2"><label>Billing address<textarea id="iv_addr" rows="3">${esc(INV.customer_address)}</textarea></label><div class="stack"><label>Due date<input id="iv_due" type="date" value="${INV.due_date}"></label><div class="row"><small class="muted">Quick terms:</small>${[7, 14, 30, 60].map((n) => `<button type="button" class="btn ghost duebtn" data-n="${n}" style="padding:4px 10px;min-height:0">Net ${n}</button>`).join('')}</div></div></div></section>
-      <section class="cs"><h3>Line items</h3><table class="invlines"><tr><th>Description</th><th>Qty</th><th>Rate ($)</th><th>Tax</th><th class="r">Amount</th><th></th></tr><tbody id="ivlines">${INV.items.map(invLineRow).join('')}</tbody></table>
-      <div class="row"><button type="button" class="btn ghost" id="iv_add">+ Add line</button><select id="iv_prod" aria-label="Add a product"><option value="">+ Add a product…</option>${INV.prods.map((x) => `<option value="${x.id}">${esc(x.name)} — ${money(x.price_cents)}</option>`).join('')}</select></div>
-      <div class="two2"><div class="stack"><label>Discount ($)<input id="iv_disc" type="number" step="0.01" min="0" value="${(INV.discount_cents / 100).toFixed(2)}"></label><div class="two2"><label>Tax name<input id="iv_tlabel" value="${esc(INV.tax_label)}" maxlength="30"></label><label>Rate (%)<input id="iv_trate" type="number" step="0.001" min="0" max="50" value="${INV.tax_rate}"></label></div></div><div id="iv_totals">${invTotalsHtml()}</div></div></section>
-      <section class="cs"><h3>Notes &amp; terms</h3><label>Notes (shown to the customer)<textarea id="iv_notes" rows="3" maxlength="3000">${esc(INV.notes)}</textarea></label><label>Terms<textarea id="iv_terms" rows="3" maxlength="3000">${esc(INV.terms)}</textarea></label></section>
-      <div class="row"><button class="btn" id="iv_save" type="button">Save draft</button><button class="btn ghost" id="iv_send" type="button">Save &amp; mark as sent</button></div></div>`;
+  if (sub === 'invoices' && id === 'recurring' && !extra) {
+    if (can('invoices.manage')) await sb.rpc('run_recurring_invoices');
+    const rs = (await sb.from('recurring_invoices').select('*').order('id', { ascending: false })).data || [], mng = can('invoices.manage');
+    const every = (r) => `Every ${r.every > 1 ? r.every + ' ' : ''}${{ weekly: 'week', monthly: 'month', quarterly: 'quarter', yearly: 'year' }[r.frequency]}${r.every > 1 ? 's' : ''}`;
+    return `<div class="dashhead"><div><h1 style="margin:0">Recurring invoices</h1><p class="muted" style="margin:2px 0 0">Invoices that create themselves on a schedule (checked every morning).</p></div><div class="row"><a class="btn ghost" href="#/admin/invoices">← Invoices</a>${mng ? '<button class="btn ghost" id="runrec" type="button">Run due now</button><a class="btn" href="#/admin/invoices/recurring/new">+ New recurring invoice</a>' : ''}</div></div>
+    ${rs.length ? `<table><tr><th>Name</th><th>Customer</th><th>Schedule</th><th>Next invoice</th><th>Ends</th><th>Sent automatically</th><th>Invoices made</th><th></th></tr>${rs.map((r) => `<tr><td><b>${esc(r.name)}</b>${r.active ? '' : ' <span class="status">paused</span>'}</td><td>${esc(r.customer_name)}</td><td>${every(r)}</td><td>${r.active ? esc(r.next_run) : '—'}</td><td>${esc(r.end_date || 'never')}</td><td>${r.auto_send ? 'Yes' : 'No (drafts)'}</td><td>${r.runs}</td>
+      <td>${mng ? `<a href="#/admin/invoices/recurring/${r.id}">Edit</a> · <button class="link togrec" data-id="${r.id}" data-on="${r.active}" style="color:var(--brand)">${r.active ? 'Pause' : 'Resume'}</button> · <button class="link delrec" data-id="${r.id}" style="color:var(--err)">Delete</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">No recurring invoices yet. Use them for retainers, maintenance contracts or monthly supply orders.</p>'}`;
+  }
+  if (sub === 'invoices' && id === 'recurring') return editorPage('recurring', extra);
+  if (sub === 'invoices' && (id === 'new' || extra === 'edit')) return editorPage('invoice', id);
+  if (sub === 'estimates' && (id === 'new' || extra === 'edit')) return editorPage('estimate', id);
+  if (sub === 'estimates' && id) {
+    const [er, ir] = await Promise.all([sb.from('estimates').select('*').eq('id', id).single(), sb.from('estimate_items').select('*').eq('estimate_id', id).order('sort')]);
+    const e = er.data, mng = can('invoices.manage'), link = `${location.origin}${location.pathname}#/estimate/${e.id}?k=${e.view_key}`;
+    return `<p><a href="#/admin/estimates">← All estimates</a></p>${mng ? `<div class="row noprint" style="margin-bottom:12px">${['draft', 'sent'].includes(e.status) ? `<a class="btn ghost" href="#/admin/estimates/${e.id}/edit">✎ Edit</a>` : ''}
+      ${e.status === 'draft' ? '<button class="btn" data-estact="sent">Mark as sent &amp; email</button>' : ''}${e.status === 'sent' ? '<button class="btn ghost" data-estact="sent">Re-send email</button><button class="btn ghost" data-estact="accepted">Mark accepted</button><button class="btn ghost" data-estact="declined">Mark declined</button>' : ''}
+      ${e.status !== 'converted' ? '<button class="btn" id="estconvert" style="background:var(--ok)">→ Convert to invoice</button>' : `<a class="btn ghost" href="#/admin/invoices/${e.invoice_id}">View invoice</a>`}${e.status !== 'converted' ? '<button class="btn ghost" id="estdel" style="color:var(--err)">Delete</button>' : ''}<button class="btn ghost" id="printbtn" type="button">🖨 Print</button></div>` : ''}
+      ${invDoc(e, ir.data || [], [])}${e.status !== 'draft' ? `<div class="noprint" style="margin-top:12px"><small class="muted">Customer link (they can accept or decline there)</small><input readonly value="${esc(link)}" onclick="this.select()" style="width:100%;font-size:.85rem"></div>` : ''}`;
+  }
+  if (sub === 'estimates') {
+    const es = (await sb.from('estimates').select('*').order('id', { ascending: false }).limit(500)).data || [], filter = q.get('status') || '', eff = (e) => (e.status === 'sent' && e.expires_on < todayStr() ? 'expired' : e.status);
+    const rows = es.filter((e) => !filter || eff(e) === filter), open = es.filter((e) => e.status === 'sent' && e.expires_on >= todayStr());
+    return `<div class="dashhead"><div><h1 style="margin:0">Estimates</h1><p class="muted" style="margin:2px 0 0">Send a price before the work. When the customer accepts, convert it to an invoice in one click.</p></div><div class="row"><a class="btn ghost" href="#/admin/invoices">Invoices</a>${can('invoices.manage') ? '<a class="btn" href="#/admin/estimates/new">+ New estimate</a>' : ''}</div></div>
+    <div class="kpis"><div class="kpi"><span class="lbl">Awaiting answer</span><b>${open.length}</b><small class="muted">${money(open.reduce((a, e) => a + e.total_cents, 0))} quoted</small></div><div class="kpi"><span class="lbl">Accepted</span><b>${es.filter((e) => e.status === 'accepted').length}</b></div><div class="kpi"><span class="lbl">Converted to invoices</span><b>${es.filter((e) => e.status === 'converted').length}</b></div><div class="kpi"><span class="lbl">Drafts</span><b>${es.filter((e) => e.status === 'draft').length}</b></div></div>
+    <div class="chips" style="margin-top:14px">${[['', 'All'], ['draft', 'Draft'], ['sent', 'Sent'], ['accepted', 'Accepted'], ['declined', 'Declined'], ['expired', 'Expired'], ['converted', 'Converted']].map(([v, l]) => `<a class="chip ${filter === v ? 'on' : ''}" href="#/admin/estimates${v ? '?status=' + v : ''}">${l}</a>`).join('')}</div>
+    ${rows.length ? `<table><tr><th>Number</th><th>Customer</th><th>Issued</th><th>Valid until</th><th>Total</th><th>Status</th></tr>${rows.map((e) => { const st = eff(e); return `<tr><td><a href="#/admin/estimates/${e.id}"><b>${esc(e.number)}</b></a></td><td>${esc(e.customer_name)}</td><td>${esc(e.issue_date)}</td><td>${esc(e.expires_on)}</td><td>${money(e.total_cents)}</td><td><span class="status ${['expired', 'declined'].includes(st) ? 'cancelled' : ['accepted', 'converted'].includes(st) ? 'paid' : st}">${st}</span></td></tr>`; }).join('')}</table>` : '<p class="muted">No estimates match.</p>'}`;
   }
   if (sub === 'invoices' && id) {
     const [ir, itr, pr] = await Promise.all([sb.from('invoices').select('*').eq('id', id).single(), sb.from('invoice_items').select('*').eq('invoice_id', id).order('sort'), sb.from('invoice_payments').select('*').eq('invoice_id', id).order('id')]);
@@ -861,6 +868,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
       ${inv.status !== 'draft' ? `<div><small class="muted">Customer link</small><input readonly value="${esc(link)}" onclick="this.select()" style="width:100%;font-size:.8rem"></div>` : ''}</aside></div>`;
   }
   if (sub === 'invoices') {
+    if (can('invoices.manage')) await sb.rpc('run_recurring_invoices');
     const [ir, pr] = await Promise.all([sb.from('invoices').select('*').order('id', { ascending: false }).limit(500), sb.from('invoice_payments').select('amount_cents,paid_on').gte('paid_on', addDays(todayStr(), -30))]);
     const all = ir.data || [], filter = q.get('status') || '', term = (q.get('search') || '').trim().toLowerCase();
     const rows = all.filter((i) => (!filter || invEff(i) === filter) && (!term || i.number.toLowerCase().includes(term) || i.customer_name.toLowerCase().includes(term)));
@@ -868,7 +876,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     const bucket = (lo, hi) => open.filter((i) => past(i) >= lo && past(i) <= hi).reduce((a, i) => a + invBal(i), 0);
     const aging = [['Current', open.filter((i) => past(i) <= 0).reduce((a, i) => a + invBal(i), 0)], ['1–30 days', bucket(1, 30)], ['31–60', bucket(31, 60)], ['61–90', bucket(61, 90)], ['90+', bucket(91, 99999)]];
     const link = (st) => `#/admin/invoices${st ? '?status=' + st : ''}`;
-    return `<div class="dashhead"><h1 style="margin:0">Invoices</h1>${can('invoices.manage') ? '<a class="btn" href="#/admin/invoices/new">+ New invoice</a>' : ''}</div>
+    return `<div class="dashhead"><h1 style="margin:0">Invoices</h1><div class="row"><a class="btn ghost" href="#/admin/estimates">Estimates</a><a class="btn ghost" href="#/admin/invoices/recurring">Recurring</a>${can('invoices.manage') ? '<a class="btn" href="#/admin/invoices/new">+ New invoice</a>' : ''}</div></div>
     <div class="kpis"><div class="kpi"><span class="lbl">Outstanding</span><b>${money(open.reduce((a, i) => a + invBal(i), 0))}</b><small class="muted">${open.length} open invoice${open.length === 1 ? '' : 's'}</small></div><div class="kpi"><span class="lbl">Overdue</span><b class="${aging.slice(1).some((a) => a[1]) ? 'down' : ''}">${money(aging.slice(1).reduce((a, x) => a + x[1], 0))}</b></div>
       <div class="kpi"><span class="lbl">Paid in last 30 days</span><b>${money((pr.data || []).reduce((a, x) => a + x.amount_cents, 0))}</b></div><div class="kpi"><span class="lbl">Drafts</span><b>${all.filter((i) => i.status === 'draft').length}</b></div></div>
     <h2>Receivables aging</h2><table class="aging"><tr>${aging.map((a) => `<th>${a[0]}</th>`).join('')}</tr><tr>${aging.map((a) => `<td><b>${money(a[1])}</b></td>`).join('')}</tr></table>
@@ -995,7 +1003,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   const attn = [['🧾', pendRes.count || 0, 'pending orders', '#/admin/orders', 'orders.view'], ['💬', unread.msg, 'unread messages', '#/messages', 'messages'], ['📝', formRes.count || 0, 'new form responses', '#/admin/forms', 'content.manage'], ['📦', (lowRes.data || []).length, 'low-stock products', '#/admin/inventory', 'inventory.view'],
     ['📋', quoteRes.count || 0, 'quote requests this week', '#/admin/quotes', 'customers.view'], ['💳', overdue.length, 'overdue invoices', '#/admin/invoices', 'invoices.view']].filter((a) => can(a[4]));
   const links = [['🧾', 'Orders', '#/admin/orders'], ['🛍️', 'Products', '#/admin/products'], ['📦', 'Inventory', '#/admin/inventory'], ['📍', 'Locations', '#/admin/locations'], ['📈', 'Sales', '#/admin/sales'], ['🏪', 'Point of sale', '#/admin/pos'],
-    ['🧾', 'Invoices', '#/admin/invoices'], ['🚚', 'Purchasing', '#/admin/purchasing'], ['🏭', 'Suppliers', '#/admin/suppliers'], ['🔐', 'Team & roles', '#/admin/team'], ['🕘', 'Activity log', '#/admin/activity'],
+    ['🧾', 'Invoices', '#/admin/invoices'], ['📝', 'Estimates', '#/admin/estimates'], ['🚚', 'Purchasing', '#/admin/purchasing'], ['🏭', 'Suppliers', '#/admin/suppliers'], ['🔐', 'Team & roles', '#/admin/team'], ['🕘', 'Activity log', '#/admin/activity'],
     ['👥', 'Customers', '#/admin/customers'], ['💬', 'Messages', '#/messages'], ['📝', 'Forms', '#/admin/forms'], ['📄', 'Pages', '#/admin/pages'], ['💲', 'Price compare', '#/admin/compare'], ['🏷️', 'Discount codes', '#/admin/codes'], ['⚙️', 'Settings', '#/admin/settings'], ['📋', 'Quotes', '#/admin/quotes']];
   return `<div class="dashhead"><div><h1 style="margin:0">Good ${hr < 12 ? 'morning' : hr < 18 ? 'afternoon' : 'evening'}${first ? ', ' + esc(first) : ''} 👋</h1><p class="muted" style="margin:2px 0 0">${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })} · ${money(todayRev)} sold today</p></div>
     <div class="row"><a class="btn" href="#/admin/pos">+ In-store sale</a><a class="btn ghost" href="#/admin/products/new">+ Product</a></div></div>
@@ -1029,6 +1037,13 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     const { error } = await sb.rpc('record_invoice_payment', { iid: Number(id), amount: Math.round(parseFloat(f.amount) * 100), pay_method: f.method, ref: f.ref || '', paid: f.paid || todayStr(), memo: '' }); error ? fail(error) : (flash('Payment recorded.'), route());
   });
   document.querySelectorAll('.delpay').forEach((b) => b.addEventListener('click', async () => { if (!confirm('Remove this payment?')) return; const { error } = await sb.rpc('delete_invoice_payment', { pid: Number(b.dataset.id) }); error ? fail(error) : route(); }));
+  // estimates + recurring
+  document.querySelectorAll('[data-estact]').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.rpc('set_estimate_status', { eid: Number(id), new_status: b.dataset.estact }); error ? fail(error) : (flash('Estimate updated.'), route()); }));
+  document.getElementById('estconvert')?.addEventListener('click', async () => { if (!confirm('Convert this estimate into an invoice?')) return; const { data, error } = await sb.rpc('convert_estimate', { eid: Number(id) }); error ? fail(error) : (flash('Invoice created from the estimate.'), (location.hash = `#/admin/invoices/${data}`)); });
+  document.getElementById('estdel')?.addEventListener('click', async () => { if (!confirm('Delete this estimate?')) return; const { error } = await sb.rpc('delete_estimate', { eid: Number(id) }); error ? fail(error) : (location.hash = '#/admin/estimates'); });
+  document.getElementById('runrec')?.addEventListener('click', async () => { const { data, error } = await sb.rpc('run_recurring_invoices'); error ? fail(error) : (flash(data ? `${data} invoice${data === 1 ? '' : 's'} created.` : 'Nothing was due.'), route()); });
+  document.querySelectorAll('.togrec').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.rpc('set_recurring_active', { rid: Number(b.dataset.id), on_off: b.dataset.on !== 'true' }); error ? fail(error) : route(); }));
+  document.querySelectorAll('.delrec').forEach((b) => b.addEventListener('click', async () => { if (!confirm('Delete this recurring invoice? Invoices already created are kept.')) return; const { error } = await sb.rpc('delete_recurring', { rid: Number(b.dataset.id) }); error ? fail(error) : route(); }));
   // invoice editor
   const ivl = document.getElementById('ivlines');
   if (ivl && INV) {
@@ -1044,16 +1059,26 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     document.getElementById('iv_trate').addEventListener('input', (e) => { INV.tax_rate = parseFloat(e.target.value) || 0; retot(); });
     document.getElementById('iv_tlabel').addEventListener('input', (e) => { INV.tax_label = e.target.value; retot(); });
     document.getElementById('iv_name').addEventListener('input', (e) => { const c = INV.custs.find((x) => (x.name || x.email) === e.target.value); INV.customer_id = c ? c.id : ''; if (c) document.getElementById('iv_email').value = c.email; });
-    document.querySelectorAll('.duebtn').forEach((b) => b.addEventListener('click', () => { document.getElementById('iv_due').value = addDays(document.getElementById('iv_issue').value || todayStr(), Number(b.dataset.n)); }));
+    document.querySelectorAll('.duebtn').forEach((b) => b.addEventListener('click', () => { document.getElementById('iv_due').value = addDays(document.getElementById('iv_issue')?.value || todayStr(), Number(b.dataset.n)); }));
     const save = async (send) => {
-      const v = (i) => document.getElementById(i).value, items = INV.items.filter((l) => l.description.trim()).map((l) => ({ description: l.description.trim(), qty: l.qty, unit_price_cents: l.unit_price_cents, taxable: l.taxable, product_id: l.product_id }));
+      const v = (i) => document.getElementById(i)?.value ?? '', items = INV.items.filter((l) => l.description.trim()).map((l) => ({ description: l.description.trim(), qty: l.qty, unit_price_cents: l.unit_price_cents, taxable: l.taxable, product_id: l.product_id }));
       if (!v('iv_name').trim()) return fail(new Error('Enter the customer name.')); if (!items.length) return fail(new Error('Add at least one line item with a description.')); if (items.some((l) => !(l.qty > 0))) return fail(new Error('Quantities must be above zero.'));
-      const inv = { id: INV.id, customer_id: INV.customer_id || null, customer_name: v('iv_name').trim(), customer_email: v('iv_email').trim(), customer_address: v('iv_addr'), issue_date: v('iv_issue'), due_date: v('iv_due'), notes: v('iv_notes'), terms: v('iv_terms'), discount_cents: INV.discount_cents, tax_rate: Number(INV.tax_rate) || 0, tax_label: INV.tax_label };
-      const { data, error } = await sb.rpc('save_invoice', { inv, items }); if (error) return fail(error);
+      const base = { id: INV.id, customer_id: INV.customer_id || null, customer_name: v('iv_name').trim(), customer_email: v('iv_email').trim(), customer_address: v('iv_addr'), notes: v('iv_notes'), terms: v('iv_terms'), discount_cents: INV.discount_cents, tax_rate: Number(INV.tax_rate) || 0, tax_label: INV.tax_label };
+      if (INV.kind === 'recurring') {
+        if (!v('rc_name').trim()) return fail(new Error('Give this recurring invoice a name.'));
+        const rec = { ...base, name: v('rc_name').trim(), frequency: v('rc_freq'), every: parseInt(v('rc_every'), 10) || 1, next_run: v('rc_next'), end_date: v('rc_end') || null, due_days: parseInt(v('rc_due'), 10) || 0, auto_send: document.getElementById('rc_auto').checked };
+        const { error } = await sb.rpc('save_recurring', { rec, items }); if (error) return fail(error); flash('Recurring invoice saved.'); location.hash = '#/admin/invoices/recurring'; return;
+      }
+      if (INV.kind === 'estimate') {
+        const { data, error } = await sb.rpc('save_estimate', { est: { ...base, issue_date: v('iv_issue'), expires_on: v('iv_due') }, items }); if (error) return fail(error);
+        if (send) { const r = await sb.rpc('set_estimate_status', { eid: data, new_status: 'sent' }); if (r.error) return fail(r.error); }
+        flash(send ? 'Estimate saved and marked as sent.' : 'Estimate saved.'); location.hash = `#/admin/estimates/${data}`; return;
+      }
+      const { data, error } = await sb.rpc('save_invoice', { inv: { ...base, issue_date: v('iv_issue'), due_date: v('iv_due') }, items }); if (error) return fail(error);
       if (send) { const r = await sb.rpc('set_invoice_status', { iid: data, new_status: 'sent' }); if (r.error) return fail(r.error); }
       flash(send ? 'Invoice saved and marked as sent.' : 'Invoice saved.'); location.hash = `#/admin/invoices/${data}`;
     };
-    document.getElementById('iv_save').addEventListener('click', () => save(false)); document.getElementById('iv_send').addEventListener('click', () => save(true));
+    document.getElementById('iv_save').addEventListener('click', () => save(false)); document.getElementById('iv_send')?.addEventListener('click', () => save(true));
   }
   // suppliers
   document.querySelectorAll('.supform').forEach((fm) => fm.addEventListener('submit', async (e) => {
@@ -1610,12 +1635,12 @@ const calcInv = (lines, discCents, rate) => {
   return { sub, disc, tax, total: sub - disc + tax };
 };
 const invDoc = (inv, items, pays) => {
-  const b = STORE.biz || {}, bal = invBal(inv), eff = invEff(inv);
+  const est = 'expires_on' in inv, b = STORE.biz || {}, bal = est ? 0 : invBal(inv), eff = est ? (inv.status === 'sent' && inv.expires_on < todayStr() ? 'expired' : inv.status) : invEff(inv);
   return `<div class="invdoc"><div class="invtop"><div><h2 style="margin:0">${esc(b.legal_name || theme.name || 'Gomi Insulation')}</h2><p class="muted" style="margin:4px 0 0">${[b.address, b.phone, b.email].filter(Boolean).map(esc).join('<br>')}${b.tax_number ? `<br>${esc(inv.tax_label || STORE.tax_label || 'Tax')} no. ${esc(b.tax_number)}` : ''}</p></div>
-    <div class="invmeta"><h1 style="margin:0">INVOICE</h1><table><tr><td>Number</td><td><b>${esc(inv.number)}</b></td></tr><tr><td>Issued</td><td>${esc(inv.issue_date)}</td></tr><tr><td>Due</td><td>${esc(inv.due_date)}</td></tr><tr><td>Status</td><td><span class="status ${eff === 'overdue' ? 'cancelled' : eff}">${eff}</span></td></tr></table></div></div>
+    <div class="invmeta"><h1 style="margin:0">${est ? 'ESTIMATE' : 'INVOICE'}</h1><table><tr><td>Number</td><td><b>${esc(inv.number)}</b></td></tr><tr><td>Issued</td><td>${esc(inv.issue_date)}</td></tr><tr><td>${est ? 'Valid until' : 'Due'}</td><td>${esc(est ? inv.expires_on : inv.due_date)}</td></tr><tr><td>Status</td><td><span class="status ${['overdue', 'expired', 'declined'].includes(eff) ? 'cancelled' : eff === 'accepted' || eff === 'converted' ? 'paid' : eff}">${eff}</span></td></tr></table></div></div>
     <div class="billto"><small class="muted">BILL TO</small><br><b>${esc(inv.customer_name)}</b>${inv.customer_address ? '<br>' + esc(inv.customer_address).replace(/\n/g, '<br>') : ''}${inv.customer_email ? '<br>' + esc(inv.customer_email) : ''}</div>
     <table class="invitems"><tr><th>Description</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr>${items.map((i) => `<tr><td>${esc(i.description)}${i.taxable ? '' : ' <small class="muted">(no tax)</small>'}</td><td class="r">${Number(i.qty)}</td><td class="r">${money(i.unit_price_cents)}</td><td class="r">${money(Math.round(Number(i.qty) * i.unit_price_cents))}</td></tr>`).join('')}</table>
-    <dl class="totals" style="margin-left:auto"><dt>Subtotal</dt><dd>${money(inv.subtotal_cents)}</dd>${inv.discount_cents ? `<dt>Discount</dt><dd>−${money(inv.discount_cents)}</dd>` : ''}${inv.tax_cents ? `<dt>${esc(inv.tax_label || 'Tax')} (${Number(inv.tax_rate)}%)</dt><dd>${money(inv.tax_cents)}</dd>` : ''}<dt>Total</dt><dd><b>${money(inv.total_cents)}</b></dd>${inv.paid_cents ? `<dt>Paid</dt><dd>−${money(inv.paid_cents)}</dd>` : ''}<dt><b>Balance due</b></dt><dd><b style="font-size:1.2rem">${money(bal)}</b></dd></dl>
+    <dl class="totals" style="margin-left:auto"><dt>Subtotal</dt><dd>${money(inv.subtotal_cents)}</dd>${inv.discount_cents ? `<dt>Discount</dt><dd>−${money(inv.discount_cents)}</dd>` : ''}${inv.tax_cents ? `<dt>${esc(inv.tax_label || 'Tax')} (${Number(inv.tax_rate)}%)</dt><dd>${money(inv.tax_cents)}</dd>` : ''}<dt>Total</dt><dd><b style="${est ? 'font-size:1.2rem' : ''}">${money(inv.total_cents)}</b></dd>${est ? '' : `${inv.paid_cents ? `<dt>Paid</dt><dd>−${money(inv.paid_cents)}</dd>` : ''}<dt><b>Balance due</b></dt><dd><b style="font-size:1.2rem">${money(bal)}</b></dd>`}</dl>
     ${(pays || []).length ? `<h3 style="margin-bottom:6px">Payments received</h3><table class="invitems">${pays.map((p) => `<tr><td>${esc(p.paid_on)}</td><td>${esc(p.method || 'Payment')}</td><td class="r">${money(p.amount_cents)}</td></tr>`).join('')}</table>` : ''}
     ${inv.notes ? `<p style="white-space:pre-wrap"><b>Notes</b><br>${esc(inv.notes)}</p>` : ''}${inv.terms ? `<p class="muted" style="white-space:pre-wrap"><b>Terms</b><br>${esc(inv.terms)}</p>` : ''}${bal > 0 && STORE.invoice_pay_info ? `<div class="trackbox"><span style="white-space:pre-wrap"><b>How to pay</b><br>${esc(STORE.invoice_pay_info)}</span></div>` : ''}</div>`;
 };
@@ -1624,15 +1649,67 @@ pages.invoice = async ([id], q) => {
   if (q.get('k')) { const { data } = await sb.rpc('get_invoice_public', { iid: Number(id), k: q.get('k') }); if (data) { inv = data; items = data.items; pays = data.payments; } }
   else if (session) { inv = (await sb.from('invoices').select('*').eq('id', id).maybeSingle()).data; if (inv) { items = (await sb.from('invoice_items').select('*').eq('invoice_id', id).order('sort')).data || []; pays = (await sb.from('invoice_payments').select('*').eq('invoice_id', id).order('id')).data || []; } }
   if (!inv) return '<h1>Invoice not found</h1><p class="muted">The link may be wrong, or you may need to <a href="#/login">log in</a>.</p>';
-  document.title = `Invoice ${inv.number}`;
-  return `<div class="row noprint" style="justify-content:flex-end;margin-bottom:10px"><button class="btn ghost" id="printbtn" type="button">🖨 Print / save as PDF</button></div>${invDoc(inv, items, pays)}`;
+  document.title = `Invoice ${inv.number}`; INVPUB = { id: inv.id, key: q.get('k') || '' };
+  if (q.get('paid')) flash('Thank you — your payment is being processed. This page updates once it is confirmed.');
+  const canPay = C.PAYMENTS && INVPUB.key && inv.status === 'sent' && invBal(inv) >= 50;
+  return `<div class="row noprint" style="justify-content:flex-end;margin-bottom:10px">${canPay ? `<button class="btn" id="payonline" type="button">💳 Pay ${money(invBal(inv))} by card</button>` : ''}<button class="btn ghost" id="printbtn" type="button">🖨 Print / save as PDF</button></div>${invDoc(inv, items, pays)}`;
 };
-pages.invoice.after = () => document.getElementById('printbtn')?.addEventListener('click', () => window.print());
+let INVPUB = null, ESTPUB = null;
+pages.invoice.after = () => {
+  document.getElementById('printbtn')?.addEventListener('click', () => window.print());
+  document.getElementById('payonline')?.addEventListener('click', async (e) => {
+    e.target.disabled = true; const { data, error } = await sb.functions.invoke('invoice-checkout', { body: { invoice_id: INVPUB.id, key: INVPUB.key } }); e.target.disabled = false;
+    if (data?.url) location.href = data.url; else fail(new Error(data?.error || error?.message || 'Could not start the payment.'));
+  });
+};
+pages.estimate = async ([id], q) => {
+  let est, items;
+  if (q.get('k')) { const { data } = await sb.rpc('get_estimate_public', { eid: Number(id), k: q.get('k') }); if (data) { est = data; items = data.items; } }
+  else if (session) { est = (await sb.from('estimates').select('*').eq('id', id).maybeSingle()).data; if (est) items = (await sb.from('estimate_items').select('*').eq('estimate_id', id).order('sort')).data || []; }
+  if (!est) return '<h1>Estimate not found</h1><p class="muted">The link may be wrong, or you may need to <a href="#/login">log in</a>.</p>';
+  document.title = `Estimate ${est.number}`; ESTPUB = { id: est.id, key: q.get('k') || '' };
+  const open = est.status === 'sent' && est.expires_on >= todayStr() && ESTPUB.key;
+  const msg = est.status === 'accepted' ? '<p class="flash ok" style="margin-top:0">✅ You accepted this estimate. We will be in touch to schedule the work.</p>' : est.status === 'declined' ? '<p class="flash error" style="margin-top:0">You declined this estimate.</p>' : est.status === 'sent' && est.expires_on < todayStr() ? '<p class="flash error" style="margin-top:0">This estimate has expired — contact us for an updated one.</p>' : '';
+  return `${msg}<div class="row noprint" style="justify-content:flex-end;margin-bottom:10px">${open ? '<button class="btn" id="est_accept" type="button">✓ Accept estimate</button><button class="btn ghost" id="est_decline" type="button">Decline</button>' : ''}<button class="btn ghost" id="printbtn" type="button">🖨 Print</button></div>${invDoc(est, items, [])}`;
+};
+pages.estimate.after = () => {
+  document.getElementById('printbtn')?.addEventListener('click', () => window.print());
+  for (const [id, yes] of [['est_accept', true], ['est_decline', false]]) document.getElementById(id)?.addEventListener('click', async () => {
+    if (!yes && !confirm('Decline this estimate?')) return; const { error } = await sb.rpc('respond_estimate', { eid: ESTPUB.id, k: ESTPUB.key, accept: yes }); error ? fail(error) : route();
+  });
+};
 
 const invLineRow = (l, i) => `<tr data-i="${i}"><td><input data-k="description" value="${esc(l.description)}" placeholder="Description" maxlength="500" required></td><td><input data-k="qty" type="number" step="0.001" min="0.001" value="${l.qty}" style="width:84px"></td>
   <td><input data-k="price" type="number" step="0.01" min="0" value="${(l.unit_price_cents / 100).toFixed(2)}" style="width:104px"></td><td class="c"><input data-k="taxable" type="checkbox" ${l.taxable ? 'checked' : ''} aria-label="Taxable"></td><td class="r amt">${money(Math.round(l.qty * l.unit_price_cents))}</td><td><button type="button" class="crm" data-del="${i}" aria-label="Remove line">✕</button></td></tr>`;
 const invTotalsHtml = () => { const t = calcInv(INV.items, INV.discount_cents, INV.tax_rate); return `<dl class="totals" style="margin-left:auto"><dt>Subtotal</dt><dd>${money(t.sub)}</dd>${t.disc ? `<dt>Discount</dt><dd>−${money(t.disc)}</dd>` : ''}<dt>${esc(INV.tax_label || 'Tax')} (${Number(INV.tax_rate) || 0}%)</dt><dd>${money(t.tax)}</dd><dt><b>Total</b></dt><dd><b>${money(t.total)}</b></dd></dl>`; };
 
+const editorPage = async (kind, id) => {
+  const tbl = { invoice: 'invoices', estimate: 'estimates', recurring: 'recurring_invoices' }[kind], isNew = !id || id === 'new';
+  const ex = isNew ? null : (await sb.from(tbl).select('*').eq('id', id).single()).data;
+  const toLine = (x) => ({ description: x.description, qty: Number(x.qty), unit_price_cents: x.unit_price_cents, taxable: x.taxable, product_id: x.product_id || null });
+  let exItems = []; if (ex) exItems = kind === 'recurring' ? (ex.items || []).map(toLine) : ((await sb.from(kind === 'invoice' ? 'invoice_items' : 'estimate_items').select('*').eq(kind === 'invoice' ? 'invoice_id' : 'estimate_id', id).order('sort')).data || []).map(toLine);
+  const back = kind === 'invoice' ? '#/admin/invoices' : kind === 'estimate' ? '#/admin/estimates' : '#/admin/invoices/recurring', word = { invoice: 'invoice', estimate: 'estimate', recurring: 'recurring invoice' }[kind];
+  if (ex && ((kind === 'invoice' && ['paid', 'void'].includes(ex.status)) || (kind === 'estimate' && !['draft', 'sent'].includes(ex.status)))) return `<h1>${esc(ex.number)}</h1><p class="flash error" style="margin-top:0">A ${ex.status} ${word} can't be edited.</p><p><a class="btn ghost" href="${back}/${ex.id}">← Back</a></p>`;
+  const [custs, prods] = await Promise.all([sb.from('profiles').select('id,name,email').eq('role', 'customer').order('name').limit(300), sb.from('products').select('id,name,price_cents').eq('active', true).order('name')]);
+  INV = { kind, id: ex?.id || null, customer_id: ex?.customer_id || '', customer_name: ex?.customer_name || '', customer_email: ex?.customer_email || '', customer_address: ex?.customer_address || '',
+    issue_date: ex?.issue_date || todayStr(), due_date: kind === 'estimate' ? (ex?.expires_on || addDays(todayStr(), 30)) : (ex?.due_date || addDays(todayStr(), Number(STORE.invoice_due_days) || 14)), notes: ex?.notes || '', terms: ex ? ex.terms : (STORE.invoice_terms || ''),
+    discount_cents: ex?.discount_cents || 0, tax_rate: ex ? Number(ex.tax_rate) : (Number(STORE.tax_rate) || 0), tax_label: ex?.tax_label || STORE.tax_label || 'Tax',
+    items: ex ? exItems : [{ description: '', qty: 1, unit_price_cents: 0, taxable: true, product_id: null }], custs: custs.data || [], prods: prods.data || [] };
+  const meta = kind === 'recurring' ? `<section class="cs"><h3>Schedule</h3><label>Name <small class="muted">(for your own reference)</small><input id="rc_name" value="${esc(ex?.name || '')}" maxlength="120" placeholder="e.g. Monthly maintenance — Acme" required></label>
+      <div class="two2"><label>Repeats<select id="rc_freq">${[['weekly', 'Weekly'], ['monthly', 'Monthly'], ['quarterly', 'Quarterly'], ['yearly', 'Yearly']].map(([v, l]) => `<option value="${v}" ${(ex?.frequency || 'monthly') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><label>Every (how many periods)<input id="rc_every" type="number" min="1" max="24" value="${ex?.every || 1}"></label></div>
+      <div class="two2"><label>First invoice on<input id="rc_next" type="date" value="${ex?.next_run || todayStr()}"></label><label>Stop after (optional)<input id="rc_end" type="date" value="${ex?.end_date || ''}"></label></div>
+      <div class="two2"><label>Payment due after (days)<input id="rc_due" type="number" min="0" max="365" value="${ex?.due_days ?? (Number(STORE.invoice_due_days) || 14)}"></label><label class="check" style="align-self:end"><input id="rc_auto" type="checkbox" ${ex?.auto_send ? 'checked' : ''}> Send each invoice to the customer automatically</label></div></section>` : '';
+  const dates = kind === 'recurring' ? '' : `<div class="two2"><label>Billing address<textarea id="iv_addr" rows="3">${esc(INV.customer_address)}</textarea></label><div class="stack"><label>${kind === 'estimate' ? 'Valid until' : 'Due date'}<input id="iv_due" type="date" value="${INV.due_date}"></label><div class="row"><small class="muted">${kind === 'estimate' ? 'Valid for:' : 'Quick terms:'}</small>${(kind === 'estimate' ? [14, 30, 60] : [7, 14, 30, 60]).map((n) => `<button type="button" class="btn ghost duebtn" data-n="${n}" style="padding:4px 10px;min-height:0">${kind === 'estimate' ? n + ' days' : 'Net ' + n}</button>`).join('')}</div></div></div>`;
+  return `<h1>${ex ? 'Edit ' + (ex.number ? esc(ex.number) : word) : 'New ' + word}</h1><p><a href="${back}${ex && kind !== 'recurring' ? '/' + ex.id : ''}">← Cancel</a></p><div class="invedit">${meta}
+    <section class="cs"><h3>Customer</h3><label>Name <small class="muted">(type to pick an existing customer, or enter anyone)</small><input id="iv_name" list="custlist" value="${esc(INV.customer_name)}" required autocomplete="off"></label>
+    <datalist id="custlist">${INV.custs.map((c) => `<option value="${esc(c.name || c.email)}">${esc(c.email)}</option>`).join('')}</datalist>
+    <div class="two2"><label>Email<input id="iv_email" type="email" value="${esc(INV.customer_email)}"></label>${kind === 'recurring' ? `<label>Billing address<textarea id="iv_addr" rows="2">${esc(INV.customer_address)}</textarea></label>` : `<label>Issue date<input id="iv_issue" type="date" value="${INV.issue_date}"></label>`}</div>${dates}</section>
+    <section class="cs"><h3>Line items</h3><table class="invlines"><tr><th>Description</th><th>Qty</th><th>Rate ($)</th><th>Tax</th><th class="r">Amount</th><th></th></tr><tbody id="ivlines">${INV.items.map(invLineRow).join('')}</tbody></table>
+    <div class="row"><button type="button" class="btn ghost" id="iv_add">+ Add line</button><select id="iv_prod" aria-label="Add a product"><option value="">+ Add a product…</option>${INV.prods.map((x) => `<option value="${x.id}">${esc(x.name)} — ${money(x.price_cents)}</option>`).join('')}</select></div>
+    <div class="two2"><div class="stack"><label>Discount ($)<input id="iv_disc" type="number" step="0.01" min="0" value="${(INV.discount_cents / 100).toFixed(2)}"></label><div class="two2"><label>Tax name<input id="iv_tlabel" value="${esc(INV.tax_label)}" maxlength="30"></label><label>Rate (%)<input id="iv_trate" type="number" step="0.001" min="0" max="50" value="${INV.tax_rate}"></label></div></div><div id="iv_totals">${invTotalsHtml()}</div></div></section>
+    <section class="cs"><h3>Notes &amp; terms</h3><label>Notes (shown to the customer)<textarea id="iv_notes" rows="3" maxlength="3000">${esc(INV.notes)}</textarea></label><label>Terms<textarea id="iv_terms" rows="3" maxlength="3000">${esc(INV.terms)}</textarea></label></section>
+    <div class="row"><button class="btn" id="iv_save" type="button">${kind === 'recurring' ? 'Save recurring invoice' : 'Save draft'}</button>${kind === 'recurring' ? '' : '<button class="btn ghost" id="iv_send" type="button">Save &amp; mark as sent</button>'}</div></div>`;
+};
 const fmtAudit = (a) => {
   const d = a.detail || {}, mv = (x) => (Array.isArray(x) ? `${typeof x[0] === 'number' ? money(x[0]) : esc(x[0])} → ${typeof x[1] === 'number' ? money(x[1]) : esc(x[1])}` : esc(x));
   switch (a.action) {

@@ -28,6 +28,16 @@ Deno.serve(async (req) => {
     return new Response('ok');
   }
 
+  if (body.kind === 'estimate_sent') {
+    const { data: est } = await admin.from('estimates').select('*, estimate_items(*)').eq('id', body.estimate_id).single();
+    if (!est || !est.customer_email) return new Response('no recipient');
+    const rows = est.estimate_items.sort((x: any, y: any) => x.sort - y.sort).map((i: any) => `<tr><td>${esc(i.description)}</td><td align="right">${Number(i.qty)}</td><td align="right">${money(Math.round(Number(i.qty) * i.unit_price_cents))}</td></tr>`).join('');
+    await send(est.customer_email, `Estimate ${est.number} — ${money(est.total_cents)}`,
+      `<h2>Estimate ${esc(est.number)}</h2><p>Hello ${esc(est.customer_name)}, here is the estimate we prepared for you.</p><table cellpadding="6" style="border-collapse:collapse"><tr><th align="left">Description</th><th>Qty</th><th align="right">Amount</th></tr>${rows}</table>
+       ${est.tax_cents ? `<p>${esc(est.tax_label || 'Tax')}: ${money(est.tax_cents)}</p>` : ''}<p><b>Total: ${money(est.total_cents)}</b></p><p>Valid until ${esc(est.expires_on)}.</p><p><a href="${site}/#/estimate/${est.id}?k=${est.view_key}">Review, accept or decline this estimate</a></p>`);
+    return new Response('ok');
+  }
+
   if (body.kind === 'invoice_sent') {
     const { data: inv } = await admin.from('invoices').select('*, invoice_items(*)').eq('id', body.invoice_id).single();
     if (!inv || !inv.customer_email) return new Response('no recipient');

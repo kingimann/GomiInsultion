@@ -122,3 +122,9 @@ Permissions are enforced by the database (row-level security and permission chec
 - **Orders:** search, status filters, bulk status updates, internal notes, refunds (reduce revenue reports), printable packing slip/invoice.
 - **Customers:** detail page with lifetime spend, private notes and tags.
 - **Activity log:** who changed what (orders, prices, invoices and payments, stock receipts, roles, settings).
+
+## Estimates, recurring invoices and online payment
+- **Estimates** (Admin → Estimates): same editor as invoices, with a "valid until" date. Mark as sent to email the customer a private link where they can **accept or decline**; you get a notification. **Convert to invoice** copies the lines, notes, terms and tax into a new invoice in one click.
+- **Recurring invoices** (Admin → Invoices → Recurring): pick a customer, line items and a schedule (weekly, monthly, quarterly, yearly, every N periods, optional end date). A daily job (06:15 UTC) creates each invoice as a draft, or sends it automatically if you choose; missed periods are caught up. "Run due now" is there if you want it immediately.
+- **Pay online:** with Stripe set up, the customer's invoice page shows **Pay by card** for the balance due; the Stripe webhook records the payment on the invoice automatically (duplicate-safe).
+  Setup, in addition to the order-payment steps above: `supabase functions deploy invoice-checkout`, redeploy `stripe-webhook`, and make sure `SITE_URL` and `STRIPE_SECRET_KEY` are set. The webhook already listens for `checkout.session.completed`.

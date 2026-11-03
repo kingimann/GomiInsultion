@@ -169,3 +169,7 @@ When an admin sends an invoice or estimate by email from the send panel, the bro
 **Admin → Customers** now shows new/repeat/lifetime-value KPIs, search (name, email, tag), segments (Top 10%, New, Repeat, Inactive 90d+, No orders), sorting, last-order column and CSV export; a customer's page also lists their invoices. Press **Ctrl/Cmd+K** anywhere in the admin (or the Search button on the dashboard) to jump to any section or find a customer, product, order or invoice.
 
 The invoice PDF library is bundled in `web/vendor/` (no external CDN needed).
+
+## Packing slips & reopen date
+
+Print a **packing slip** (items and quantities, no prices, with a "packed" tick box, delivery/pickup details and customer notes) from any order, or tick several orders and press *Packing slips* to print them one per page. **Settings → Shop status** can also take a **reopen date**: online ordering switches back on by itself that day (enforced in the database too), and the banner tells customers when you're back.

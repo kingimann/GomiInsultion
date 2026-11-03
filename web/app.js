@@ -6,17 +6,18 @@ let FREE_SHIP = 50000, SHIP = 1500;
 let SEO = {};
 let STORE = { ship_flat_cents: 1500, free_over_cents: 50000, tax_rate: 0, tax_label: 'Tax', biz: {} };
 function applyStoreCfg(v) { STORE = { ...STORE, ...(v || {}) }; FREE_SHIP = Number(STORE.free_over_cents) || 0; SHIP = Number(STORE.ship_flat_cents) || 0; renderClosedBar(); }
-const shopClosed = () => !!STORE.closed;
+const shopClosed = () => !!STORE.closed && (!STORE.closed_until || STORE.closed_until > new Date().toISOString().slice(0, 10));
 const closedMsg = () => (STORE.closed_message || '').trim() || 'We are not taking online orders right now. You can still browse and fill your cart — please check back soon.';
+const reopenNote = () => STORE.closed_until ? ` We reopen on ${new Date(STORE.closed_until + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}.` : '';
 function renderClosedBar() {
   let el = document.querySelector('.closedbar');
   if (!shopClosed()) { el?.remove(); return; }
   if (!el) { el = document.createElement('div'); el.className = 'closedbar'; el.setAttribute('role', 'status'); const an = document.querySelector('.announce'); an ? an.after(el) : document.body.prepend(el); }
-  el.innerHTML = ':ic-lock: <b>Shop closed</b> — ' + esc(closedMsg()) + (profile && isStaff() ? ' <a href="#/admin/settings">Reopen</a>' : '');
+  el.innerHTML = ':ic-lock: <b>Shop closed</b> — ' + esc(closedMsg()) + esc(reopenNote()) + (profile && isStaff() ? ' <a href="#/admin/settings">Reopen</a>' : '');
 }
 async function setShopClosed(closed, message) {
   const { data } = await sb.from('site_settings').select('value').eq('key', 'store').maybeSingle();
-  const value = { ...(data?.value || {}), closed: !!closed }; if (message !== undefined) value.closed_message = message;
+  const value = { ...(data?.value || {}), closed: !!closed, closed_until: closed ? '' : (data?.value?.closed_until || '') }; if (message !== undefined) value.closed_message = message;
   const { error } = await sb.from('site_settings').upsert({ key: 'store', value, updated_at: new Date().toISOString() }); if (error) return fail(error);
   applyStoreCfg(value); flash(closed ? 'Shop closed — online ordering is off.' : 'Shop open — online ordering is on.'); route();
 }
@@ -369,7 +370,7 @@ pages.cart.after = () => {
 let SAVED = [], CHK = null;
 pages.checkout = async () => {
   const lines = await cartLines(); if (!lines.length) return '<h1>Checkout</h1><p>Your cart is empty.</p>';
-  if (shopClosed()) return `<div class="authcard"><div class="authicon">:ic-lock:</div><h1>The shop is closed</h1><p class="muted">${esc(closedMsg())}</p><a class="btn" href="#/cart">Back to cart</a> <a class="btn ghost" href="#/products">Keep browsing</a></div>`;
+  if (shopClosed()) return `<div class="authcard"><div class="authicon">:ic-lock:</div><h1>The shop is closed</h1><p class="muted">${esc(closedMsg())}${esc(reopenNote())}</p><a class="btn" href="#/cart">Back to cart</a> <a class="btn ghost" href="#/products">Keep browsing</a></div>`;
   SAVED = session ? (await sb.from('addresses').select('*').order('is_default', { ascending: false }).order('id')).data || [] : [];
   const d = SAVED[0] || {};
   const t = totals(lines.reduce((a, l) => a + l.price_cents * l.qty, 0));
@@ -711,11 +712,22 @@ const toLocalInput = (d) => { const t = new Date(d); return new Date(t - t.getTi
 pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
   if (!isStaff()) return '<h1>Forbidden</h1>';
   if (sub && SECTION_PERM[sub] && !can(SECTION_PERM[sub])) return `<h1>No access</h1><p class="muted">Your role (${esc(profile.role)}) doesn't include this area. Ask an owner or admin if you need it.</p><p><a class="btn ghost" href="#/admin">← Dashboard</a></p>`;
+  if (sub === 'orders' && (id === 'slips' || extra === 'slip')) {
+    const ids = id === 'slips' ? (q.get('ids') || '').split(',').map(Number).filter(Boolean).slice(0, 50) : [Number(id)];
+    const [os, its] = await Promise.all([sb.from('orders').select('*').in('id', ids), sb.from('order_items').select('*').in('order_id', ids)]);
+    const biz = STORE.biz || {}, byId = Object.fromEntries((os.data || []).map((o) => [o.id, o]));
+    return `<div class="row noprint" style="justify-content:space-between;margin-bottom:12px"><a href="#/admin/orders${id === 'slips' ? '' : '/' + id}">← Back</a><button class="btn" id="printbtn" type="button">:ic-print: Print ${ids.length > 1 ? ids.length + ' packing slips' : 'packing slip'}</button></div>
+    ${ids.filter((i) => byId[i]).map((i) => { const o = byId[i], items = (its.data || []).filter((x) => x.order_id === i), pick = o.fulfillment === 'pickup';
+      return `<section class="slip"><div class="invtop"><div><h2 style="margin:0">${esc(biz.legal_name || theme.name || 'Gomi Insulation')}</h2><p class="muted" style="margin:4px 0 0">${[biz.address, biz.phone].filter(Boolean).map(esc).join('<br>')}</p></div><div class="invmeta"><h1 style="margin:0">PACKING SLIP</h1><p style="margin:4px 0 0">Order <b>#${o.id}</b><br>${new Date(o.created_at).toLocaleDateString()}</p></div></div>
+      <div class="two2" style="margin:18px 0"><div><small class="muted">${pick ? 'PICKUP FOR' : 'SHIP TO'}</small><br><b>${esc(o.name)}</b><br>${esc(o.address)}<br>${esc(o.city)} ${esc(o.postcode)}<br>${esc(o.phone || '')}</div><div><small class="muted">METHOD</small><br><b>${pick ? 'Pickup' : 'Delivery'}</b>${o.tracking_number ? `<br>${esc(o.tracking_carrier || 'Tracking')}: ${esc(o.tracking_number)}` : ''}</div></div>
+      <table class="invitems"><tr><th style="width:36px">Packed</th><th>Item</th><th class="r">Qty</th></tr>${items.map((x) => `<tr><td><span class="tick"></span></td><td>${esc(x.name)}</td><td class="r"><b>${x.qty}</b></td></tr>`).join('')}</table>
+      ${o.notes ? `<p style="white-space:pre-wrap"><b>Customer notes</b><br>${esc(o.notes)}</p>` : ''}<p class="muted" style="margin-top:24px">Thank you for your order! Questions? ${[biz.phone, biz.email].filter(Boolean).map(esc).join(' · ')}</p></section>`; }).join('') || '<p>No orders found.</p>'}`;
+  }
   if (sub === 'orders' && id) {
     const o = (await sb.from('orders').select('*').eq('id', id).single()).data;
     const [itemsR, notesR, refR] = await Promise.all([sb.from('order_items').select('*').eq('order_id', id), sb.from('order_notes').select('*').eq('order_id', id).order('id', { ascending: false }), sb.from('refunds').select('*').eq('order_id', id).order('id', { ascending: false })]);
     const remaining = o.total_cents - (o.refunded_cents || 0);
-    return `${orderHtml(o, itemsR.data, can('orders.manage') ? true : 'ro')}
+    return `<div class="row noprint" style="justify-content:flex-end;margin-bottom:8px"><a class="btn ghost" href="#/admin/orders/${o.id}/slip">:ic-clipboard: Packing slip</a></div>${orderHtml(o, itemsR.data, can('orders.manage') ? true : 'ro')}
     <section class="cs" style="margin-top:16px"><h3>Internal notes <small class="muted" style="font-weight:400">(only admins can see these)</small></h3>
       ${(notesR.data || []).map((n) => `<div class="addr"><div style="white-space:pre-wrap">${esc(n.note)}</div><small class="muted">${esc(n.author)} · ${ago(n.created_at)}</small></div>`).join('') || '<p class="muted" style="margin:0">No notes yet.</p>'}
       <form id="noteform" class="row" style="flex-wrap:nowrap"><input name="note" maxlength="2000" placeholder="Add a note (e.g. customer called, will collect Friday)" required style="flex:1;min-width:0"><button class="btn ghost">Add note</button></form></section>
@@ -935,7 +947,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     <form id="setf" class="stack narrow"><fieldset class="cmpset"><legend>Shop status</legend>
       <label class="switch"><input type="checkbox" name="closed" ${STORE.closed ? 'checked' : ''}><span class="track"></span><span>Shop closed — turn off online ordering</span></label>
       <label>Message shown to customers<textarea name="closed_message" rows="2" maxlength="300" placeholder="We're closed for the holidays and will reopen Monday.">${esc(STORE.closed_message || '')}</textarea></label>
-      <small class="muted">While closed, customers can browse and fill a cart but cannot check out. In-store sales (POS) and invoices still work for your team.</small></fieldset>
+      <label>Reopens automatically on <small class="muted">optional</small><input type="date" name="closed_until" value="${esc(STORE.closed_until || '')}"></label><small class="muted">While closed, customers can browse and fill a cart but cannot check out. In-store sales (POS) and invoices still work for your team.</small></fieldset>
     <fieldset class="cmpset"><legend>Shipping</legend>
       <label>Flat delivery fee ($)<input name="ship" type="number" step="0.01" min="0" value="${((STORE.ship_flat_cents || 0) / 100).toFixed(2)}"></label>
       <label>Free delivery on orders over ($) <small class="muted">0 = never free</small><input name="free" type="number" step="0.01" min="0" value="${((STORE.free_over_cents || 0) / 100).toFixed(2)}"></label></fieldset>
@@ -1169,7 +1181,7 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     return `<h1>Orders</h1><div class="row" style="margin-bottom:10px"><form id="ordsearch" class="row" style="flex:1;min-width:220px;flex-wrap:nowrap"><input name="search" value="${esc(term)}" placeholder="Search order #, name or email…" aria-label="Search orders" style="flex:1;min-width:0"><button class="btn ghost">Search</button></form>
       <select id="ordloc" aria-label="Filter by location"><option value="">All locations</option>${locs.map((l) => `<option value="${l.id}" ${String(l.id) === locF ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select><button class="btn ghost" id="csv">:ic-download: CSV</button><a class="btn" href="#/admin/pos">+ In-store sale</a></div>
     <div class="chips"><a class="chip ${!statusF ? 'on' : ''}" href="${link({ status: '' })}">All</a>${STATUSES.map((st) => `<a class="chip ${statusF === st ? 'on' : ''}" href="${link({ status: st })}">${st}</a>`).join('')}</div>
-    ${os.length ? `<div class="row bulk" style="margin-bottom:8px"><span class="muted"><span id="selcount">0</span> selected</span><select id="bulkstatus" aria-label="New status">${STATUSES.map((st) => `<option>${st}</option>`).join('')}</select><button class="btn ghost" id="bulkapply">Apply to selected</button></div>
+    ${os.length ? `<div class="row bulk" style="margin-bottom:8px"><span class="muted"><span id="selcount">0</span> selected</span><button type="button" class="btn ghost" id="bulkslips">:ic-clipboard: Packing slips</button><select id="bulkstatus" aria-label="New status">${STATUSES.map((st) => `<option>${st}</option>`).join('')}</select><button class="btn ghost" id="bulkapply">Apply to selected</button></div>
     <table id="ordtable"><tr><th><input type="checkbox" id="selall" aria-label="Select all"></th><th>Order</th><th>Date</th><th>Location</th><th>Status</th><th>Total</th></tr>${os.map((o) => `<tr><td><input type="checkbox" class="osel" value="${o.id}" aria-label="Select order ${o.id}"></td><td><a href="#/admin/orders/${o.id}">#${o.id}</a> · ${esc(o.name)}</td><td>${dateOf(o.created_at)}</td><td>${esc(lnames[o.location_id] || '')}${o.source === 'in_store' ? ' · in store' : o.fulfillment === 'pickup' ? ' · pickup' : ''}</td><td><span class="status ${esc(o.status)}">${esc(o.status)}</span></td><td>${money(o.total_cents)}${o.refunded_cents ? `<br><small class="down">−${money(o.refunded_cents)} refunded</small>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">No orders match.</p>'}`;
   }
   if (sub === 'customers' && id) {
@@ -1450,6 +1462,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   const upd = () => { const c = document.querySelectorAll('.osel:checked').length; const el = document.getElementById('selcount'); if (el) el.textContent = c; };
   document.getElementById('selall')?.addEventListener('change', (e) => { document.querySelectorAll('.osel').forEach((x) => (x.checked = e.target.checked)); upd(); });
   document.querySelectorAll('.osel').forEach((x) => x.addEventListener('change', upd));
+  document.getElementById('bulkslips')?.addEventListener('click', () => { const ids = [...document.querySelectorAll('.osel:checked')].map((x) => x.value); if (!ids.length) return fail(new Error('Select at least one order.')); location.hash = `#/admin/orders/slips?ids=${ids.join(',')}`; });
   document.getElementById('bulkapply')?.addEventListener('click', async () => {
     const ids = [...document.querySelectorAll('.osel:checked')].map((x) => Number(x.value)), st = document.getElementById('bulkstatus').value;
     if (!ids.length) return fail(new Error('Select at least one order.')); if (!confirm(`Mark ${ids.length} order${ids.length === 1 ? '' : 's'} as ${st}?`)) return;
@@ -1471,7 +1484,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
   });
   document.getElementById('setf')?.addEventListener('submit', async (e) => {
     e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), cents = (v) => Math.max(0, Math.round((parseFloat(v) || 0) * 100));
-    const value = { closed: f.closed === 'on', closed_message: (f.closed_message || '').trim().slice(0, 300), ship_flat_cents: cents(f.ship), free_over_cents: cents(f.free), tax_rate: Math.min(50, Math.max(0, parseFloat(f.tax_rate) || 0)), tax_label: (f.tax_label || 'Tax').trim().slice(0, 30),
+    const value = { closed: f.closed === 'on', closed_message: (f.closed_message || '').trim().slice(0, 300), closed_until: f.closed_until || '', ship_flat_cents: cents(f.ship), free_over_cents: cents(f.free), tax_rate: Math.min(50, Math.max(0, parseFloat(f.tax_rate) || 0)), tax_label: (f.tax_label || 'Tax').trim().slice(0, 30),
       biz: { legal_name: f.legal_name.trim(), address: f.address.trim(), phone: f.phone.trim(), email: f.email.trim(), tax_number: f.tax_number.trim() },
       invoice_prefix: (f.invoice_prefix || 'INV').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10) || 'INV', invoice_due_days: Math.min(365, Math.max(0, parseInt(f.invoice_due_days, 10) || 14)), invoice_terms: f.invoice_terms.trim(), invoice_pay_info: f.invoice_pay_info.trim(), invoice_allow_partial: !!f.invoice_allow_partial };
     const { error } = await sb.from('site_settings').upsert({ key: 'store', value, updated_at: new Date().toISOString() }); if (error) return fail(error);

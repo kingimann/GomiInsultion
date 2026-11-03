@@ -541,3 +541,10 @@ label.switch{display:inline-flex!important;flex-direction:row;align-items:center
 .cmdfoot{padding:8px 14px;border-top:1px solid var(--line);font-size:.78rem}
 kbd{font:inherit;font-size:.72rem;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--muted);margin-left:4px}
 @media(max-width:760px){kbd{display:none}}
+
+/* packing slips */
+.slip{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:26px;margin-bottom:16px;break-after:page}.slip:last-child{break-after:auto}
+.tick{display:inline-block;width:16px;height:16px;border:2px solid var(--fg);border-radius:4px;vertical-align:middle}
+@media print{.slip{border:0;padding:0;margin:0}}
+/* tables */
+.tablewrap table th{position:sticky;top:0;z-index:1}table tr:not(:first-child):hover td{background:var(--brand-soft)}

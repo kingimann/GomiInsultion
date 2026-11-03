@@ -1986,3 +1986,15 @@ drop policy if exists "staff update doc pdfs" on storage.objects;
 create policy "staff update doc pdfs" on storage.objects for update to authenticated using (bucket_id = 'doc-pdfs' and public.has_perm('invoices.manage'));
 drop policy if exists "staff read doc pdfs" on storage.objects;
 create policy "staff read doc pdfs" on storage.objects for select to authenticated using (bucket_id = 'doc-pdfs' and public.has_perm('invoices.view'));
+
+-- ===== Shop closed until a date =====
+create or replace function public.trg_orders_shop_closed() returns trigger language plpgsql security definer set search_path = public as $$
+declare s jsonb;
+begin
+  select value into s from site_settings where key = 'store';
+  if new.source = 'online' and coalesce((s->>'closed')::boolean, false)
+     and (coalesce(s->>'closed_until', '') = '' or (s->>'closed_until')::date > current_date) then
+    raise exception 'The shop is closed and not taking online orders right now.';
+  end if;
+  return new;
+end $$;

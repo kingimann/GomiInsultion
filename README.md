@@ -261,3 +261,8 @@ Supabase's **minimum password length is now 8** (it was 6), matching the sign-up
 - **Insulation calculator** (`#/calculator`, also in the menu): choose where you're insulating (attic, walls, basement… each fills in a typical R-value) or type your own, enter the area and extra-for-waste percentage, and it lists every product that meets the R-value with how many you need and the total, cheapest first, with one-click Add to cart.
 - **Free pickup info** on each product page shows which locations have it in stock.
 - **Light / dark switch** in the menu lets each visitor pick their own appearance (remembered in their browser); the admin's site-wide style is still the default.
+
+## Shop & page-editor upgrades
+
+**Shop:** *Quick view* on every product card (photo, price, features, stock and add to cart — including bundle buttons — without leaving the list), *Show more* paging (24 at a time), a **Minimum R-value** filter, and new sorts: Top rated, Lowest price per sq ft, Biggest saving.
+**Page editor:** cover image banner + subtitle, layout width (narrow / wide / full), **scheduled publishing** (go live and hide-on dates, enforced by the database), new content blocks — `{{columns: A | B | C}}`, `{{image: url | caption}}`, `{{products: category=… | brand=… | limit=4}}` (live product grid), `{{contact}}` (your business details), `{{quote: text | author}}` — toolbar buttons for each, and two more templates (Landing page, Installation guide).

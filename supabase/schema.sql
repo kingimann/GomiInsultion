@@ -2707,3 +2707,13 @@ begin
   insert into stock_alerts (product_id, email) values (pid, addr) on conflict do nothing;
 end $function$
 ;
+
+-- ===== Page editor v3: cover image, subtitle, layout width, scheduled publishing =====
+alter table public.pages add column if not exists cover_url text not null default '' check (length(cover_url) <= 500);
+alter table public.pages add column if not exists subtitle text not null default '' check (length(subtitle) <= 200);
+alter table public.pages add column if not exists layout text not null default 'narrow' check (layout in ('narrow', 'wide', 'full'));
+alter table public.pages add column if not exists publish_at timestamptz;
+alter table public.pages add column if not exists unpublish_at timestamptz;
+drop policy if exists "view pages" on public.pages;
+create policy "view pages" on public.pages for select using (
+  (published and (publish_at is null or publish_at <= now()) and (unpublish_at is null or unpublish_at > now())) or public.is_admin());

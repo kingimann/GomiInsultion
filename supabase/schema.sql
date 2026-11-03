@@ -2209,3 +2209,22 @@ begin
   return jsonb_build_object('selling_bundle_updated', synced);
 end $function$
 ;
+
+-- ===== More product details =====
+alter table public.products add column if not exists sku text not null default '' check (length(sku) <= 60);
+alter table public.products add column if not exists barcode text not null default '' check (length(barcode) <= 60);
+alter table public.products add column if not exists long_description text not null default '' check (length(long_description) <= 20000);
+alter table public.products add column if not exists features jsonb not null default '[]' check (jsonb_typeof(features) = 'array' and jsonb_array_length(features) <= 30);
+alter table public.products add column if not exists specs jsonb not null default '[]' check (jsonb_typeof(specs) = 'array' and jsonb_array_length(specs) <= 40);
+alter table public.products add column if not exists documents jsonb not null default '[]' check (jsonb_typeof(documents) = 'array' and jsonb_array_length(documents) <= 20);
+alter table public.products add column if not exists video_url text not null default '' check (length(video_url) <= 300);
+alter table public.products add column if not exists warranty text not null default '' check (length(warranty) <= 500);
+create index if not exists products_sku_idx on public.products (lower(sku)) where sku <> '';
+-- public bucket for spec sheets / installation guides (PDF etc.), written by catalog staff
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+  values ('product-docs', 'product-docs', true, 15728640, array['application/pdf','application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document','image/jpeg','image/png'])
+  on conflict (id) do nothing;
+drop policy if exists "staff write product docs" on storage.objects;
+create policy "staff write product docs" on storage.objects for insert to authenticated with check (bucket_id = 'product-docs' and public.has_perm('catalog.manage'));
+drop policy if exists "staff delete product docs" on storage.objects;
+create policy "staff delete product docs" on storage.objects for delete to authenticated using (bucket_id = 'product-docs' and public.has_perm('catalog.manage'));

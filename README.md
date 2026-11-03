@@ -201,3 +201,7 @@ In the product editor, **Price per bag** is the main price field, and each bundl
 **Optimize photos** (Admin → Products): one click re-checks every existing product and gallery photo hosted in your storage and replaces the oversized ones with resized WebP copies (max 1600px). Photos hosted on other websites can't be changed and are reported. All images are also capped to their container size by CSS, so a huge photo can never break the layout.
 
 **Removing a product photo:** open the product, tick **Remove this photo when I save** under *Current photo* (or choose a new file to replace it); gallery photos have their own Remove link. App files are now cache-busted on every deploy (and Netlify serves JS/CSS with `no-cache`), so layout fixes reach visitors immediately — no hard refresh needed.
+
+## More product detail options
+
+Each product can now have: **SKU** and **barcode**, **key features** (bullets), a **full description** (markdown), a **specifications** table (weight, dimensions, thickness, fire rating… with suggestions or your own labels), **documents** (links or uploaded PDFs/guides, stored in the `product-docs` bucket), a **YouTube video** and a **warranty** note. The product page shows them under the main info in tabs (Details · Specifications · Documents — only tabs with content appear) with the SKU beside the price. The shop search, admin product search and quick search (Ctrl+K) also match SKUs, and the Google structured data / static SEO pages include SKU, barcode, features and specs.

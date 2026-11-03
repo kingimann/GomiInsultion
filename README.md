@@ -235,3 +235,7 @@ A customer who buys a bundle sees **bundles** — "2 bundles + 1 bag" — in the
 ## Hosting note
 
 If Netlify shows deploys as *Skipped* / *Error* in about 0.1 seconds, the team has run out of free build credits (the free plan allows about 20 production deploys a month). GitHub Pages (this repo's workflow) is unlimited — point the domain there, or upgrade Netlify.
+
+## Login / sign-up and mobile messages
+
+Log in and Create account share one two-panel screen (benefits on the left on desktop, a slim banner on phones) with a Log in / Create account switch, show-password eye, password strength meter, inline error messages ("That email/username and password do not match"), a "check out as a guest" shortcut when you have a cart, and you're returned to where you were (checkout, cart…) after logging in. On phones **Messages** works like a messaging app: staff see a WhatsApp-style conversation list; opening a chat goes full screen with a back arrow, avatar and status in the header, rounded bubbles with grouped messages and date chips, a composer that stays above the keyboard (uses the visual viewport) with a **+** button for attachments, order cards, quick replies and internal notes, tap a message of yours to unsend, and the customer details open as a full-screen sheet.

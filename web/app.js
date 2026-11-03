@@ -568,11 +568,23 @@ pages.track.after = () => document.getElementById('trk')?.addEventListener('subm
   out.innerHTML = orderHtml(data, data.items, false); pages.order.after();
 });
 
-const authForm = (reg) => `<div class="authcard"><div class="authicon">${reg ? ':ic-star:' : ':ic-smile:'}</div><h1>${reg ? 'Create your account' : 'Welcome back'}</h1><p class="muted" style="margin-top:-6px">${reg ? 'Track orders, save addresses and message our team.' : 'Log in to see your orders and messages.'}</p><form id="auth" class="stack">
-  ${reg ? '<label>Name<input name="name" required autocomplete="name"></label><label>Username<input name="username" required minlength="3" maxlength="30" pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{2,29}" autocomplete="username" placeholder="e.g. sam_builds" autocapitalize="none" spellcheck="false"><small id="unhint" class="muted">3–30 letters, numbers, dots, dashes or underscores</small></label><label>Email<input type="email" name="email" required autocomplete="email"></label>' : '<label>Email or username<input name="email" required autocomplete="username" autocapitalize="none" spellcheck="false"></label>'}
-  <label>Password<input type="password" name="password" required minlength="${reg ? 8 : 1}"></label><button class="btn block">${reg ? 'Sign up' : 'Log in'}</button></form>
-  ${reg ? '' : '<p><a href="#/forgot">Forgot your password?</a></p>'}
-  <p>${reg ? 'Have an account? <a href="#/login">Log in</a>' : 'New here? <a href="#/register">Create an account</a>'}</p></div>`;
+const authForm = (reg) => {
+  const perks = [[':ic-receipt:', 'Track every order', 'See status, tracking and past invoices.'], [':ic-package:', 'Reorder in one click', 'Repeat a previous job without searching.'], [':ic-map-pin:', 'Saved delivery addresses', 'Check out faster next time.'], [':ic-chat:', 'Message our team', 'Questions about a product or delivery.']];
+  const cart = Object.keys(getCart()).length;
+  return `<div class="authwrap"><aside class="authside"><div><div class="authbrand">${esc((theme.name || 'Gomi Insulation'))}</div><h2>${reg ? 'Create a free account' : 'Welcome back'}</h2><p>${reg ? 'It takes a minute and makes ordering easier.' : 'Log in to pick up where you left off.'}</p></div>
+    <ul class="authperks">${perks.map(([i, t, d]) => `<li><span>${i}</span><div><b>${t}</b><small>${d}</small></div></li>`).join('')}</ul></aside>
+  <section class="authmain"><div class="seg authtabs" role="tablist"><a role="tab" class="${reg ? '' : 'on'}" href="#/login">Log in</a><a role="tab" class="${reg ? 'on' : ''}" href="#/register">Create account</a></div>
+  <form id="auth" class="stack authform" novalidate>
+    ${reg ? `<label>Full name<input name="name" required autocomplete="name" autofocus></label>
+      <label>Username<input name="username" required minlength="3" maxlength="30" pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{2,29}" autocomplete="username" placeholder="e.g. sam_builds" autocapitalize="none" spellcheck="false"><small id="unhint" class="muted">3–30 letters, numbers, dots, dashes or underscores. You can log in with it.</small></label>
+      <label>Email<input type="email" name="email" required autocomplete="email" inputmode="email"></label>` : `<label>Email or username<input name="email" required autocomplete="username" autocapitalize="none" spellcheck="false" autofocus></label>`}
+    <label class="pwlabel"><span class="pwtop">Password${reg ? '' : '<a href="#/forgot" class="forgot">Forgot password?</a>'}</span><span class="pwfield"><input type="password" name="password" id="pw" required minlength="${reg ? 8 : 1}" autocomplete="${reg ? 'new-password' : 'current-password'}"><button type="button" class="pwtoggle" id="pwtoggle" aria-label="Show password" aria-pressed="false">:ic-eye:</button></span>
+      ${reg ? '<span class="meter" id="pwmeter" aria-hidden="true"><i></i><i></i><i></i><i></i></span><small class="muted" id="pwhint">At least 8 characters. A mix of letters and numbers is stronger.</small>' : ''}</label>
+    <p class="autherr" id="autherr" role="alert" hidden></p>
+    <button class="btn block" id="authgo">${reg ? 'Create my account' : 'Log in'}</button>
+  </form>
+  ${reg ? '<p class="muted authfine">We only use your details to process orders and contact you about them.</p>' : (cart ? '<p class="authguest">In a hurry? <a href="#/checkout">Check out as a guest</a> — no account needed.</p>' : '')}
+  <p class="authswitch">${reg ? 'Already have an account? <a href="#/login">Log in</a>' : 'New here? <a href="#/register">Create an account</a>'}</p></section></div>`; };
 pages.forgot = () => `<div class="authcard"><div class="authicon">:ic-key:</div><h1>Reset your password</h1><p class="muted">Enter your email and we'll send you a link to choose a new password.</p>
   <form id="ff" class="stack"><label>Email<input type="email" name="email" required autocomplete="email"></label><button class="btn">Send reset link</button></form><p><a href="#/login">Back to log in</a></p></div>`;
 pages.forgot.after = () => document.getElementById('ff')?.addEventListener('submit', async (e) => {
@@ -597,25 +609,31 @@ const checkUsername = async (u, hint) => {
   const { data } = await sb.rpc('username_available', { u }); hint.innerHTML = data ? `:ic-check: @${esc(u)} is available` : `:ic-x-circle: @${esc(u)} is taken or reserved`; hint.className = data ? 'up' : 'down'; return !!data;
 };
 const edgeError = async (error, data) => { let m = data?.error; if (!m && error?.context?.json) { try { m = (await error.context.json()).error; } catch {} } return m || (error?.context?.status === 404 ? "Username sign-in isn't available yet — please use your email address." : error?.message) || 'Could not sign in.'; };
+let PREV_HASH = '';
 const authAfter = (reg) => () => {
+  const eb = document.getElementById('autherr'), show = (m) => { eb.textContent = m; eb.hidden = !m; }, goBtn = document.getElementById('authgo'), label0 = goBtn.textContent;
+  document.getElementById('pwtoggle')?.addEventListener('click', (e) => { const pw = document.getElementById('pw'), on = pw.type === 'password'; pw.type = on ? 'text' : 'password'; e.currentTarget.setAttribute('aria-pressed', String(on)); e.currentTarget.setAttribute('aria-label', on ? 'Hide password' : 'Show password'); e.currentTarget.innerHTML = on ? ':ic-eye-off:' : ':ic-eye:'; });
+  document.getElementById('pwmeter') && document.getElementById('pw').addEventListener('input', (e) => { const v = e.target.value; let sc = 0; if (v.length >= 8) sc++; if (v.length >= 12) sc++; if (/[a-z]/.test(v) && /[A-Z]/.test(v)) sc++; if (/\d/.test(v) && /[^A-Za-z0-9]|[A-Za-z]/.test(v)) sc++; if (!v) sc = 0;
+    const m = document.getElementById('pwmeter'); m.className = 'meter s' + sc; document.getElementById('pwhint').textContent = !v ? 'At least 8 characters. A mix of letters and numbers is stronger.' : ['Too short', 'Weak — add more characters', 'Okay', 'Good', 'Strong'][sc] || ''; });
+  document.getElementById('auth')?.querySelectorAll('input').forEach((i) => i.addEventListener('input', () => show('')));
   const hint = document.getElementById('unhint'), un = document.querySelector('#auth [name=username]'); let t = null;
   un?.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => checkUsername(un.value.trim(), hint), 300); });
   document.getElementById('auth')?.addEventListener('submit', async (e) => {
-    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), btn = e.target.querySelector('button'); btn.disabled = true; let r;
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)), btn = e.target.querySelector('button'); if (!e.target.checkValidity()) { e.target.reportValidity(); return; } btn.disabled = true; btn.textContent = reg ? 'Creating account…' : 'Logging in…'; show(''); let r;
     try {
       if (reg) {
-        if (!(await checkUsername(f.username.trim(), hint))) return fail(new Error('Please choose a different username.'));
+        if (!(await checkUsername(f.username.trim(), hint))) return show('Please choose a different username.');
         r = await sb.auth.signUp({ email: f.email.trim(), password: f.password, options: { data: { name: f.name, username: f.username.trim() } } });
       } else if (f.email.includes('@')) r = await sb.auth.signInWithPassword({ email: f.email.trim(), password: f.password });
       else {
         const { data, error } = await sb.functions.invoke('username-login', { body: { identifier: f.email.trim(), password: f.password } });
-        if (!data?.access_token) return fail(new Error(await edgeError(error, data)));
+        if (!data?.access_token) return show(await edgeError(error, data));
         r = await sb.auth.setSession({ access_token: data.access_token, refresh_token: data.refresh_token });
       }
-      if (r.error) return fail(r.error);
+      if (r.error) return show(/invalid login/i.test(r.error.message) ? 'That email/username and password do not match.' : r.error.message);
       if (reg && !r.data.session) { flash('Check your email to confirm your account, then log in with your email or username.'); return (location.hash = '#/login'); }
-      await loadSession(); flash(reg ? 'Welcome! Your account is ready.' : 'Logged in.'); location.hash = '#/account';
-    } finally { btn.disabled = false; }
+      await loadSession(); flash(reg ? 'Welcome! Your account is ready.' : 'Logged in.'); location.hash = /^#\/(checkout|cart|messages|account|order|admin|wishlist)/.test(PREV_HASH) ? PREV_HASH : '#/account';
+    } catch (err) { show(err.message || 'Something went wrong. Please try again.'); } finally { btn.disabled = false; btn.textContent = label0; }
   });
 };
 pages.login.after = authAfter(false); pages.register.after = authAfter(true);
@@ -2240,7 +2258,7 @@ pages.messages = async ([id], q) => {
   myOrders.forEach((o) => (DM.orders[o.id] = o));
   const closedCust = !isStaff && conv?.closed;
   const chat = (isStaff && !conv) ? '<div class="empty-chat">:ic-chat:<p><b>Select a conversation</b></p><p class="muted">Pick a customer on the left, or start one from Admin → Customers.</p></div>'
-    : `<header class="dmhead">${isStaff ? '<a class="backbtn" href="#/messages" aria-label="Back to conversations">←</a>' : ''}${avatar(peerName, isStaff ? '' : 'store')}<div style="min-width:0"><b>${esc(peerName)}</b><div class="dmstatus muted" id="dmstatus">${isStaff ? 'Customer' : 'Replies usually within a day'}</div></div>
+    : `<header class="dmhead"><a class="backbtn" href="${isStaff ? '#/messages' : '#/'}" aria-label="${isStaff ? 'Back to conversations' : 'Back'}">:ic-chevron-down:</a>${avatar(peerName, isStaff ? '' : 'store')}<div style="min-width:0"><b>${esc(peerName)}</b><div class="dmstatus muted" id="dmstatus">${isStaff ? 'Customer' : 'Replies usually within a day'}</div></div>
       <span class="grow"></span>${isStaff ? `<button type="button" class="ibtn" id="ctxtoggle" aria-label="Customer details" title="Customer details">:ic-users:</button>${conv ? `<button type="button" class="btn ghost" id="closeconv" style="padding:6px 12px;min-height:0">${conv.closed ? 'Reopen' : 'Close'} conversation</button>` : ''}` : ''}</header>
     <div class="thread" id="thread"></div><div class="typing" id="typing" hidden>${esc(peerName)} is typing<span>.</span><span>.</span><span>.</span></div>
     ${closedCust ? '<p class="closednote">:ic-lock: This conversation was closed by the store team. Start a new one by contacting us from the <a href="#/quote">quote form</a>.</p>' : `<div class="composer2" id="composer2"><div class="pend" id="pend" hidden></div>
@@ -2248,7 +2266,7 @@ pages.messages = async ([id], q) => {
         ${myOrders.length ? `<select id="orderpick" aria-label="Attach an order"><option value="">Attach an order…</option>${myOrders.map((o) => `<option value="${o.id}">Order #${o.id} · ${esc(o.status)} · ${money(o.total_cents)}</option>`).join('')}</select>` : ''}
         ${isStaff ? `<span class="grow"></span><div class="qrwrap"><button type="button" class="btn ghost qrbtn" id="qrbtn">:ic-chat: Quick replies</button><div class="qr" id="qr" hidden><div id="qrlist"></div><form id="qradd" class="stack"><b style="font-size:.85rem">Save a new quick reply</b><input name="title" placeholder="Title (e.g. Delivery times)" maxlength="60" required><textarea name="body" rows="2" placeholder="Message text" maxlength="2000" required></textarea><button class="btn ghost">Save quick reply</button></form></div></div>
         <label class="switch" title="Only your team can see internal notes"><input type="checkbox" id="dminternal"><span class="track"></span><span>Internal note</span></label>` : ''}</div>
-      <form id="dmform" class="composer"><textarea name="body" rows="1" maxlength="5000" placeholder="Message ${esc(isStaff ? peerName : 'the store team')}…" aria-label="Message"></textarea><button class="send" aria-label="Send message">:ic-send:</button></form></div>`}`;
+      <form id="dmform" class="composer"><button type="button" class="plusbtn" id="plusbtn" aria-label="Attachments and more" aria-expanded="false">:ic-paperclip:</button><textarea name="body" rows="1" maxlength="5000" placeholder="Message ${esc(isStaff ? peerName : 'the store team')}…" aria-label="Message"></textarea><button class="send" aria-label="Send message">:ic-send:</button></form></div>`}`;
   return `<div class="dm ${isStaff ? '' : 'solo'} ${conv && isStaff ? 'has-chat' : ''} ${isStaff ? 'withctx' : ''}">${isStaff ? `<aside class="dmlist"><div class="dmlist-head"><b>Messages</b><input id="dmsearch" placeholder="Search customers or messages…" aria-label="Search"><div class="chips" style="margin:0"><button type="button" class="chip on" data-mode="">All</button><button type="button" class="chip" data-mode="unread">Unread</button><button type="button" class="chip" data-mode="closed">Closed</button></div></div><div id="dmrows">${listHtml(inbox, selected)}</div></aside>` : ''}<section class="dmchat">${chat}</section>${isStaff && conv ? '<aside class="dmctx" id="dmctx"><p class="muted" style="padding:16px">Loading customer…</p></aside>' : ''}</div>`;
 };
 async function loadContext() {
@@ -2264,6 +2282,10 @@ async function loadContext() {
 }
 pages.messages.after = () => {
   if (!DM) return;
+  { const full = window.matchMedia('(max-width:760px)').matches && !!(DM.conv || !DM.isStaff); document.body.classList.toggle('chatfull', full);
+    if (full && window.visualViewport) { const setVh = () => { const el = document.querySelector('.dm'); if (!el) return; el.style.setProperty('--vvh', window.visualViewport.height + 'px'); const t = document.getElementById('thread'); if (t) t.scrollTop = t.scrollHeight; }; setVh(); window.visualViewport.addEventListener('resize', setVh); const off = () => { window.visualViewport.removeEventListener('resize', setVh); window.removeEventListener('hashchange', off); }; window.addEventListener('hashchange', off); } }
+  document.getElementById('plusbtn')?.addEventListener('click', (e) => { const c = document.getElementById('composer2'); const on = c.classList.toggle('opentools'); e.currentTarget.setAttribute('aria-expanded', String(on)); });
+  document.getElementById('thread')?.addEventListener('click', (e) => { const m = e.target.closest('.msg'); if (!m || e.target.closest('a,button,.un')) return; const was = m.classList.contains('sel'); document.querySelectorAll('.msg.sel').forEach((x) => x.classList.remove('sel')); if (!was && m.querySelector('.un')) m.classList.add('sel'); });
   const $ = (i) => document.getElementById(i), listEl = $('dmrows'); let mode = '';
   const redrawList = () => { if (listEl) listEl.innerHTML = listHtml(DM.inbox, DM.conv?.id, $('dmsearch')?.value || '', mode); };
   $('dmsearch')?.addEventListener('input', redrawList);
@@ -2679,7 +2701,10 @@ function wireSeoBox(root, titleSel, bodySel) {
 const productLd = (p, pics) => ({ '@context': 'https://schema.org', '@type': 'Product', name: p.name, description: clip(p.description, 500), image: pics.slice(0, 4), category: p.category, ...(p.brand ? { brand: { '@type': 'Brand', name: p.brand } } : {}), sku: p.sku || 'P' + p.id, ...(p.barcode ? { gtin: p.barcode } : {}),
   offers: { '@type': 'Offer', priceCurrency: window.GOMI.CURRENCY || 'USD', price: (p.price_cents / 100).toFixed(2), availability: p.stock > 0 ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock', url: seoBase() + '/product/' + p.slug + '/' } });
 
+let LAST_NONAUTH = '';
 async function route() {
+  document.body.classList.remove('chatfull');
+  { const cur = location.hash; if (/^#\/(login|register|forgot|reset)/.test(cur)) PREV_HASH = LAST_NONAUTH; else LAST_NONAUTH = cur; }
   threadChan.forEach((c) => sb.removeChannel(c)); threadChan = [];
   let h = location.hash.slice(1); if (!h.startsWith('/')) h = '/'; // e.g. #access_token=… after email confirmation
   const [path, qs] = h.split('?'); const q = new URLSearchParams(qs || '');

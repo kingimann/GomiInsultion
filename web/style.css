@@ -1092,3 +1092,7 @@ aside.possale{padding:0;border-radius:0}
 @media(max-width:760px){.adminside{display:none}.asg{margin:14px 0 6px;font:700 .75rem var(--fh);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}.asgrid{grid-template-columns:1fr 1fr 1fr}.asgrid a{padding:11px 8px;font-size:.88rem;text-align:center}}
 .crumbs{font-size:.88rem;color:var(--muted);margin:0 0 10px;display:flex;flex-wrap:wrap;gap:4px}.crumbs a{color:var(--muted)}.crumbs span{color:var(--fg)}
 @media(max-width:760px){.crumbs{display:none}}
+.jobgroup{margin:14px 0 2px;font:700 .8rem var(--fh);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}.jobgroup:first-child{margin-top:0}
+.jobphotos{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-top:10px}
+.jp{position:relative}.jp img{width:100%;aspect-ratio:1;object-fit:cover;display:block;border:1px solid var(--line)}
+.jpdel{position:absolute;top:4px;right:4px;width:26px;height:26px;border:0;border-radius:50%;background:rgba(0,0,0,.65);color:#fff;font-size:1rem;line-height:1;cursor:pointer}

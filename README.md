@@ -316,3 +316,8 @@ Admin → **Jobs**: managers (owner, admin, manager — permission `jobs.manage`
 ### Jobs: calendar and links
 - **Calendar** (Jobs → Calendar): month grid showing jobs on their scheduled day (or due date if unscheduled); tap a day to list its jobs. Managers can flip between My jobs and All jobs.
 - **Links:** "Create job" buttons on orders and invoices pre-fill the customer, address and title and link the job back; a job shows links to its order/invoice.
+
+### Jobs: photos, grouping, quotes
+- **Job photos:** anyone who can see a job can add before/after photos (resized automatically, stored in a private bucket, shown with expiring links); uploader or a manager can delete.
+- **Job list** is grouped: Overdue / Today / Tomorrow / This week / Later / Unscheduled / Finished.
+- **Quote requests** have a "Create job" button (pre-fills the customer and their message).

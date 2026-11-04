@@ -3250,3 +3250,15 @@ begin
   return jid;
 end $$;
 
+
+-- Job photos (private bucket; visible to anyone who can see the job)
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('job-photos', 'job-photos', false, 5242880, array['image/jpeg','image/png','image/webp'])
+on conflict (id) do nothing;
+drop policy if exists "job photos read" on storage.objects; drop policy if exists "job photos add" on storage.objects; drop policy if exists "job photos delete" on storage.objects;
+create policy "job photos read" on storage.objects for select to authenticated
+  using (bucket_id = 'job-photos' and case when (storage.foldername(name))[1] ~ '^[0-9]+$' then public._job_visible(((storage.foldername(name))[1])::bigint) else false end);
+create policy "job photos add" on storage.objects for insert to authenticated
+  with check (bucket_id = 'job-photos' and case when (storage.foldername(name))[1] ~ '^[0-9]+$' then public._job_visible(((storage.foldername(name))[1])::bigint) else false end);
+create policy "job photos delete" on storage.objects for delete to authenticated
+  using (bucket_id = 'job-photos' and (owner = auth.uid() or public.has_perm('jobs.manage')));

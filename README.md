@@ -321,3 +321,9 @@ Admin → **Jobs**: managers (owner, admin, manager — permission `jobs.manage`
 - **Job photos:** anyone who can see a job can add before/after photos (resized automatically, stored in a private bucket, shown with expiring links); uploader or a manager can delete.
 - **Job list** is grouped: Overdue / Today / Tomorrow / This week / Later / Unscheduled / Finished.
 - **Quote requests** have a "Create job" button (pre-fills the customer and their message).
+
+### Jobs: time clock, templates, site-visit requests, digests
+- **Time clock:** employees clock in/out on a job (starting also moves an open job to "In progress"); one running clock per person; the job shows each entry and the total (managers see everyone's, employees their own).
+- **Templates:** Jobs → Templates; pick one when creating a job to fill title, details, priority and checklist (attic insulation, spray foam and site-visit templates are pre-loaded).
+- **Public booking:** `#/book` ("Book a site visit", linked in the footer) creates an unassigned job and notifies managers; rate-limited, honeypot and link checks.
+- **Digests:** daily (Mon–Sat, 12:00 UTC) each employee gets an in-app "Your day" notification; Mondays managers get a weekly summary. They're also emailed once email is connected (`notify` function, kind `digest`).

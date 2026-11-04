@@ -60,6 +60,12 @@ Deno.serve(async (req) => {
     return new Response('ok');
   }
 
+  if (body.kind === 'digest') {
+    const path = String(body.path || '/').startsWith('/') ? String(body.path || '/') : '/';
+    await send(String(body.to || ''), String(body.subject || 'Update').slice(0, 150), `<h2>${esc(body.heading || '')}</h2><p>${esc(body.text || '')}</p><p><a href="${site}${path}">Open the app</a></p>`);
+    return new Response('ok');
+  }
+
   // ---- sending invoices / estimates / statements (email and text) with a delivery log ----
   const siteBase = String(body.base || site || '').replace(/\/$/, '');
   const setLog = async (id: number | null | undefined, r: Res) => { if (id) await admin.from('message_log').update({ status: r.ok ? 'sent' : 'failed', detail: r.detail }).eq('id', id); };

@@ -3262,3 +3262,80 @@ create policy "job photos add" on storage.objects for insert to authenticated
   with check (bucket_id = 'job-photos' and case when (storage.foldername(name))[1] ~ '^[0-9]+$' then public._job_visible(((storage.foldername(name))[1])::bigint) else false end);
 create policy "job photos delete" on storage.objects for delete to authenticated
   using (bucket_id = 'job-photos' and (owner = auth.uid() or public.has_perm('jobs.manage')));
+
+-- ===== Jobs: time tracking, templates, public site-visit requests, digests =====
+create table if not exists public.job_time (id bigint generated always as identity primary key, job_id bigint not null references public.jobs(id) on delete cascade, user_id uuid not null default auth.uid() references public.profiles(id) on delete cascade, started_at timestamptz not null default now(), ended_at timestamptz, minutes int);
+alter table public.job_time enable row level security;
+create or replace function public.job_clock(jid bigint, act text) returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public._job_visible(jid) then raise exception 'Job not found'; end if;
+  -- stop anything this person had running
+  update job_time set ended_at = now(), minutes = greatest(1, round(extract(epoch from (now() - started_at)) / 60)::int) where user_id = auth.uid() and ended_at is null;
+  if act = 'start' then
+    insert into job_time (job_id) values (jid);
+    update jobs set status = 'in_progress', updated_at = now() where id = jid and status in ('open', 'scheduled');
+  elsif act <> 'stop' then raise exception 'Bad action'; end if;
+end $$;
+create or replace function public.get_job(jid bigint) returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare j public.jobs; res jsonb;
+begin
+  if not public._job_visible(jid) then raise exception 'Job not found'; end if;
+  select * into j from jobs where id = jid; if not found then raise exception 'Job not found'; end if;
+  return jsonb_build_object('job', to_jsonb(j), 'can_manage', public.has_perm('jobs.manage'),
+    'assignees', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'name', coalesce(nullif(p.name, ''), p.email))) from job_assignees a join profiles p on p.id = a.user_id where a.job_id = jid), '[]'),
+    'notes', coalesce((select jsonb_agg(to_jsonb(n) order by n.id desc) from job_notes n where n.job_id = jid), '[]'),
+    'time', coalesce((select jsonb_agg(jsonb_build_object('id', e.id, 'user_id', e.user_id, 'name', coalesce(nullif(p.name, ''), p.email), 'started_at', e.started_at, 'ended_at', e.ended_at, 'minutes', coalesce(e.minutes, round(extract(epoch from (now() - e.started_at)) / 60)::int)) order by e.id desc) from job_time e join profiles p on p.id = e.user_id where e.job_id = jid and (e.user_id = auth.uid() or public.has_perm('jobs.manage'))), '[]'));
+end $$;
+
+
+create table if not exists public.job_templates (id bigint generated always as identity primary key, name text not null unique check (char_length(name) between 1 and 80), title text not null default '', description text not null default '', priority text not null default 'normal', checklist jsonb not null default '[]'::jsonb, created_at timestamptz not null default now());
+alter table public.job_templates enable row level security;
+drop policy if exists "job templates manage" on public.job_templates;
+create policy "job templates manage" on public.job_templates for all using (public.has_perm('jobs.manage')) with check (public.has_perm('jobs.manage'));
+insert into public.job_templates (name, title, description, priority, checklist) values
+ ('Attic insulation', 'Attic insulation — ', 'Blown-in or batt insulation to target R-value.', 'normal', '[{"t":"Load truck and confirm materials","done":false},{"t":"Check access and protect floors","done":false},{"t":"Install baffles and seal air leaks","done":false},{"t":"Install insulation to target depth","done":false},{"t":"Place depth markers and take photos","done":false},{"t":"Clean up and walk through with customer","done":false}]'),
+ ('Spray foam', 'Spray foam — ', 'Spray foam application. Confirm ventilation and PPE.', 'high', '[{"t":"Confirm area is masked and ventilated","done":false},{"t":"Set up rig and test spray","done":false},{"t":"Apply foam to spec","done":false},{"t":"Trim and clean up","done":false},{"t":"Photos and customer sign-off","done":false}]'),
+ ('Site visit / measure', 'Site visit — ', 'Measure, inspect and photograph for a quote.', 'normal', '[{"t":"Take measurements","done":false},{"t":"Photograph problem areas","done":false},{"t":"Note access and hazards","done":false},{"t":"Discuss options with customer","done":false}]')
+on conflict (name) do nothing;
+
+create or replace function public.request_site_visit(nm text, em text, ph text, addr text, pref text, info text default '') returns void language plpgsql security definer set search_path = public as $$
+declare jid bigint;
+begin
+  perform public.rate_check('sitevisit', 4, interval '1 day');
+  if btrim(coalesce(nm, '')) = '' or (btrim(coalesce(em, '')) = '' and btrim(coalesce(ph, '')) = '') then raise exception 'Please give your name and an email or phone number'; end if;
+  if btrim(coalesce(addr, '')) = '' then raise exception 'Please enter the address of the job'; end if;
+  if public.link_count(coalesce(info, '') || ' ' || coalesce(pref, '')) > 2 then raise exception 'Too many links in your message'; end if;
+  insert into jobs (title, description, customer_name, customer_phone, customer_email, address, status, priority)
+  values ('Site visit request — ' || left(btrim(nm), 60), 'Requested online. Preferred time: ' || coalesce(nullif(btrim(pref), ''), 'not specified') || E'\n\n' || left(coalesce(info, ''), 3000), left(btrim(nm), 120), left(btrim(coalesce(ph, '')), 40), left(btrim(coalesce(em, '')), 200), left(btrim(addr), 300), 'open', 'normal') returning id into jid;
+  insert into notifications (user_id, kind, title, body, link)
+    select pr.id, 'job', 'New site visit request', left(btrim(nm), 60) || ' — ' || left(btrim(addr), 80), '#/admin/jobs/' || jid from profiles pr where public.user_has_perm(pr.id, 'jobs.manage');
+end $$;
+grant execute on function public.request_site_visit(text, text, text, text, text, text) to anon, authenticated;
+
+create or replace function public.send_job_digests(weekly boolean default false) returns int language plpgsql security definer set search_path = public as $$
+declare r record; n int := 0; ready boolean := public.messaging_ready(); body text; html text; today date := (now() at time zone 'America/Toronto')::date;
+begin
+  if not weekly then
+    for r in select p.id, p.email, coalesce(nullif(p.name, ''), p.email) nm,
+        count(*) filter (where (j.scheduled_for at time zone 'America/Toronto')::date = today or (j.scheduled_for is null and j.due_on = today)) as todayn,
+        count(*) filter (where coalesce((j.scheduled_for at time zone 'America/Toronto')::date, j.due_on) < today) as late
+      from profiles p join job_assignees a on a.user_id = p.id join jobs j on j.id = a.job_id and j.status not in ('done','cancelled') where p.role <> 'customer' group by p.id, p.email, p.name having count(*) filter (where (j.scheduled_for at time zone 'America/Toronto')::date = today or (j.scheduled_for is null and j.due_on = today) or coalesce((j.scheduled_for at time zone 'America/Toronto')::date, j.due_on) < today) > 0
+    loop
+      body := r.todayn || ' job' || case when r.todayn = 1 then '' else 's' end || ' today' || case when r.late > 0 then ', ' || r.late || ' overdue' else '' end;
+      insert into notifications (user_id, kind, title, body, link) values (r.id, 'job', 'Your day: ' || body, 'Tap to open your jobs', '#/admin/jobs');
+      if ready and r.email is not null then perform public.send_notification('digest', jsonb_build_object('to', r.email, 'subject', 'Your jobs today: ' || body, 'heading', 'Good morning, ' || r.nm, 'text', 'You have ' || body || '.', 'path', '/#/admin/jobs')); end if;
+      n := n + 1;
+    end loop;
+  else
+    for r in select p.id, p.email, coalesce(nullif(p.name, ''), p.email) nm from profiles p where public.user_has_perm(p.id, 'jobs.manage') and p.role <> 'customer' loop
+      select 'Last 7 days: ' || count(*) filter (where completed_at > now() - interval '7 days') || ' done. Open now: ' || count(*) filter (where status not in ('done','cancelled')) || ' (' || count(*) filter (where status not in ('done','cancelled') and not exists (select 1 from job_assignees a where a.job_id = jobs.id)) || ' unassigned, ' || count(*) filter (where status not in ('done','cancelled') and coalesce((scheduled_for at time zone 'America/Toronto')::date, due_on) < today) || ' overdue).' into body from jobs;
+      insert into notifications (user_id, kind, title, body, link) values (r.id, 'job', 'Weekly jobs summary', body, '#/admin/jobs?scope=all');
+      if ready and r.email is not null then perform public.send_notification('digest', jsonb_build_object('to', r.email, 'subject', 'Weekly jobs summary', 'heading', 'Weekly jobs summary', 'text', body, 'path', '/#/admin/jobs?scope=all')); end if;
+      n := n + 1;
+    end loop;
+  end if;
+  return n;
+end $$;
+select cron.schedule('job-digest-daily', '0 12 * * 1-6', 'select public.send_job_digests(false)');
+select cron.schedule('job-digest-weekly', '5 12 * * 1', 'select public.send_job_digests(true)');
+grant execute on function public.job_clock(bigint, text), public.get_job(bigint) to authenticated;

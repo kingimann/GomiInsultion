@@ -2062,7 +2062,13 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       const { data, error } = await sb.rpc(kind === 'invoice' ? 'send_invoice' : 'send_estimate', kind === 'invoice' ? { iid: docId, ...args } : { eid: docId, ...args }); btn.disabled = false;
       if (error) return fail(error);
       flash(data.ready ? `Sending${attached ? ' with the PDF attached' : ''}… the delivery log below will show the result.` : 'Marked as sent, but sending isn’t connected yet — use the buttons below to send it yourself, or connect it in Settings.', data.ready ? 'ok' : 'error'); route();
-      if (data.ready) setTimeout(() => { if (location.hash.includes(`/${kind === 'invoice' ? 'invoices' : 'estimates'}/${docId}`)) route(); }, 4000);
+      if (data.ready) setTimeout(async () => {
+        const { data: lg } = await sb.from('message_log').select('channel,status,detail,created_at').eq('kind', kind).eq('ref_id', docId).order('id', { ascending: false }).limit(2);
+        const bad = (lg || []).filter((x) => x.status === 'failed' && Date.now() - new Date(x.created_at) < 60000);
+        if (bad.length) flash(`Not delivered — ${bad.map((x) => x.detail).join(' · ')}. Until that’s set up, use “Open in my email app” / “Open in my messages app” below.`, 'error');
+        else if ((lg || []).some((x) => x.status === 'sent')) flash('Delivered ✓');
+        if (location.hash.includes(`/${kind === 'invoice' ? 'invoices' : 'estimates'}/${docId}`)) route();
+      }, 3500);
     };
     $('sd_go').addEventListener('click', sendNow);
     for (const aid of ['sd_mailto', 'sd_smslink']) $(aid).addEventListener('click', () => { flash('Opened — once you’ve sent it, click “Mark as sent” so your records match.'); });

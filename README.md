@@ -304,3 +304,8 @@ Barcode/SKU scanning (type or scan, press Enter), category chips, search, quanti
 ## Returns & installable app
 - **Returns:** logged-in customers can "Request a return" on their order page (within 90 days, one open request per order). Staff get a notification and manage requests in Admin → Returns (approved / received / refunded / declined, with a note shown to the customer).
 - **Installable app:** a service worker (`web/sw.js`) makes the site installable ("Add to Home Screen") and shows the last visited page when offline. It always fetches the newest files first, so updates still appear immediately.
+
+## Turning on email & text delivery
+Invoices/estimates are sent by the `notify` Edge Function, which needs provider keys as **Supabase → Edge Functions → Secrets** (Project Settings → Edge Functions). Until they exist, sending fails and the delivery log says which secret is missing.
+- Email (Resend): `RESEND_API_KEY` and `FROM_EMAIL` (e.g. `Gomi Insulation <invoices@yourdomain.com>`; the domain must be verified in Resend — until then Resend only delivers to your own account email).
+- Text (Twilio): `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` (a Twilio number; trial accounts only text verified numbers).

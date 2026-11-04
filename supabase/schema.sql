@@ -3104,3 +3104,121 @@ begin
   return rid;
 end $$;
 grant execute on function public.request_return(bigint, text, text) to authenticated;
+
+-- ===== Jobs: assign work to employees =====
+create table if not exists public.jobs (
+  id bigint generated always as identity primary key,
+  title text not null check (char_length(title) between 1 and 200),
+  description text not null default '' check (char_length(description) <= 5000),
+  status text not null default 'open' check (status in ('open','scheduled','in_progress','done','cancelled')),
+  priority text not null default 'normal' check (priority in ('low','normal','high','urgent')),
+  customer_name text not null default '', customer_phone text not null default '', customer_email text not null default '',
+  address text not null default '',
+  scheduled_for timestamptz, due_on date,
+  checklist jsonb not null default '[]'::jsonb,
+  order_id bigint, invoice_id bigint,
+  created_by uuid default auth.uid(), created_at timestamptz not null default now(), updated_at timestamptz not null default now(), completed_at timestamptz
+);
+create table if not exists public.job_assignees (job_id bigint not null references public.jobs(id) on delete cascade, user_id uuid not null references public.profiles(id) on delete cascade, primary key (job_id, user_id));
+create table if not exists public.job_notes (id bigint generated always as identity primary key, job_id bigint not null references public.jobs(id) on delete cascade, user_id uuid default auth.uid(), author text, note text not null check (char_length(note) between 1 and 2000), kind text not null default 'note', created_at timestamptz not null default now());
+alter table public.jobs enable row level security; alter table public.job_assignees enable row level security; alter table public.job_notes enable row level security;
+-- (no direct policies: everything goes through the security-definer functions below)
+
+insert into public.role_permissions (role, perm)
+select r, 'jobs' from (values ('accountant'),('manager'),('staff'),('support'),('warehouse')) v(r) on conflict do nothing;
+insert into public.role_permissions (role, perm) values ('manager', 'jobs.manage') on conflict do nothing;
+
+create or replace function public._job_visible(jid bigint) returns boolean language sql stable security definer set search_path = public as $$
+  select public.has_perm('jobs.manage') or exists (select 1 from job_assignees where job_id = jid and user_id = auth.uid()) $$;
+
+create or replace function public.job_employees() returns table (id uuid, name text, email text, role text) language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.has_perm('jobs.manage') then raise exception 'Not allowed'; end if;
+  return query select p.id, coalesce(nullif(p.name, ''), p.email), p.email, p.role from profiles p where p.role is not null and p.role <> 'customer' order by 2;
+end $$;
+
+create or replace function public.save_job(j jsonb, assignees uuid[]) returns bigint language plpgsql security definer set search_path = public as $$
+declare jid bigint := nullif(j->>'id', '')::bigint; u uuid; who text; old uuid[]; ttl text := left(btrim(coalesce(j->>'title', '')), 200);
+begin
+  if not public.has_perm('jobs.manage') then raise exception 'Not allowed'; end if;
+  if ttl = '' then raise exception 'Give the job a title'; end if;
+  if jid is null then
+    insert into jobs (title, description, status, priority, customer_name, customer_phone, customer_email, address, scheduled_for, due_on, checklist)
+    values (ttl, left(coalesce(j->>'description', ''), 5000), coalesce(nullif(j->>'status', ''), 'open'), coalesce(nullif(j->>'priority', ''), 'normal'), left(coalesce(j->>'customer_name', ''), 120), left(coalesce(j->>'customer_phone', ''), 40), left(coalesce(j->>'customer_email', ''), 200), left(coalesce(j->>'address', ''), 300),
+      nullif(j->>'scheduled_for', '')::timestamptz, nullif(j->>'due_on', '')::date, coalesce(j->'checklist', '[]'::jsonb)) returning id into jid;
+  else
+    update jobs set title = ttl, description = left(coalesce(j->>'description', ''), 5000), status = coalesce(nullif(j->>'status', ''), status), priority = coalesce(nullif(j->>'priority', ''), priority), customer_name = left(coalesce(j->>'customer_name', ''), 120), customer_phone = left(coalesce(j->>'customer_phone', ''), 40), customer_email = left(coalesce(j->>'customer_email', ''), 200), address = left(coalesce(j->>'address', ''), 300),
+      scheduled_for = nullif(j->>'scheduled_for', '')::timestamptz, due_on = nullif(j->>'due_on', '')::date, checklist = coalesce(j->'checklist', checklist), updated_at = now(),
+      completed_at = case when coalesce(nullif(j->>'status', ''), status) = 'done' then coalesce(completed_at, now()) else null end where id = jid;
+    if not found then raise exception 'Job not found'; end if;
+  end if;
+  select coalesce(array_agg(user_id), '{}') into old from job_assignees where job_id = jid;
+  delete from job_assignees where job_id = jid and not (user_id = any(coalesce(assignees, '{}')));
+  foreach u in array coalesce(assignees, '{}') loop
+    if not (u = any(old)) then
+      insert into job_assignees (job_id, user_id) values (jid, u) on conflict do nothing;
+      insert into notifications (user_id, kind, title, body, link) values (u, 'job', 'New job: ' || ttl, case when j->>'scheduled_for' <> '' then 'Scheduled ' || to_char((j->>'scheduled_for')::timestamptz at time zone 'America/Toronto', 'Mon DD HH12:MI AM') else 'Tap to see the details' end, '#/admin/jobs/' || jid);
+    end if;
+  end loop;
+  return jid;
+end $$;
+
+create or replace function public.list_jobs(scope text default 'mine') returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare mng boolean := public.has_perm('jobs.manage'); res jsonb;
+begin
+  if auth.uid() is null or not exists (select 1 from profiles where id = auth.uid() and role <> 'customer') then raise exception 'Not allowed'; end if;
+  select coalesce(jsonb_agg(x order by (x->>'sortkey')), '[]') into res from (
+    select jsonb_build_object('id', j.id, 'title', j.title, 'status', j.status, 'priority', j.priority, 'customer_name', j.customer_name, 'address', j.address, 'scheduled_for', j.scheduled_for, 'due_on', j.due_on, 'created_at', j.created_at,
+      'checklist_total', jsonb_array_length(j.checklist), 'checklist_done', (select count(*) from jsonb_array_elements(j.checklist) c where (c->>'done')::boolean),
+      'assignees', coalesce((select jsonb_agg(coalesce(nullif(p.name, ''), p.email)) from job_assignees a join profiles p on p.id = a.user_id where a.job_id = j.id), '[]'),
+      'mine', exists (select 1 from job_assignees a where a.job_id = j.id and a.user_id = auth.uid()),
+      'sortkey', (case when j.status in ('done','cancelled') then '9' else '0' end) || coalesce(to_char(j.scheduled_for, 'YYYYMMDDHH24MI'), to_char(coalesce(j.due_on, '2999-01-01'), 'YYYYMMDD') || '0000') || lpad(j.id::text, 10, '0')) x
+    from jobs j where (scope = 'all' and mng) or exists (select 1 from job_assignees a where a.job_id = j.id and a.user_id = auth.uid())
+  ) s;
+  return res;
+end $$;
+
+create or replace function public.get_job(jid bigint) returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare j public.jobs; res jsonb;
+begin
+  if not public._job_visible(jid) then raise exception 'Job not found'; end if;
+  select * into j from jobs where id = jid; if not found then raise exception 'Job not found'; end if;
+  return jsonb_build_object('job', to_jsonb(j), 'can_manage', public.has_perm('jobs.manage'),
+    'assignees', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'name', coalesce(nullif(p.name, ''), p.email))) from job_assignees a join profiles p on p.id = a.user_id where a.job_id = jid), '[]'),
+    'notes', coalesce((select jsonb_agg(to_jsonb(n) order by n.id desc) from job_notes n where n.job_id = jid), '[]'));
+end $$;
+
+create or replace function public.update_job_progress(jid bigint, new_status text, new_checklist jsonb default null) returns void language plpgsql security definer set search_path = public as $$
+declare j public.jobs; who text;
+begin
+  if not public._job_visible(jid) then raise exception 'Job not found'; end if;
+  if new_status is not null and new_status not in ('open','scheduled','in_progress','done','cancelled') then raise exception 'Bad status'; end if;
+  select * into j from jobs where id = jid for update; if not found then raise exception 'Job not found'; end if;
+  select coalesce(nullif(name, ''), email) into who from profiles where id = auth.uid();
+  update jobs set status = coalesce(new_status, status), checklist = coalesce(new_checklist, checklist), updated_at = now(),
+    completed_at = case when coalesce(new_status, status) = 'done' then coalesce(completed_at, now()) else null end where id = jid;
+  if new_status is not null and new_status <> j.status then
+    insert into job_notes (job_id, author, note, kind) values (jid, who, 'Status: ' || replace(j.status, '_', ' ') || ' → ' || replace(new_status, '_', ' '), 'status');
+    if new_status = 'done' then
+      insert into notifications (user_id, kind, title, body, link)
+        select pr.id, 'job', 'Job done: ' || j.title, coalesce(who, 'An employee') || ' marked it done', '#/admin/jobs/' || jid from profiles pr where public.user_has_perm(pr.id, 'jobs.manage') and pr.id <> auth.uid();
+    end if;
+  end if;
+end $$;
+
+create or replace function public.add_job_note(jid bigint, txt text) returns void language plpgsql security definer set search_path = public as $$
+declare who text; t text := btrim(coalesce(txt, ''));
+begin
+  if not public._job_visible(jid) then raise exception 'Job not found'; end if;
+  if t = '' then raise exception 'Write a note first'; end if;
+  select coalesce(nullif(name, ''), email) into who from profiles where id = auth.uid();
+  insert into job_notes (job_id, author, note) values (jid, who, left(t, 2000));
+  update jobs set updated_at = now() where id = jid;
+end $$;
+
+create or replace function public.delete_job(jid bigint) returns void language plpgsql security definer set search_path = public as $$
+begin if not public.has_perm('jobs.manage') then raise exception 'Not allowed'; end if; delete from jobs where id = jid; end $$;
+
+create or replace function public.my_open_jobs() returns int language sql stable security definer set search_path = public as $$
+  select count(*)::int from jobs j join job_assignees a on a.job_id = j.id and a.user_id = auth.uid() where j.status not in ('done','cancelled') $$;
+grant execute on function public.job_employees(), public.save_job(jsonb, uuid[]), public.list_jobs(text), public.get_job(bigint), public.update_job_progress(bigint, text, jsonb), public.add_job_note(bigint, text), public.delete_job(bigint), public.my_open_jobs() to authenticated;

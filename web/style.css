@@ -1053,3 +1053,30 @@ body.posmode .announce,body.posmode footer,body.posmode .adminbar,body.posmode .
 }
 @media(max-width:900px){aside.possale{align-self:stretch;height:auto;padding:0 0 env(safe-area-inset-bottom);border-radius:0}}
 aside.possale{padding:0;border-radius:0}
+
+/* POS on phones: till-style, maximum room for products */
+@media(max-width:900px){
+  body.posmode .top{display:none}
+  body.posmode #app{padding-top:8px}
+  body.posmode #app .dashhead{flex-direction:row;align-items:center;gap:8px;margin-bottom:8px}
+  body.posmode #app .dashhead h1{font-size:1.5rem}
+  body.posmode #app .dashhead .row{display:flex;flex:1;justify-content:flex-end;gap:6px;flex-wrap:nowrap}
+  body.posmode #app .dashhead .row select{min-width:0;max-width:150px;min-height:40px}
+  body.posmode #app .dashhead .row .btn{min-height:40px;padding:6px 10px;font-size:.8rem;white-space:nowrap}
+  body.posmode .pos>div:first-child{display:flex;flex-direction:column}
+  body.posmode #possearch{min-height:46px}
+  body.posmode #poscats{margin:8px 0}
+  body.posmode .poscard{min-height:96px}.poscard .posbtn{padding:10px}
+  body.posmode .poscard .posbtn b{font-size:.98rem}
+  body.posmode #poslast{margin:0 0 8px}
+}
+@media(min-width:901px){.posexit{display:none}}
+@media(max-width:900px){body.posmode #app .dashhead>.posbackrow{flex:none}body.posmode #app .dashhead h1.h1dup{display:block}}
+@media(max-width:900px){
+  body.posmode #app .dashhead{flex-direction:column;align-items:stretch;gap:8px}
+  body.posmode #app .dashhead .posbackrow{display:flex!important;align-items:center}
+  body.posmode #app .dashhead .row:not(.posbackrow){display:grid!important;grid-template-columns:1fr 1fr;gap:8px}
+  body.posmode #app .dashhead .row select{max-width:none;width:100%}
+  .posexit{flex:none!important;width:44px;padding:0!important;font-size:1.3rem}
+}
+@media(max-width:900px){body.posmode #app .dashhead .posbackrow{justify-content:flex-start!important}}

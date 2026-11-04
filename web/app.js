@@ -326,8 +326,7 @@ const inAdminMode = () => isStaff() && /^#\/admin/.test(location.hash);
 function toggleAdminSheet(open) {
   let sh = document.getElementById('asheet'); if (!sh) { sh = document.createElement('div'); sh.id = 'asheet'; sh.className = 'asheet'; document.body.appendChild(sh); }
   document.body.classList.toggle('asheet-open', open); if (!open) return;
-  const items = CMD_LINKS.filter(([l, , perm]) => can(perm) && !/^New /.test(l));
-  sh.innerHTML = `<div class="ashead"><b>Admin</b><a href="#/">← Back to store</a></div><div class="asgrid">${items.map(([l, h]) => `<a href="${h}">${esc(l)}</a>`).join('')}</div><button type="button" class="btn ghost openpalette" style="width:100%;margin-top:10px">:ic-search: Search everything</button>`;
+  sh.innerHTML = `<div class="ashead"><b>Admin</b><a href="#/">← Back to store</a></div>${adminGroups().map(([g, ls]) => `<h5 class="asg">${esc(g)}</h5><div class="asgrid">${ls.map(([l, h]) => `<a href="${h}">${esc(l)}</a>`).join('')}</div>`).join('')}<button type="button" class="btn ghost openpalette" style="width:100%;margin-top:10px">:ic-search: Search everything</button>`;
 }
 document.addEventListener('click', (e) => {
   const mb = e.target.closest('#tabmore'); if (mb && inAdminMode()) { e.stopImmediatePropagation(); toggleAdminSheet(!document.body.classList.contains('asheet-open')); renderTabbar(); return; }
@@ -540,6 +539,7 @@ pages.product = async ([slug]) => {
   const recent = await recentHtml(p.id); pushRV(p.id); setSeo({ title: p.seo_title || `${p.name}${p.r_value && !p.name.includes(p.r_value) ? ' ' + p.r_value : ''}`, description: p.seo_description || p.description, image: pics[0], type: 'product', path: '/product/' + p.slug + '/', jsonld: [productLd(p, pics), { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: [{ '@type': 'ListItem', position: 1, name: 'Shop', item: seoBase() + '/#/shop' }, { '@type': 'ListItem', position: 2, name: p.category, item: seoBase() + '/#/shop?category=' + encodeURIComponent(p.category) }, { '@type': 'ListItem', position: 3, name: p.name }] }] });
   const gallery = pics.length ? `<div class="gallery"><img class="big" id="mainpic" src="${esc(pics[0])}" alt="${esc(p.image_alt || p.name)}">${pics.length > 1 ? `<div class="thumbs">${pics.map((u, i) => `<img src="${esc(u)}" alt="Photo ${i + 1}" class="${i ? '' : 'on'}">`).join('')}</div>` : ''}</div>` : img(p, true);
   return `<div class="crumbs" role="navigation" aria-label="Breadcrumb"><a href="#/shop">Shop</a> › <a href="#/shop?category=${encodeURIComponent(p.category)}">${esc(p.category)}</a> › <span>${esc(p.name)}</span></div>
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="#/">Home</a> › <a href="#/shop">Shop</a>${p.category ? ` › <a href="#/shop?category=${encodeURIComponent(p.category)}">${esc(p.category)}</a>` : ''} › <span>${esc(p.name)}</span></nav>
   <div class="detail"><div>${gallery}</div><div><span class="tag">${esc(p.category)}</span>${p.brand && p.brand !== p.category ? ` <a class="brandtag" href="#/shop?brand=${encodeURIComponent(p.brand)}">${esc(p.brand)}</a>` : ''}<h1>${esc(p.name)}</h1>${variantsHtml}
   <p class="price big">${priceHtml(p)} <small>per ${esc(p.unit)}</small>${onSale(p) ? ` <span class="savepill">Save ${salePct(p)}%</span>` : ''}</p>${p.r_value ? `<p><strong>R-value:</strong> ${esc(p.r_value)}</p>` : ''}<p>${esc(p.description)}</p>
   ${p.sku ? `<p class="muted skuline">SKU: ${esc(p.sku)}</p>` : ''}${packTable(p)}
@@ -1033,10 +1033,17 @@ document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.
 document.addEventListener('click', (e) => { if (e.target.closest('.openpalette')) openPalette(); });
 
 // ---- admin section bar (shown on every admin sub-page) ----
+const ADMIN_GROUPS = [['Overview', ['Dashboard', 'Analytics', 'Jobs']], ['Sales', ['Orders', 'Point of sale', 'Quotes', 'Abandoned carts', 'Returns', 'Invoices', 'Estimates']], ['Catalog', ['Products', 'Inventory', 'Purchasing', 'Discount codes', 'Gift cards', 'Reviews']],
+  ['Customers', ['Customers', 'Customer groups', 'Subscribers', 'Messages', 'Forms']], ['Finance', ['Expenses', 'Profit & loss', 'Tax report']], ['Website', ['Pages', 'SEO']], ['Admin', ['Settings', 'Team & roles', 'Spam & safety', 'Activity log']]];
+function adminGroups() {
+  const items = CMD_LINKS.filter(([l, , perm]) => can(perm) && !/^New /.test(l)), used = new Set(), out = [];
+  for (const [g, labels] of ADMIN_GROUPS) { const ls = labels.map((l) => items.find((x) => x[0] === l)).filter(Boolean); ls.forEach((x) => used.add(x[0])); if (ls.length) out.push([g, ls]); }
+  const rest = items.filter((x) => !used.has(x[0])); if (rest.length) out.push(['More', rest]); return out;
+}
 function adminNavHtml(sub) {
-  const items = CMD_LINKS.filter(([l, , perm]) => can(perm) && !/^New /.test(l)); if (!sub || !items.length) return '';
-  const cur = '#/admin/' + sub;
-  return `<nav class="adminbar noprint" aria-label="Admin sections"><a href="#/admin" class="ab-home">:ic-home: Dashboard</a>${items.filter(([l]) => l !== 'Dashboard').map(([l, h]) => `<a href="${h}" ${h === cur || h.startsWith(cur + '/') ? 'class="on" aria-current="page"' : ''}>${esc(l)}</a>`).join('')}</nav>`;
+  const groups = adminGroups(); if (!groups.length) return '';
+  const cur = sub ? '#/admin/' + sub : '#/admin', on = (h) => (h === '#/admin' ? cur === '#/admin' : cur === h || cur.startsWith(h + '/'));
+  return `<nav class="adminside noprint" aria-label="Admin sections">${groups.map(([g, ls]) => `<div class="asgroup"><h4>${esc(g)}</h4>${ls.map(([l, h]) => `<a href="${h}" ${on(h) ? 'class="on" aria-current="page"' : ''}>${esc(l)}</a>`).join('')}</div>`).join('')}</nav>`;
 }
 // ---- CSV helpers ----
 function parseCsv(text) { const rows = []; let row = [], cell = '', q = false; text = String(text).replace(/^\uFEFF/, '');
@@ -3300,7 +3307,7 @@ async function route() {
   setSeo({ title: name === 'home' || name === '' ? (SEO.home_title || '') : TITLES[name] || '', description: '', noindex: PRIVATE.includes(name), path: name === 'shop' ? '/#/shop' : '', jsonld: name === 'home' || name === '' ? [{ '@context': 'https://schema.org', '@type': 'WebSite', name: seoSite(), url: seoBase() + '/', potentialAction: { '@type': 'SearchAction', target: seoBase() + '/#/shop?q={search_term_string}', 'query-input': 'required name=search_term_string' } }, { '@context': 'https://schema.org', '@type': 'Organization', name: (STORE.biz?.legal_name || seoSite()), url: seoBase() + '/', ...(STORE.biz?.phone ? { telephone: STORE.biz.phone } : {}), ...(STORE.biz?.email ? { email: STORE.biz.email } : {}), ...(SEO.og_image ? { logo: SEO.og_image } : {}) }] : undefined });
   if (name === 'shop') { const tq = q.get('q') || ''; if (document.activeElement !== sinput) { sinput.value = tq; sclear.hidden = !tq; } } else if (name !== 'product' && document.activeElement !== sinput) { sinput.value = ''; sclear.hidden = true; }
   if (!page) { $app.innerHTML = '<h1>Not found</h1>'; return; }
-  try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); if (name === 'admin' && args[0]) $app.insertAdjacentHTML('afterbegin', adminNavHtml(args[0])); setMenu(false);
+  try { $app.classList.remove('in'); $app.innerHTML = '<div class="skeleton"></div>'; $app.innerHTML = await page(args, q); if (name === 'admin' && isStaff() && !/^#\/admin\/pos/.test(location.hash)) $app.innerHTML = `<div class="adminshell">${adminNavHtml(args[0])}<div class="admincontent">${$app.innerHTML}</div></div>`; setMenu(false);
     $app.querySelectorAll('table').forEach((t) => { if (!t.parentElement.classList.contains('tablewrap') && !t.closest('.invdoc, .tablewrap')) { const w = document.createElement('div'); w.className = 'tablewrap'; t.replaceWith(w); w.appendChild(t); }
       // label cells so tables can stack into cards on phones
       const heads = [...t.querySelectorAll('th')].map((x) => x.textContent);

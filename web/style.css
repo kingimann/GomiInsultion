@@ -1080,3 +1080,15 @@ aside.possale{padding:0;border-radius:0}
   .posexit{flex:none!important;width:44px;padding:0!important;font-size:1.3rem}
 }
 @media(max-width:900px){body.posmode #app .dashhead .posbackrow{justify-content:flex-start!important}}
+
+/* admin: grouped sidebar (desktop), scrolling bar (tablet), sheet (phone) */
+.adminshell{display:grid;grid-template-columns:200px minmax(0,1fr);gap:28px;align-items:start}
+.adminside{position:sticky;top:84px;display:grid;gap:14px;max-height:calc(100vh - 100px);overflow:auto;padding:2px 4px 16px 0;scrollbar-width:thin}
+.asgroup{display:grid;gap:1px}.asgroup h4{margin:0 0 4px;font:700 .72rem var(--fh);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.adminside a{display:block;padding:7px 10px;color:var(--fg);text-decoration:none;font-weight:500;font-size:.95rem;border-left:3px solid transparent}
+.adminside a:hover{background:var(--brand-soft)}.adminside a.on{background:var(--brand-soft);border-left-color:var(--brand);font-weight:700}
+.admincontent{min-width:0}
+@media(max-width:1000px){.adminshell{grid-template-columns:1fr;gap:0}.adminside{position:static;display:flex;gap:6px;overflow-x:auto;max-height:none;padding:0 0 10px;margin-bottom:8px;border-bottom:1px solid var(--line)}.asgroup{display:contents}.asgroup h4{display:none}.adminside a{flex:none;white-space:nowrap;border:1px solid var(--line);border-radius:99px;padding:6px 14px}.adminside a.on{border-color:var(--brand)}}
+@media(max-width:760px){.adminside{display:none}.asg{margin:14px 0 6px;font:700 .75rem var(--fh);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}.asgrid{grid-template-columns:1fr 1fr 1fr}.asgrid a{padding:11px 8px;font-size:.88rem;text-align:center}}
+.crumbs{font-size:.88rem;color:var(--muted);margin:0 0 10px;display:flex;flex-wrap:wrap;gap:4px}.crumbs a{color:var(--muted)}.crumbs span{color:var(--fg)}
+@media(max-width:760px){.crumbs{display:none}}

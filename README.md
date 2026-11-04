@@ -312,3 +312,7 @@ Invoices/estimates are sent by the `notify` Edge Function, which needs provider 
 
 ## Jobs
 Admin → **Jobs**: managers (owner, admin, manager — permission `jobs.manage`) create jobs with details, priority, schedule/due date, customer & address, a checklist, and assign one or more employees (anyone with a non-customer role; add people in Team & roles). Assigned employees get a notification and see **their** jobs in the Jobs tab (all staff roles have the `jobs` permission), where they can open the job, get directions / call / text the customer, tick checklist steps, post updates, and Start/Mark done (managers are notified when a job is done). Managers also get an "All jobs" view. Employees only ever see jobs assigned to them; all access goes through database functions that enforce this.
+
+### Jobs: calendar and links
+- **Calendar** (Jobs → Calendar): month grid showing jobs on their scheduled day (or due date if unscheduled); tap a day to list its jobs. Managers can flip between My jobs and All jobs.
+- **Links:** "Create job" buttons on orders and invoices pre-fill the customer, address and title and link the job back; a job shows links to its order/invoice.

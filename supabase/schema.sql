@@ -3222,3 +3222,31 @@ begin if not public.has_perm('jobs.manage') then raise exception 'Not allowed'; 
 create or replace function public.my_open_jobs() returns int language sql stable security definer set search_path = public as $$
   select count(*)::int from jobs j join job_assignees a on a.job_id = j.id and a.user_id = auth.uid() where j.status not in ('done','cancelled') $$;
 grant execute on function public.job_employees(), public.save_job(jsonb, uuid[]), public.list_jobs(text), public.get_job(bigint), public.update_job_progress(bigint, text, jsonb), public.add_job_note(bigint, text), public.delete_job(bigint), public.my_open_jobs() to authenticated;
+
+-- Jobs: link to an order / invoice
+create or replace function public.save_job(j jsonb, assignees uuid[]) returns bigint language plpgsql security definer set search_path = public as $$
+declare jid bigint := nullif(j->>'id', '')::bigint; u uuid; who text; old uuid[]; ttl text := left(btrim(coalesce(j->>'title', '')), 200);
+begin
+  if not public.has_perm('jobs.manage') then raise exception 'Not allowed'; end if;
+  if ttl = '' then raise exception 'Give the job a title'; end if;
+  if jid is null then
+    insert into jobs (title, description, status, priority, customer_name, customer_phone, customer_email, address, scheduled_for, due_on, checklist, order_id, invoice_id)
+    values (ttl, left(coalesce(j->>'description', ''), 5000), coalesce(nullif(j->>'status', ''), 'open'), coalesce(nullif(j->>'priority', ''), 'normal'), left(coalesce(j->>'customer_name', ''), 120), left(coalesce(j->>'customer_phone', ''), 40), left(coalesce(j->>'customer_email', ''), 200), left(coalesce(j->>'address', ''), 300),
+      nullif(j->>'scheduled_for', '')::timestamptz, nullif(j->>'due_on', '')::date, coalesce(j->'checklist', '[]'::jsonb), nullif(j->>'order_id', '')::bigint, nullif(j->>'invoice_id', '')::bigint) returning id into jid;
+  else
+    update jobs set title = ttl, description = left(coalesce(j->>'description', ''), 5000), status = coalesce(nullif(j->>'status', ''), status), priority = coalesce(nullif(j->>'priority', ''), priority), customer_name = left(coalesce(j->>'customer_name', ''), 120), customer_phone = left(coalesce(j->>'customer_phone', ''), 40), customer_email = left(coalesce(j->>'customer_email', ''), 200), address = left(coalesce(j->>'address', ''), 300),
+      scheduled_for = nullif(j->>'scheduled_for', '')::timestamptz, due_on = nullif(j->>'due_on', '')::date, checklist = coalesce(j->'checklist', checklist), order_id = nullif(j->>'order_id', '')::bigint, invoice_id = nullif(j->>'invoice_id', '')::bigint, updated_at = now(),
+      completed_at = case when coalesce(nullif(j->>'status', ''), status) = 'done' then coalesce(completed_at, now()) else null end where id = jid;
+    if not found then raise exception 'Job not found'; end if;
+  end if;
+  select coalesce(array_agg(user_id), '{}') into old from job_assignees where job_id = jid;
+  delete from job_assignees where job_id = jid and not (user_id = any(coalesce(assignees, '{}')));
+  foreach u in array coalesce(assignees, '{}') loop
+    if not (u = any(old)) then
+      insert into job_assignees (job_id, user_id) values (jid, u) on conflict do nothing;
+      insert into notifications (user_id, kind, title, body, link) values (u, 'job', 'New job: ' || ttl, case when j->>'scheduled_for' <> '' then 'Scheduled ' || to_char((j->>'scheduled_for')::timestamptz at time zone 'America/Toronto', 'Mon DD HH12:MI AM') else 'Tap to see the details' end, '#/admin/jobs/' || jid);
+    end if;
+  end loop;
+  return jid;
+end $$;
+

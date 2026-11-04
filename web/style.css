@@ -969,20 +969,6 @@ footer{background:#1c1b19;color:#d8d3c9;border-top:0;margin-top:40px}footer a{co
 .cartbar{display:none}
 @media(max-width:760px){.cartbar{display:flex;position:fixed;left:0;right:0;bottom:calc(var(--tabh) + env(safe-area-inset-bottom));z-index:40;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;background:var(--card);border-top:2px solid var(--fg);box-shadow:0 -8px 24px rgba(0,0,0,.12)}.cartbar div{display:flex;flex-direction:column;line-height:1.1}.cartbar b{font:700 1.4rem var(--fh)}.cartbar .btn{flex:1;max-width:220px}.cartcta{display:none!important}#app:has(.cartbar){padding-bottom:84px}body:has(.cartbar) .totop{display:none}}
 
-/* point of sale v2 */
-.pos{grid-template-columns:1fr 380px}.possale{position:sticky;top:90px;padding:16px;background:var(--card);border:1px solid var(--line);border-radius:var(--r)}
-.poshead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.poscard{position:relative;display:flex;flex-direction:column;gap:4px}.poscard .posbtn{position:relative;width:100%;flex:1}.poscard.out{opacity:.55}
-.posq{position:absolute;top:6px;right:6px;min-width:24px;height:24px;border-radius:12px;background:var(--brand);color:#fff;font-style:normal;font-weight:700;font-size:.85rem;display:flex;align-items:center;justify-content:center;padding:0 6px}
-.posbundle{border:1px dashed var(--line);background:transparent;color:var(--brand);font:600 .85rem var(--fh);text-transform:uppercase;letter-spacing:.04em;padding:6px;cursor:pointer}
-.posqty{width:56px;text-align:center;padding:6px 4px}
-.posbar{display:none}
-@media(max-width:900px){.pos{grid-template-columns:1fr}.possale{position:static}.posgrid{grid-template-columns:repeat(2,1fr)}
-  .posbar.on{display:flex;position:fixed;left:0;right:0;bottom:calc(var(--tabh) + env(safe-area-inset-bottom));z-index:40;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;background:var(--card);border-top:2px solid var(--fg);box-shadow:0 -8px 24px rgba(0,0,0,.12)}
-  .posbar div{display:flex;flex-direction:column;line-height:1.1}.posbar b{font:700 1.5rem var(--fh)}.posbar .btn{flex:1;max-width:220px}
-  #app:has(.posbar.on){padding-bottom:90px}}
-@media(min-width:901px){.posbar{display:none!important}}
-
 /* blog */
 .blogGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin:16px 0}
 .blogcard{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);color:var(--fg);text-decoration:none}
@@ -1032,3 +1018,38 @@ footer{background:#1c1b19;color:#d8d3c9;border-top:0;margin-top:40px}footer a{co
 .calday .dn{font-weight:700;font-size:.85rem}.calchip{display:block;font-size:.72rem;padding:1px 4px;background:var(--brand-soft);border-left:3px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.calchip.high{border-left-color:var(--brand)}.calchip.urgent{border-left-color:var(--err)}.calchip.done{opacity:.5;text-decoration:line-through}
 .caldot{display:none}
 @media(max-width:760px){.calday{min-height:52px;align-items:center}.calchip,.calday small{display:none}.caldot{display:inline-flex;font-style:normal;font-size:.72rem;min-width:20px;height:20px;border-radius:10px;background:var(--brand);color:#fff;align-items:center;justify-content:center}}
+
+/* point of sale v3 */
+body.posmode .announce,body.posmode footer,body.posmode .adminbar,body.posmode .totop{display:none!important}
+.pos{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:16px;align-items:start}
+.posgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:10px}
+.poscard{position:relative;display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);min-height:112px}
+.poscard.out{opacity:.5}
+.poscard .posbtn{position:relative;flex:1;display:flex;flex-direction:column;align-items:flex-start;justify-content:space-between;gap:4px;width:100%;padding:12px;border:0;background:transparent;color:var(--fg);text-align:left;cursor:pointer;font:inherit;min-height:84px}
+.poscard .posbtn b{font-size:1.02rem;line-height:1.2}.poscard .posbtn span{color:var(--brand);font-weight:700}.poscard:has(.posbtn:not(:disabled)):hover{border-color:var(--brand)}
+.poscard .posbtn:active:not(:disabled){background:var(--brand-soft)}
+.posq{position:absolute;top:8px;right:8px;min-width:24px;height:24px;border-radius:12px;background:var(--brand);color:#fff;font-style:normal;font-weight:700;font-size:.85rem;display:flex;align-items:center;justify-content:center;padding:0 6px}
+.poscard:has(.posq){border-color:var(--brand);box-shadow:inset 0 0 0 1px var(--brand)}
+.posbundle{margin:0;border:0;border-top:1px dashed var(--line);background:transparent;color:var(--brand);font:600 .82rem var(--fh);text-transform:uppercase;letter-spacing:.04em;padding:8px;cursor:pointer}
+.possale{position:sticky;top:12px;display:flex;flex-direction:column;max-height:calc(100vh - 24px);padding:0;background:var(--card);border:1px solid var(--line)}
+.possale .poshead{padding:14px 16px 8px;display:flex;justify-content:space-between;align-items:center}
+.possale #poscart{padding:0 16px;overflow:auto;min-height:60px}
+.possale #posctl{padding:8px 16px;margin:0;overflow:auto;gap:8px;border-top:1px solid var(--line)}
+.possale #posctl label{font-size:.85rem}.possale #posctl input,.possale #posctl select{padding:8px 10px;min-height:40px}
+.possale #posctl .two2{grid-template-columns:1fr 1fr!important;gap:8px}
+.poscharge{padding:12px 16px;border-top:2px solid var(--fg);background:var(--card)}.poscharge .btn{min-height:54px;font-size:1.15rem}
+.posline{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}.posline .btn{padding:2px 10px;min-height:0}
+.posqty{width:52px;text-align:center;padding:6px 4px}
+#posclose,.posback,.posbar{display:none}
+@media(max-width:900px){
+  .pos{grid-template-columns:1fr}.posgrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .possale{position:fixed;left:0;right:0;bottom:0;top:56px;z-index:60;max-height:none;transform:translateY(105%);visibility:hidden;transition:transform .25s ease,visibility .25s;border-width:2px 0 0;padding-bottom:env(safe-area-inset-bottom)}
+  .possale.open{transform:none;visibility:visible}
+  #posclose{display:inline-flex}
+  body.possheet{overflow:hidden}body.possheet .posback{display:block;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:59}
+  .posbar.on{display:flex;position:fixed;left:0;right:0;bottom:calc(var(--tabh) + env(safe-area-inset-bottom));z-index:40;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;background:var(--card);border-top:2px solid var(--fg);box-shadow:0 -8px 24px rgba(0,0,0,.12)}
+  .posbar div{display:flex;flex-direction:column;line-height:1.1}.posbar b{font:700 1.5rem var(--fh)}.posbar .btn{flex:1;max-width:220px}
+  #app:has(.posbar.on){padding-bottom:96px}body.posmode.possheet #tabbar{display:none}
+}
+@media(max-width:900px){aside.possale{align-self:stretch;height:auto;padding:0 0 env(safe-area-inset-bottom);border-radius:0}}
+aside.possale{padding:0;border-radius:0}

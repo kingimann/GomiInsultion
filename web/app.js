@@ -1339,12 +1339,12 @@ pages.admin = async ([sub, id, extra], q = new URLSearchParams()) => {
     return `<div class="dashhead"><h1 style="margin:0">Point of sale</h1><div class="row"><select id="posloc" aria-label="Location">${POS.locs.map((l) => `<option value="${l.id}" ${l.id === POS.loc ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select><a class="btn ghost" href="#/admin/orders?source=in_store">Today’s sales</a></div></div>
     <div id="poslast" class="flash ok" hidden></div>
     <div class="pos"><div><div class="row" style="margin-bottom:8px;flex-wrap:nowrap"><input id="possearch" placeholder="Search or scan a barcode / SKU…" autocomplete="off" style="flex:1;min-width:0"></div><div class="chips" id="poscats"></div><div id="posgrid" class="posgrid"></div></div>
-    <aside class="possale"><div class="poshead"><h3 style="margin:0">Current sale</h3><button type="button" class="link" id="posclear">Clear</button></div><div id="poscart"></div>
+    <aside class="possale"><div class="poshead"><h3 style="margin:0">Current sale</h3><span class="row" style="gap:12px;flex-wrap:nowrap"><button type="button" class="link" id="posclear">Clear</button><button type="button" class="ibtn" id="posclose" aria-label="Close">:ic-x:</button></span></div><div id="poscart"></div>
     <div id="posctl" class="stack" style="margin-top:10px"><div class="two2"><label>Discount<input id="pos_disc" type="number" min="0" step="0.01" placeholder="0.00"></label><label>Type<select id="pos_dtype"><option value="$">$ off</option><option value="%">% off</option></select></label></div>
     <label>Payment<select id="pos_pay"><option>Cash</option><option>Card</option><option>E-transfer</option><option>Cheque</option><option>Other</option></select></label>
     <div id="poscash"><label>Cash received<input id="pos_tender" type="number" min="0" step="0.01" placeholder="0.00" inputmode="decimal"></label><div class="chips" id="postender"></div><p id="poschange" class="muted" style="margin:4px 0 0"></p></div>
     <details><summary class="muted">Customer &amp; receipt (optional)</summary><div class="stack" style="margin-top:8px"><input id="pos_name" placeholder="Customer name"><input id="pos_email" type="email" placeholder="Email for receipt"><input id="pos_phone" placeholder="Phone"></div></details></div>
-    <button class="btn block" id="pos_done" style="margin-top:12px">Charge</button></aside></div>
+    <div class="poscharge"><button class="btn block" id="pos_done">Charge</button></div></aside></div><div class="posback"></div>
     <div class="posbar"><div><small class="muted" id="posbarn"></small><b id="posbartotal">$0.00</b></div><button type="button" class="btn" id="posbarbtn">Review &amp; charge</button></div>`;
   }
   if (sub === 'compare' && id) {
@@ -2397,7 +2397,8 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
     for (const i of ['pos_disc', 'pos_dtype', 'pos_pay', 'pos_tender']) $(i).addEventListener('input', drawCart);
     $('postender').addEventListener('click', (e) => { const b = e.target.closest('[data-t]'); if (b) { $('pos_tender').value = (Number(b.dataset.t) / 100).toFixed(2); drawCart(); } });
     $('posclear').addEventListener('click', () => { POS.cart = {}; drawCart(); drawGrid(); });
-    $('posbarbtn').addEventListener('click', () => { const a = document.querySelector('.possale'); a.classList.add('open'); a.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+    const sheet = (on) => { document.querySelector('.possale').classList.toggle('open', on); document.body.classList.toggle('possheet', on); };
+    $('posbarbtn').addEventListener('click', () => sheet(true)); $('posclose').addEventListener('click', () => sheet(false)); document.querySelector('.posback').addEventListener('click', () => sheet(false));
     $('pos_done').addEventListener('click', async (e) => {
       const c = calc(), items = Object.entries(POS.cart).map(([id, qty]) => ({ id: Number(id), qty })); if (!items.length) return fail(new Error('Add at least one product.'));
       const t = Math.round((parseFloat($('pos_tender').value) || 0) * 100); if ($('pos_pay').value === 'Cash' && t && t < c.total && !confirm(`Cash received is ${money(c.total - t)} short. Record the sale anyway?`)) return;
@@ -2409,7 +2410,7 @@ pages.admin.after = ([sub, id, extra], q = new URLSearchParams()) => {
       POS.cart = {}; for (const i of ['pos_disc', 'pos_tender', 'pos_name', 'pos_email', 'pos_phone']) $(i).value = '';
       POS.inv.forEach((r) => { const l = c.lines.find((x) => x.p.id === r.product_id); if (l && r.location_id === POS.loc) r.qty = Math.max(0, r.qty - l.qty); });
       const lastEl = $('poslast'); lastEl.hidden = false; lastEl.innerHTML = `:ic-check: Sale <a href="#/admin/orders/${data}">#${data}</a> recorded — <b>${money(c.total)}</b>.${change} <a href="#/admin/orders/${data}">Receipt</a>`; lastEl.scrollIntoView({ block: 'nearest' });
-      document.querySelector('.possale')?.classList.remove('open'); drawCart(); drawGrid(); $('possearch').focus();
+      sheet(false); drawCart(); drawGrid(); $('possearch').focus();
     });
   }
   document.querySelectorAll('.pubpage').forEach((b) => b.addEventListener('click', async () => { const { error } = await sb.from('pages').update({ published: !!b.dataset.pub }).eq('id', b.dataset.id); error ? fail(error) : (loadPages(), route()); }));
@@ -3305,7 +3306,7 @@ async function route() {
       const heads = [...t.querySelectorAll('th')].map((x) => x.textContent);
       t.querySelectorAll('tr').forEach((tr) => [...tr.children].forEach((td, i) => { if (td.tagName === 'TD') td.dataset.label = heads[i] || ''; }));
     });
-    void $app.offsetWidth; $app.classList.add('in'); addPdfButtons(); renderTabbar(); syncCmpBoxes(); renderCmpBar(); page.after?.(args, q); window.scrollTo(0, 0); syncBackBtn(); document.body.classList.remove('hdrhide'); trackView(); renderNewsletter(); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
+    void $app.offsetWidth; $app.classList.add('in'); addPdfButtons(); renderTabbar(); syncCmpBoxes(); renderCmpBar(); page.after?.(args, q); window.scrollTo(0, 0); syncBackBtn(); document.body.classList.remove('hdrhide', 'possheet'); document.body.classList.toggle('posmode', /^#\/admin\/pos/.test(location.hash)); trackView(); renderNewsletter(); } catch (e) { fail(e); $app.innerHTML = '<h1>Something went wrong</h1>'; }
 }
 window.addEventListener('hashchange', route);
 sb.auth.onAuthStateChange((ev) => {
